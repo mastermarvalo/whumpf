@@ -97,3 +97,4 @@ whumpf/
     ├── architecture.md          # stack decisions (mirrors whumpf-stack.md)
     └── data-sources.md          # feeds, schemas, licensing
 ```
+# whumpf
