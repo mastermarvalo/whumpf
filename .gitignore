@@ -1,0 +1,52 @@
+# Secrets
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+dist/
+build/
+
+# Node / frontend
+node_modules/
+dist/
+.vite/
+.turbo/
+.parcel-cache/
+*.tsbuildinfo
+
+# Editor / OS
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Data — never commit large geospatial assets
+data/raw/
+data/cogs/
+data/tmp/
+*.tif
+*.tiff
+*.img
+*.hgt
+*.mbtiles
+*.pmtiles
+
+# Logs
+*.log
+logs/

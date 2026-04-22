@@ -1,0 +1,178 @@
+# Whumpf — full stack compose file (host-networking edition)
+# -----------------------------------------------------------------------------
+# Every service shares the VM's network namespace. Service-to-service
+# communication uses localhost:<port> instead of <service>:<port>.
+#
+# Trade-offs vs. the bridge-network edition:
+#   + No CNI / Netavark dependency — works on any Podman on any distro
+#   + Simpler mental model: the VM's ports == the containers' ports
+#   - Can't run two containers that both want the same port
+#   - All ports are reachable from your LAN, not just loopback. Make sure
+#     the VM's firewall (or the NAS's) blocks anything you don't want
+#     exposed.
+
+name: whumpf
+
+volumes:
+  whumpf-pgdata:
+    name: whumpf-pgdata
+  whumpf-minio:
+    name: whumpf-minio
+
+services:
+  # ---------------------------------------------------------------------------
+  # PostGIS — listening on :5432 of the VM
+  # ---------------------------------------------------------------------------
+  postgis:
+    image: postgis/postgis:17-3.5-alpine
+    container_name: whumpf-postgis
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-whumpf}
+      POSTGRES_USER: ${POSTGRES_USER:-whumpf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD required}
+    volumes:
+      - whumpf-pgdata:/var/lib/postgresql/data
+      - ./scripts/postgis-init.sql:/docker-entrypoint-initdb.d/00-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-whumpf} -d ${POSTGRES_DB:-whumpf}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # MinIO — :9000 (S3 API), :9001 (console)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: quay.io/minio/minio:latest
+    container_name: whumpf-minio
+    network_mode: host
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER required}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD required}
+    volumes:
+      - whumpf-minio:/data
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # minio-init — one-shot bucket bootstrap
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: quay.io/minio/mc:latest
+    container_name: whumpf-minio-init
+    network_mode: host
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://localhost:9000 $$MINIO_ROOT_USER $$MINIO_ROOT_PASSWORD &&
+      mc mb -p local/dem-raw local/dem-cogs local/user-uploads local/strava-cache &&
+      mc anonymous set download local/dem-cogs &&
+      echo 'Buckets ready.' &&
+      exit 0
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+  # ---------------------------------------------------------------------------
+  # TiTiler — :8001 (moved off its default 8000 to avoid colliding with api)
+  # ---------------------------------------------------------------------------
+  titiler:
+    image: ghcr.io/developmentseed/titiler:latest
+    container_name: whumpf-titiler
+    network_mode: host
+    restart: unless-stopped
+    command:
+      - "uvicorn"
+      - "titiler.application.main:app"
+      - "--host"
+      - "0.0.0.0"
+      - "--port"
+      - "8001"
+      - "--workers"
+      - "1"
+    environment:
+      AWS_ACCESS_KEY_ID: ${MINIO_ROOT_USER}
+      AWS_SECRET_ACCESS_KEY: ${MINIO_ROOT_PASSWORD}
+      AWS_S3_ENDPOINT: localhost:9000
+      AWS_HTTPS: "NO"
+      AWS_VIRTUAL_HOSTING: "FALSE"
+      GDAL_DISABLE_READDIR_ON_OPEN: "EMPTY_DIR"
+      CPL_VSIL_CURL_USE_HEAD: "FALSE"
+      GDAL_HTTP_MULTIPLEX: "YES"
+      GDAL_HTTP_VERSION: "2"
+      TITILER_DEFAULT_ATTRIBUTION: "Whumpf / USGS 3DEP"
+    depends_on:
+      minio:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # Martin — :3000
+  # ---------------------------------------------------------------------------
+  martin:
+    image: ghcr.io/maplibre/martin:v0.18.0
+    container_name: whumpf-martin
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-whumpf}:${POSTGRES_PASSWORD}@localhost:5432/${POSTGRES_DB:-whumpf}
+    depends_on:
+      postgis:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # api — FastAPI on :8000
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: whumpf-api:dev
+    container_name: whumpf-api
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      WHUMPF_ENV: ${WHUMPF_ENV:-dev}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-whumpf}:${POSTGRES_PASSWORD}@localhost:5432/${POSTGRES_DB:-whumpf}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
+      JWT_ALGORITHM: HS256
+      JWT_ACCESS_TTL_MIN: "60"
+      S3_ENDPOINT: http://localhost:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET_DEM_COGS: dem-cogs
+      S3_BUCKET_DEM_RAW: dem-raw
+      S3_BUCKET_USER_UPLOADS: user-uploads
+      TITILER_URL: http://localhost:8001
+      MARTIN_URL: http://localhost:3000
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:5173}
+    depends_on:
+      postgis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # frontend — Vite on :5173
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    image: whumpf-frontend:dev
+    container_name: whumpf-frontend
+    network_mode: host
+    restart: unless-stopped
+    environment:
+      VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+      VITE_MARTIN_URL: ${VITE_MARTIN_URL:-http://localhost:3000}
+      VITE_TITILER_URL: ${VITE_TITILER_URL:-http://localhost:8001}

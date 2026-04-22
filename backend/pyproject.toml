@@ -1,0 +1,38 @@
+[project]
+name = "whumpf"
+version = "0.1.0"
+description = "Whumpf — backcountry terrain intelligence API"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    # Web framework
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "python-multipart>=0.0.12",
+
+    # Config / models
+    "pydantic>=2.9",
+    "pydantic-settings>=2.6",
+
+    # Database (PostGIS)
+    "sqlalchemy>=2.0.35",
+    "alembic>=1.13",
+    "geoalchemy2>=0.15",
+    "psycopg[binary]>=3.2",
+
+    # Auth
+    "python-jose[cryptography]>=3.3",
+    "passlib[bcrypt]>=1.7",
+
+    # Object storage
+    "boto3>=1.35",
+
+    # HTTP client for external feeds
+    "httpx>=0.27",
+
+    # Geospatial core
+    "shapely>=2.0",
+    "pyproj>=3.7",
+    "rasterio>=1.4",
+    "numpy>=2.1",
+]
