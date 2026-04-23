@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 
 const TITILER_URL = import.meta.env.VITE_TITILER_URL ?? "http://localhost:8001";
+const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const MINIO_BUCKET = "dem-cogs";
 const REGION = "colorado";
 
@@ -22,6 +23,7 @@ function cogTiles(cogPath: string, extra: Record<string, string> = {}): string[]
   const params = new URLSearchParams({ url: cogS3(cogPath), ...extra });
   return [`${TITILER_URL}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?${params}`];
 }
+
 
 // ── types ──────────────────────────────────────────────────────────────────────
 
@@ -70,16 +72,13 @@ const LAYER_GROUPS: LayerGroup[] = [
       {
         id: "slope",
         label: "Slope angle",
-        tiles: cogTiles(`${REGION}/slope.tif`, {
-          colormap_name: "rdylgn_r",
-          rescale: "0,60",
-          nodata: "-9999",
-        }),
+        // Served via API proxy which applies the CalTopo V1 colormap server-side
+        tiles: [`${API_URL}/tiles/slope/{z}/{x}/{y}?region=${REGION}`],
         opacity: 0.75,
         defaultVisible: false,
         legend: {
-          gradient: "linear-gradient(to right, #1a9641, #a6d96a, #ffffbf, #fdae61, #d7191c)",
-          stops: ["0°", "15°", "30°", "45°", "60°"],
+          gradient: "linear-gradient(to right, transparent 0%, #1a9641 25%, #ffeb00 45%, #d7191c 67%, #2b7bb9 100%)",
+          stops: ["0°", "15°", "27°", "40°", "60°"],
         },
       },
       {
@@ -94,7 +93,7 @@ const LAYER_GROUPS: LayerGroup[] = [
         defaultVisible: false,
         legend: {
           gradient:
-            "linear-gradient(to right, hsl(0,100%,50%), hsl(90,100%,50%), hsl(180,100%,50%), hsl(270,100%,50%), hsl(360,100%,50%))",
+            "linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)",
           stops: ["N", "E", "S", "W", "N"],
         },
       },

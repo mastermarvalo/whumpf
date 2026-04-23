@@ -76,7 +76,7 @@ shell-minio:  ## shell into the minio container
 
 .PHONY: health
 health:  ## curl the readiness endpoint — quick "is everything wired up" check
-	@curl -fsS http://localhost:8000/readyz | jq . || echo "api not reachable"
+	@curl -fsS http://localhost:8000/readyz | python3 -m json.tool || echo "api not reachable"
 
 # --- DEM pipeline -----------------------------------------------------------
 

@@ -111,6 +111,9 @@ services:
       GDAL_HTTP_MULTIPLEX: "YES"
       GDAL_HTTP_VERSION: "2"
       TITILER_DEFAULT_ATTRIBUTION: "Whumpf / USGS 3DEP"
+      COLORMAP_DIRECTORY: /colormaps
+    volumes:
+      - ./data/colormaps:/colormaps:ro
     depends_on:
       minio:
         condition: service_healthy

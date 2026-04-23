@@ -342,7 +342,8 @@ def write_cog(arr: np.ndarray, profile: dict, out_path: Path) -> None:
     """Write arr to a valid Cloud Optimized GeoTIFF at out_path."""
     tmp = str(out_path) + ".tmp.tif"
     p = {k: v for k, v in profile.items() if k != "copy_src_overviews"}
-    p.update(driver="GTiff", tiled=True, blockxsize=512, blockysize=512, compress="deflate")
+    p.update(driver="GTiff", tiled=True, blockxsize=512, blockysize=512,
+             compress="deflate", BIGTIFF="YES")
 
     with rasterio.open(tmp, "w", **p) as ds:
         ds.write(arr)
@@ -358,6 +359,7 @@ def write_cog(arr: np.ndarray, profile: dict, out_path: Path) -> None:
         blockxsize=512,
         blockysize=512,
         compress="deflate",
+        BIGTIFF="YES",
     )
     os.remove(tmp)
 
