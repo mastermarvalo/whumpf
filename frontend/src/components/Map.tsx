@@ -46,6 +46,30 @@ interface UpcomingLayer {
   label: string;
 }
 
+// ── terrain profile types ──────────────────────────────────────────────────────
+
+interface SlopeSample {
+  distance_m: number;
+  elevation_m: number | null;
+  slope_deg: number | null;
+}
+
+interface ProfileSummary {
+  distance_m: number;
+  avg_slope_deg: number | null;
+  max_slope_deg: number | null;
+  min_slope_deg: number | null;
+  elevation_gain_m: number | null;
+  elevation_loss_m: number | null;
+  start_elevation_m: number | null;
+  end_elevation_m: number | null;
+}
+
+interface ProfileResponse {
+  summary: ProfileSummary;
+  samples: SlopeSample[];
+}
+
 interface LayerGroup {
   id: string;
   label: string;
@@ -271,6 +295,62 @@ function aspectCompass(deg: number): string {
   return ["N", "NE", "E", "SE", "S", "SW", "W", "NW"][Math.round(deg / 45) % 8];
 }
 
+// ── measure helpers ────────────────────────────────────────────────────────────
+
+const MEASURE_MARKER_STYLE =
+  "background:#e05a2b;color:#fff;border-radius:50%;width:22px;height:22px;" +
+  "display:flex;align-items:center;justify-content:center;font-size:11px;" +
+  "font-weight:700;border:2px solid #fff;box-shadow:0 1px 4px rgba(0,0,0,0.3);cursor:default;";
+
+function slopeColor(deg: number): string {
+  if (deg < 15) return "#1a9641";
+  if (deg < 27) return "#c8a800";
+  if (deg < 40) return "#d7191c";
+  return "#2b7bb9";
+}
+
+async function fetchProfile(
+  a: [number, number],
+  b: [number, number],
+): Promise<ProfileResponse> {
+  const p = new URLSearchParams({
+    start_lng: String(a[0]),
+    start_lat: String(a[1]),
+    end_lng: String(b[0]),
+    end_lat: String(b[1]),
+    region: REGION,
+    n: "64",
+  });
+  const r = await fetch(`${API_URL}/terrain/profile?${p}`);
+  if (!r.ok) throw new Error(`${r.status}`);
+  return r.json() as Promise<ProfileResponse>;
+}
+
+function addMeasureLayers(map: maplibregl.Map) {
+  if (map.getSource("measure-line")) return;
+  map.addSource("measure-line", {
+    type: "geojson",
+    data: { type: "FeatureCollection", features: [] },
+  });
+  map.addLayer({
+    id: "measure-line",
+    type: "line",
+    source: "measure-line",
+    paint: { "line-color": "#e05a2b", "line-width": 2.5, "line-dasharray": [4, 2] },
+  });
+}
+
+function updateMeasureSource(map: maplibregl.Map | null, pts: [number, number][]) {
+  if (!map) return;
+  const src = map.getSource("measure-line") as maplibregl.GeoJSONSource | undefined;
+  if (!src) return;
+  src.setData(
+    pts.length === 2
+      ? { type: "Feature", geometry: { type: "LineString", coordinates: pts }, properties: {} }
+      : { type: "FeatureCollection", features: [] },
+  );
+}
+
 // ── map setup helpers ──────────────────────────────────────────────────────────
 
 function addOverlayLayers(
@@ -317,12 +397,20 @@ export function Map() {
     () => Object.fromEntries(OVERLAY_LAYERS.map((l) => [l.id, l.opacity])),
   );
   const [point, setPoint] = useState<PointData | null>(null);
+  const [measureMode, setMeasureMode] = useState(false);
+  const [measurePts, setMeasurePts] = useState<[number, number][]>([]);
+  const [profile, setProfile] = useState<ProfileResponse | null>(null);
+  const [profileLoading, setProfileLoading] = useState(false);
 
   // Refs so style-load callbacks can read current state without stale closures.
   const visibleRef = useRef(visible);
   const opacityRef = useRef(opacity);
   useEffect(() => { visibleRef.current = visible; }, [visible]);
   useEffect(() => { opacityRef.current = opacity; }, [opacity]);
+
+  const measureModeRef = useRef(false);
+  const measurePtsRef = useRef<[number, number][]>([]);
+  const measureMarkersRef = useRef<maplibregl.Marker[]>([]);
 
   // Initialise map once.
   useEffect(() => {
@@ -341,10 +429,22 @@ export function Map() {
 
     map.on("load", () => {
       addOverlayLayers(map, visibleRef.current, opacityRef.current);
+      addMeasureLayers(map);
     });
 
     map.on("click", async (e) => {
       const { lng, lat } = e.lngLat;
+
+      if (measureModeRef.current) {
+        const pts = measurePtsRef.current;
+        const newPts: [number, number][] =
+          pts.length < 2 ? [...pts, [lng, lat]] : [[lng, lat]];
+        if (newPts.length === 1) setProfile(null);
+        measurePtsRef.current = newPts;
+        setMeasurePts(newPts);
+        return;
+      }
+
       setPoint({ lon: lng, lat, loading: true });
       const pick = (name: string) =>
         fetch(
@@ -372,6 +472,8 @@ export function Map() {
     map.setStyle(dark ? MAP_STYLES.dark : MAP_STYLES.light);
     map.once("style.load", () => {
       addOverlayLayers(map, visibleRef.current, opacityRef.current);
+      addMeasureLayers(map);
+      updateMeasureSource(map, measurePtsRef.current);
     });
   }, [dark]);
 
@@ -402,6 +504,46 @@ export function Map() {
     else map.once("styledata", apply);
   }, [opacity]);
 
+  // Cursor + cleanup when measure mode toggles.
+  useEffect(() => {
+    measureModeRef.current = measureMode;
+    const canvas = mapRef.current?.getCanvas();
+    if (canvas) canvas.style.cursor = measureMode ? "crosshair" : "";
+    if (!measureMode) {
+      measureMarkersRef.current.forEach((m) => m.remove());
+      measureMarkersRef.current = [];
+      setMeasurePts([]);
+      measurePtsRef.current = [];
+      setProfile(null);
+      updateMeasureSource(mapRef.current, []);
+    }
+  }, [measureMode]);
+
+  // Markers, line, and profile fetch when measure points change.
+  useEffect(() => {
+    measurePtsRef.current = measurePts;
+    const map = mapRef.current;
+    if (!map) return;
+
+    measureMarkersRef.current.forEach((m) => m.remove());
+    measureMarkersRef.current = measurePts.map((pt, i) => {
+      const el = document.createElement("div");
+      el.textContent = i === 0 ? "A" : "B";
+      el.style.cssText = MEASURE_MARKER_STYLE;
+      return new maplibregl.Marker({ element: el }).setLngLat(pt).addTo(map);
+    });
+
+    updateMeasureSource(map, measurePts);
+
+    if (measurePts.length === 2) {
+      setProfileLoading(true);
+      setProfile(null);
+      fetchProfile(measurePts[0], measurePts[1])
+        .then((r) => { setProfile(r); setProfileLoading(false); })
+        .catch(() => setProfileLoading(false));
+    }
+  }, [measurePts]);
+
   const theme = dark ? THEMES.dark : THEMES.light;
 
   function flyToCoords(lat: number, lon: number) {
@@ -428,7 +570,23 @@ export function Map() {
         onOpacity={(id, val) => setOpacity((o) => ({ ...o, [id]: val }))}
         onDarkToggle={() => setDark((d) => !d)}
       />
-      {point && <InfoPanel data={point} theme={theme} onClose={() => setPoint(null)} />}
+      <MeasureButton
+        active={measureMode}
+        theme={theme}
+        onToggle={() => setMeasureMode((m) => !m)}
+      />
+      {measureMode && (
+        <MeasurePanel
+          pts={measurePts}
+          loading={profileLoading}
+          profile={profile}
+          theme={theme}
+          onClose={() => setMeasureMode(false)}
+        />
+      )}
+      {!measureMode && point && (
+        <InfoPanel data={point} theme={theme} onClose={() => setPoint(null)} />
+      )}
     </>
   );
 }
@@ -688,6 +846,130 @@ function InfoPanel({
           </span>
         </>
       )}
+      <button
+        onClick={onClose}
+        style={{
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          color: theme.muted,
+          fontSize: 16,
+          lineHeight: 1,
+          padding: "0 0 0 4px",
+        }}
+      >
+        ×
+      </button>
+    </div>
+  );
+}
+
+// ── MeasureButton ──────────────────────────────────────────────────────────────
+
+function MeasureButton({
+  active,
+  theme,
+  onToggle,
+}: {
+  active: boolean;
+  theme: Theme;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      onClick={onToggle}
+      title={active ? "Exit slope measurement" : "Measure slope between two points"}
+      style={{
+        position: "fixed",
+        bottom: 36,
+        right: 10,
+        zIndex: 1000,
+        background: active ? theme.accent : theme.panel,
+        color: active ? "#fff" : theme.text,
+        border: `1.5px solid ${active ? theme.accent : theme.divider}`,
+        borderRadius: 6,
+        padding: "7px 12px",
+        fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        fontSize: 12,
+        fontWeight: 600,
+        cursor: "pointer",
+        boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
+        letterSpacing: "0.03em",
+      }}
+    >
+      Measure Slope
+    </button>
+  );
+}
+
+// ── MeasurePanel ───────────────────────────────────────────────────────────────
+
+function MeasurePanel({
+  pts,
+  loading,
+  profile,
+  theme,
+  onClose,
+}: {
+  pts: [number, number][];
+  loading: boolean;
+  profile: ProfileResponse | null;
+  theme: Theme;
+  onClose: () => void;
+}) {
+  let content: React.ReactNode;
+
+  if (loading) {
+    content = <span style={{ color: theme.muted }}>Sampling terrain…</span>;
+  } else if (profile) {
+    const s = profile.summary;
+    const distMi = (s.distance_m / 1609.344).toFixed(2);
+    const gainFt = s.elevation_gain_m != null ? Math.round(s.elevation_gain_m * 3.28084) : null;
+    const lossFt = s.elevation_loss_m != null ? Math.round(s.elevation_loss_m * 3.28084) : null;
+    const avg = s.avg_slope_deg;
+    content = (
+      <>
+        <span style={{ color: theme.muted, fontSize: 11 }}>A→B</span>
+        <span><b>Dist</b> {distMi} mi</span>
+        <span>
+          <b>Avg slope</b>{" "}
+          <span style={{ color: avg != null ? slopeColor(avg) : theme.muted, fontWeight: 700 }}>
+            {avg != null ? `${avg.toFixed(1)}°` : "—"}
+          </span>
+        </span>
+        <span><b>Max</b> {s.max_slope_deg != null ? `${s.max_slope_deg.toFixed(1)}°` : "—"}</span>
+        {gainFt != null && <span style={{ color: "#1a9641" }}>+{gainFt} ft</span>}
+        {lossFt != null && <span style={{ color: theme.muted }}>−{lossFt} ft</span>}
+      </>
+    );
+  } else if (pts.length === 1) {
+    content = <span style={{ color: theme.muted }}>Click map to set end point (B)</span>;
+  } else {
+    content = <span style={{ color: theme.muted }}>Click map to set start point (A)</span>;
+  }
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        bottom: 36,
+        left: "50%",
+        transform: "translateX(-50%)",
+        background: theme.panel,
+        borderRadius: 8,
+        padding: "9px 16px",
+        fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        fontSize: 13,
+        color: theme.text,
+        boxShadow: "0 2px 10px rgba(0,0,0,0.22)",
+        display: "flex",
+        alignItems: "center",
+        gap: 16,
+        zIndex: 1000,
+        whiteSpace: "nowrap",
+      }}
+    >
+      {content}
       <button
         onClick={onClose}
         style={{

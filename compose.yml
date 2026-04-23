@@ -158,6 +158,12 @@ services:
       TITILER_URL: http://localhost:8001
       MARTIN_URL: http://localhost:3000
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:5173}
+    volumes:
+      - ./backend/app:/app/app
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
     depends_on:
       postgis:
         condition: service_healthy
