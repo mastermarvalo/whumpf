@@ -6,10 +6,11 @@
 # particular). On Ubuntu 24.04 with Podman, this works by pointing Docker CLI
 # at the Podman socket — see docs/runbook.md.
 #
-# To switch to `podman-compose`, override COMPOSE:
-#   make up COMPOSE=podman-compose
+# On this host `docker` is the podman shim and doesn't support `docker compose`
+# (no compose subcommand in podman). Invoke the v2 plugin binary directly.
+# To switch to podman-compose: make up COMPOSE=podman-compose
 # -----------------------------------------------------------------------------
-COMPOSE ?= docker-compose
+COMPOSE ?= $(HOME)/.docker/cli-plugins/docker-compose
 
 .DEFAULT_GOAL := help
 
@@ -76,6 +77,23 @@ shell-minio:  ## shell into the minio container
 .PHONY: health
 health:  ## curl the readiness endpoint — quick "is everything wired up" check
 	@curl -fsS http://localhost:8000/readyz | jq . || echo "api not reachable"
+
+# --- DEM pipeline -----------------------------------------------------------
+
+DEM_WORKDIR ?= $(CURDIR)/data/dem-work
+DEM_BBOX    ?= -109.06,37.0,-104.5,41.0
+
+.PHONY: dem-pipeline
+dem-pipeline:  ## run the DEM pipeline; override with DEM_BBOX= and DEM_WORKDIR=
+	python data/pipelines/dem_pipeline.py --workdir $(DEM_WORKDIR) --region colorado --bbox="$(DEM_BBOX)"
+
+.PHONY: dem-pipeline-test
+dem-pipeline-test:  ## quick smoke-test (0.5°×0.5° bbox near Silverton, ~2 min)
+	python data/pipelines/dem_pipeline.py --test --workdir $(DEM_WORKDIR) --region colorado
+
+.PHONY: dem-clean-cogs
+dem-clean-cogs:  ## delete processed COGs so the next pipeline run recomputes from downloaded tiles
+	rm -rf $(DEM_WORKDIR)/cog
 
 # --- tests / lint -----------------------------------------------------------
 

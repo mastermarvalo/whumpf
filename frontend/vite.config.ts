@@ -7,8 +7,12 @@ export default defineConfig({
   server: {
     port: 5173,
     strictPort: true,
-    // Reaching out through Podman / NPM needs an explicit host binding;
-    // the Dockerfile CMD also passes --host 0.0.0.0 which overrides this.
     host: true,
+    // Polling avoids inotify exhaustion when running inside a container with a
+    // host-mounted src volume (low max_user_instances on the Podman host).
+    watch: {
+      usePolling: true,
+      interval: 300,
+    },
   },
 });

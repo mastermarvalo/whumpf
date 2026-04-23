@@ -172,6 +172,8 @@ services:
     container_name: whumpf-frontend
     network_mode: host
     restart: unless-stopped
+    volumes:
+      - ./frontend/src:/app/src
     environment:
       VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
       VITE_MARTIN_URL: ${VITE_MARTIN_URL:-http://localhost:3000}

@@ -1,0 +1,9 @@
+# Standalone deps for data/pipelines/dem_pipeline.py
+# Install into a local venv:
+#   python3 -m venv .venv
+#   source .venv/bin/activate
+#   pip install -r data/pipelines/requirements.txt
+rasterio>=1.4
+numpy>=2.0
+boto3>=1.35
+httpx>=0.27
