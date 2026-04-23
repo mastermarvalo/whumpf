@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app import __version__
 from app.config import get_settings
-from app.routers import health, terrain, tiles
+from app.routers import health, snowpack, terrain, tiles
 
 logger = logging.getLogger("whumpf")
 logging.basicConfig(
@@ -41,6 +41,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(tiles.router)
     app.include_router(terrain.router)
+    app.include_router(snowpack.router)
 
     logger.info("Whumpf API starting (env=%s, version=%s)", settings.whumpf_env, __version__)
     return app

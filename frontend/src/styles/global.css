@@ -13,6 +13,13 @@ body,
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
+/* Force MapLibre popups to render in light mode regardless of color-scheme. */
+.maplibregl-popup-content {
+  color-scheme: light;
+  color: #1a1a1a;
+  background: #fff;
+}
+
 /* MapLibre attribution should stay legible on dark backgrounds. */
 .maplibregl-ctrl-attrib {
   font-size: 11px;

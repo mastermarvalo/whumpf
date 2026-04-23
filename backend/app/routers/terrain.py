@@ -65,7 +65,7 @@ def terrain_profile(
     start_lat: float,
     end_lng: float,
     end_lat: float,
-    region: str = "colorado",
+    region: str = "sanjuans",
     n: int = Query(default=64, ge=10, le=256),
     settings: Settings = Depends(get_settings),
 ) -> ProfileResponse:

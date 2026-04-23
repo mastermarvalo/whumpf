@@ -4,7 +4,7 @@ import maplibregl from "maplibre-gl";
 const TITILER_URL = import.meta.env.VITE_TITILER_URL ?? "http://localhost:8001";
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const MINIO_BUCKET = "dem-cogs";
-const REGION = "colorado";
+const REGION = "sanjuans";
 
 const INITIAL_CENTER: [number, number] = [-107.75, 37.95];
 const INITIAL_ZOOM = 10;
@@ -36,14 +36,74 @@ interface ActiveLayer {
   id: string;
   label: string;
   tiles: string[];
+  kind?: "raster" | "geojson"; // default "raster"; geojson layers skip addOverlayLayers
   opacity: number;
   defaultVisible: boolean;
+  noSlider?: boolean;
   legend?: Legend;
 }
 
 interface UpcomingLayer {
   id: string;
   label: string;
+}
+
+// ── weather / snowpack provider config ────────────────────────────────────────
+// Swap any URL string here to change the underlying data source.
+// MapLibre replaces {bbox-epsg-3857} with the tile's bbox (west,south,east,north, EPSG:3857).
+const _NWS = "https://mapservices.weather.noaa.gov/raster/rest/services";
+// ArcGIS MapServer/export and ImageServer/exportImage share these params
+const _AGS = "bboxSR=3857&imageSR=3857&size=256,256&f=image&format=png32&transparent=true";
+// NDFD_temp layers: 0=TempF_24Hr 9=Temp_03Hr(+3hr, closest to current with data) 41=AptTempF_24Hr
+// NOHRSC_Snow_Analysis layers: 0=Snow Depth 4=Snow Water Equivalent
+const WEATHER_SOURCES = {
+  // NDFD +3hr temperature — layer 0 (0hr) is always empty; 9 (3hr) is the earliest available
+  tempCurrent:   `${_NWS}/NDFD/NDFD_temp/MapServer/export?bbox={bbox-epsg-3857}&${_AGS}&layers=show:9`,
+  // NDFD 24-hr temperature forecast
+  tempForecast:  `${_NWS}/NDFD/NDFD_temp/MapServer/export?bbox={bbox-epsg-3857}&${_AGS}&layers=show:0`,
+  // MRMS composite reflectivity — current precipitation radar
+  precipRadar:   `https://opengeo.ncep.noaa.gov/geoserver/conus/conus_cref_qcd/ows?service=WMS&version=1.1.1&request=GetMap&layers=conus_cref_qcd&format=image/png&transparent=true&width=256&height=256&srs=EPSG:3857&bbox={bbox-epsg-3857}&styles=`,
+  // MRMS QPE — hourly precipitation accumulation
+  precipAccum:   `${_NWS}/obs/mrms_qpe/ImageServer/exportImage?bbox={bbox-epsg-3857}&${_AGS}`,
+  // NOHRSC analyzed snow depth
+  snowDepth:     `${_NWS}/snow/NOHRSC_Snow_Analysis/MapServer/export?bbox={bbox-epsg-3857}&${_AGS}&layers=show:0`,
+};
+
+interface SpotData {
+  periods: ForecastPeriod[];
+  tempF: number | null;
+  snowDepthIn: number | null;
+}
+
+// Swap fetchSpotData to change the spot forecast/conditions provider.
+// Calls /points/ once, then fans out to forecast + forecastGridData in parallel.
+async function fetchSpotData(lat: number, lng: number): Promise<SpotData> {
+  const headers = { "User-Agent": "(whumpf, backcountry-terrain-app)" };
+  const meta = await fetch(
+    `https://api.weather.gov/points/${lat.toFixed(4)},${lng.toFixed(4)}`,
+    { headers },
+  ).then((r) => (r.ok ? r.json() : null));
+  if (!meta) return { periods: [], tempF: null, snowDepthIn: null };
+
+  const [forecastData, gridData] = await Promise.all([
+    meta.properties?.forecast
+      ? fetch(meta.properties.forecast, { headers }).then((r) => (r.ok ? r.json() : null))
+      : Promise.resolve(null),
+    meta.properties?.forecastGridData
+      ? fetch(meta.properties.forecastGridData, { headers }).then((r) => (r.ok ? r.json() : null))
+      : Promise.resolve(null),
+  ]);
+
+  const periods: ForecastPeriod[] = (forecastData?.properties?.periods ?? []).slice(0, 8);
+  // gridData values: temperature in °C, snowDepth in mm
+  const tempC: number | null = gridData?.properties?.temperature?.values?.[0]?.value ?? null;
+  const snowMm: number | null = gridData?.properties?.snowDepth?.values?.[0]?.value ?? null;
+
+  return {
+    periods,
+    tempF: tempC != null ? tempC * 9 / 5 + 32 : null,
+    snowDepthIn: snowMm != null ? snowMm / 25.4 : null,
+  };
 }
 
 // ── terrain profile types ──────────────────────────────────────────────────────
@@ -68,6 +128,20 @@ interface ProfileSummary {
 interface ProfileResponse {
   summary: ProfileSummary;
   samples: SlopeSample[];
+}
+
+// ── forecast + units types ─────────────────────────────────────────────────────
+
+type Units = "imperial" | "metric";
+
+interface ForecastPeriod {
+  name: string;
+  temperature: number;
+  temperatureUnit: string;
+  windSpeed: string;
+  windDirection: string;
+  shortForecast: string;
+  probabilityOfPrecipitation?: { value: number | null };
 }
 
 interface LayerGroup {
@@ -128,11 +202,22 @@ const LAYER_GROUPS: LayerGroup[] = [
     id: "snowpack",
     label: "Snowpack",
     color: "#4a90d9",
-    active: [],
-    upcoming: [
-      { id: "snotel-swe", label: "SNOTEL SWE" },
-      { id: "snotel-depth", label: "Snow Depth" },
+    active: [
+      {
+        id: "snotel",
+        label: "SNOTEL Stations",
+        kind: "geojson",
+        tiles: [],
+        opacity: 1,
+        defaultVisible: false,
+        noSlider: true,
+        legend: {
+          gradient: "linear-gradient(to right, #d7191c, #f4820a, #ffeb00, #78c679, #1a9641)",
+          stops: ["<50%", "75%", "100%", "125%", ">125%"],
+        },
+      },
     ],
+    upcoming: [],
   },
   {
     id: "avalanche",
@@ -148,11 +233,73 @@ const LAYER_GROUPS: LayerGroup[] = [
     id: "weather",
     label: "Weather",
     color: "#2eaa6e",
-    active: [],
-    upcoming: [
-      { id: "ndfd-precip", label: "Precipitation (NDFD)" },
-      { id: "ndfd-temp", label: "Temperature (NDFD)" },
+    active: [
+      {
+        id: "temp-current",
+        label: "Temp (+3hr, NDFD)",
+        tiles: [WEATHER_SOURCES.tempCurrent],
+        opacity: 0.75,
+        defaultVisible: false,
+        noSlider: true,
+        // NWS NDFD colormap: cyan = freezing, teal-green = cool, lime = mild, yellow = warm
+        legend: {
+          gradient: "linear-gradient(to right, #00d0d0, #20e080, #80e020, #c0e000, #e0e000)",
+          stops: ["0°F", "32°F", "50°F", "70°F", "90°F"],
+        },
+      },
+      {
+        id: "temp-forecast",
+        label: "Temp (24hr fcst)",
+        tiles: [WEATHER_SOURCES.tempForecast],
+        opacity: 0.75,
+        defaultVisible: false,
+        noSlider: true,
+        legend: {
+          gradient: "linear-gradient(to right, #00d0d0, #20e080, #80e020, #c0e000, #e0e000)",
+          stops: ["0°F", "32°F", "50°F", "70°F", "90°F"],
+        },
+      },
+      {
+        id: "precip-radar",
+        label: "Precip radar (now)",
+        tiles: [WEATHER_SOURCES.precipRadar],
+        opacity: 0.8,
+        defaultVisible: false,
+        noSlider: true,
+        // Standard NWS composite reflectivity dBZ colormap
+        legend: {
+          gradient: "linear-gradient(to right, #00cc00, #ffff00, #ff6600, #cc0000, #cc00cc)",
+          stops: ["15 dBZ", "30", "45", "55", "65+"],
+        },
+      },
+      {
+        id: "precip-accum",
+        label: "Precip accum (1hr)",
+        tiles: [WEATHER_SOURCES.precipAccum],
+        opacity: 0.75,
+        defaultVisible: false,
+        noSlider: true,
+        // MRMS QPE colormap: bright cyan for trace, darker blue for heavy
+        legend: {
+          gradient: "linear-gradient(to right, #00e0e0, #00c0e0, #0080d0, #0040b0, #002080)",
+          stops: ["0.01\"", "0.1\"", "0.25\"", "0.5\"", "1\"+"],
+        },
+      },
+      {
+        id: "snow-depth",
+        label: "Snow depth (NOHRSC)",
+        tiles: [WEATHER_SOURCES.snowDepth],
+        opacity: 0.75,
+        defaultVisible: false,
+        noSlider: true,
+        // NOHRSC snow depth colormap: cyan-blue for shallow, dark blue for deep
+        legend: {
+          gradient: "linear-gradient(to right, #60c0c0, #60a0c0, #4060c0, #2020c0, #101080)",
+          stops: ["Trace", "6\"", "24\"", "48\"", "72\"+"],
+        },
+      },
     ],
+    upcoming: [],
   },
 ];
 
@@ -289,6 +436,8 @@ interface PointData {
   elevation?: number;
   slope?: number;
   aspect?: number;
+  tempF?: number | null;
+  snowDepthIn?: number | null;
 }
 
 function aspectCompass(deg: number): string {
@@ -360,6 +509,7 @@ function addOverlayLayers(
 ) {
   const firstLabelId = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
   for (const layer of OVERLAY_LAYERS) {
+    if (layer.kind === "geojson") continue; // managed separately
     map.addSource(layer.id, {
       type: "raster",
       tiles: layer.tiles,
@@ -382,6 +532,64 @@ function addOverlayLayers(
   }
 }
 
+// ── SNOTEL map layer helpers ───────────────────────────────────────────────────
+
+function addSnotelLayers(map: maplibregl.Map) {
+  if (map.getSource("snotel")) return;
+  map.addSource("snotel", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({
+    id: "snotel-circles",
+    type: "circle",
+    source: "snotel",
+    paint: {
+      "circle-color": ["get", "color"],
+      "circle-radius": 9,
+      "circle-stroke-width": 1.5,
+      "circle-stroke-color": "#fff",
+    },
+  });
+  map.addLayer({
+    id: "snotel-names",
+    type: "symbol",
+    source: "snotel",
+    layout: {
+      "text-field": ["get", "name"],
+      "text-size": 9,
+      "text-offset": [0, -1.6],
+      "text-anchor": "bottom",
+      "text-font": ["Open Sans Regular", "Arial Unicode MS Regular"],
+    },
+    paint: { "text-color": "#333", "text-halo-color": "#fff", "text-halo-width": 1.5 },
+  });
+  map.addLayer({
+    id: "snotel-labels",
+    type: "symbol",
+    source: "snotel",
+    layout: {
+      "text-field": ["get", "label"],
+      "text-size": 9,
+      "text-offset": [0, 1.6],
+      "text-anchor": "top",
+      "text-font": ["Open Sans Bold", "Arial Unicode MS Bold"],
+    },
+    paint: { "text-color": "#333", "text-halo-color": "#fff", "text-halo-width": 1 },
+  });
+}
+
+function setSnotelData(map: maplibregl.Map | null, geojson: object) {
+  if (!map) return;
+  const src = map.getSource("snotel") as maplibregl.GeoJSONSource | undefined;
+  src?.setData(geojson as Parameters<typeof src.setData>[0]);
+}
+
+function setSnotelVisibility(map: maplibregl.Map | null, visible: boolean) {
+  if (!map) return;
+  const v = visible ? "visible" : "none";
+  for (const id of ["snotel-circles", "snotel-names", "snotel-labels"]) {
+    if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", v);
+  }
+}
+
 // ── Map component ──────────────────────────────────────────────────────────────
 
 export function Map() {
@@ -401,6 +609,10 @@ export function Map() {
   const [measurePts, setMeasurePts] = useState<[number, number][]>([]);
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
+  const [units, setUnits] = useState<Units>("imperial");
+  const [forecast, setForecast] = useState<ForecastPeriod[] | null>(null);
+  const [forecastLoading, setForecastLoading] = useState(false);
+  const [snotelLoaded, setSnotelLoaded] = useState(false);
 
   // Refs so style-load callbacks can read current state without stale closures.
   const visibleRef = useRef(visible);
@@ -408,9 +620,11 @@ export function Map() {
   useEffect(() => { visibleRef.current = visible; }, [visible]);
   useEffect(() => { opacityRef.current = opacity; }, [opacity]);
 
+  const snotelDataRef = useRef<object | null>(null);
   const measureModeRef = useRef(false);
   const measurePtsRef = useRef<[number, number][]>([]);
   const measureMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const unitsRef = useRef<Units>("imperial");
 
   // Initialise map once.
   useEffect(() => {
@@ -430,10 +644,47 @@ export function Map() {
     map.on("load", () => {
       addOverlayLayers(map, visibleRef.current, opacityRef.current);
       addMeasureLayers(map);
+      addSnotelLayers(map);
+      setSnotelVisibility(map, visibleRef.current["snotel"] ?? false);
     });
+
+    // SNOTEL station popup — look up from the ref to bypass MapLibre's tile serialization.
+    // Shared handler: fires on click of circle, name label, or SWE label.
+    const openSnotelPopup = (feat: maplibregl.MapGeoJSONFeature, lngLat: maplibregl.LngLat) => {
+      // feat.id is used by MapLibre v5+ which promotes properties.id to the feature id
+      const triplet = String(feat.properties?.id ?? feat.id ?? "");
+      type SnotelFC = { features: Array<{ properties: Record<string, unknown> }> };
+      const stored = snotelDataRef.current as SnotelFC | null;
+      const refProps = stored?.features.find((f) => String(f.properties.id) === triplet)?.properties;
+      const p = refProps ?? (feat.properties as Record<string, unknown>);
+      new maplibregl.Popup({ closeButton: true, maxWidth: "260px" })
+        .setLngLat(lngLat)
+        .setHTML(buildSnotelPopupHtml(p, unitsRef.current))
+        .addTo(map);
+    };
+
+    for (const layerId of ["snotel-circles", "snotel-names", "snotel-labels"] as const) {
+      map.on("click", layerId, (e) => {
+        const feat = e.features?.[0];
+        if (!feat) return;
+        openSnotelPopup(feat, e.lngLat);
+        e.originalEvent.stopPropagation();
+      });
+      map.on("mouseenter", layerId, () => { map.getCanvas().style.cursor = "pointer"; });
+      map.on("mouseleave", layerId, () => {
+        if (!measureModeRef.current) map.getCanvas().style.cursor = "";
+      });
+    }
 
     map.on("click", async (e) => {
       const { lng, lat } = e.lngLat;
+
+      // Don't open InfoPanel when the click landed on a SNOTEL feature — the
+      // layer-specific handler already opened the popup.
+      const onSnotel = map.queryRenderedFeatures(e.point, {
+        layers: ["snotel-circles", "snotel-names", "snotel-labels"],
+      });
+      if (onSnotel.length > 0) return;
 
       if (measureModeRef.current) {
         const pts = measurePtsRef.current;
@@ -446,6 +697,9 @@ export function Map() {
       }
 
       setPoint({ lon: lng, lat, loading: true });
+      setForecast(null);
+      setForecastLoading(true);
+
       const pick = (name: string) =>
         fetch(
           `${TITILER_URL}/cog/point/${lng},${lat}?url=${encodeURIComponent(cogS3(`${REGION}/${name}.tif`))}`,
@@ -453,12 +707,15 @@ export function Map() {
           .then((r) => (r.ok ? r.json() : null))
           .then((d) => d?.values?.[0] as number | undefined)
           .catch(() => undefined);
-      const [elevation, slope, aspect] = await Promise.all([
-        pick("dem"),
-        pick("slope"),
-        pick("aspect"),
+
+      const [[elevation, slope, aspect], spotData] = await Promise.all([
+        Promise.all([pick("dem"), pick("slope"), pick("aspect")]),
+        fetchSpotData(lat, lng).catch(() => ({ periods: [] as ForecastPeriod[], tempF: null, snowDepthIn: null })),
       ]);
-      setPoint({ lon: lng, lat, loading: false, elevation, slope, aspect });
+
+      setPoint({ lon: lng, lat, loading: false, elevation, slope, aspect, tempF: spotData.tempF, snowDepthIn: spotData.snowDepthIn });
+      setForecast(spotData.periods.length ? spotData.periods : null);
+      setForecastLoading(false);
     });
 
     mapRef.current = map;
@@ -474,35 +731,35 @@ export function Map() {
       addOverlayLayers(map, visibleRef.current, opacityRef.current);
       addMeasureLayers(map);
       updateMeasureSource(map, measurePtsRef.current);
+      addSnotelLayers(map);
+      if (snotelDataRef.current) setSnotelData(map, snotelDataRef.current);
+      setSnotelVisibility(map, visibleRef.current["snotel"] ?? false);
     });
   }, [dark]);
 
   // Sync visibility state → MapLibre.
+  // Don't gate on isStyleLoaded() — it returns false while tiles load (style layers still exist).
+  // Layers that don't exist yet (e.g., during a style switch) are skipped; addOverlayLayers
+  // adds them back with the correct visibility from visibleRef.current on style.load.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const apply = () => {
-      for (const [id, isVis] of Object.entries(visible)) {
-        if (map.getLayer(id))
-          map.setLayoutProperty(id, "visibility", isVis ? "visible" : "none");
-      }
-    };
-    if (map.isStyleLoaded()) apply();
-    else map.once("styledata", apply);
+    for (const [id, isVis] of Object.entries(visible)) {
+      if (map.getLayer(id))
+        map.setLayoutProperty(id, "visibility", isVis ? "visible" : "none");
+    }
   }, [visible]);
 
   // Sync opacity state → MapLibre.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const apply = () => {
-      for (const [id, op] of Object.entries(opacity)) {
-        if (map.getLayer(id)) map.setPaintProperty(id, "raster-opacity", op);
-      }
-    };
-    if (map.isStyleLoaded()) apply();
-    else map.once("styledata", apply);
+    for (const [id, op] of Object.entries(opacity)) {
+      if (map.getLayer(id)) map.setPaintProperty(id, "raster-opacity", op);
+    }
   }, [opacity]);
+
+  useEffect(() => { unitsRef.current = units; }, [units]);
 
   // Cursor + cleanup when measure mode toggles.
   useEffect(() => {
@@ -544,6 +801,26 @@ export function Map() {
     }
   }, [measurePts]);
 
+  // Fetch SNOTEL data the first time the layer is enabled.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!visible["snotel"]) {
+      setSnotelVisibility(map, false);
+      return;
+    }
+    setSnotelVisibility(map, true);
+    if (snotelLoaded) return;
+    fetch(`${API_URL}/snowpack/stations`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((geojson) => {
+        if (!geojson) return;
+        snotelDataRef.current = geojson;
+        setSnotelData(mapRef.current, geojson);
+        setSnotelLoaded(true);
+      })
+      .catch((err) => console.warn("SNOTEL fetch failed", err));
+  }, [visible, snotelLoaded]);
+
   const theme = dark ? THEMES.dark : THEMES.light;
 
   function flyToCoords(lat: number, lon: number) {
@@ -565,10 +842,12 @@ export function Map() {
         visible={visible}
         opacity={opacity}
         dark={dark}
+        units={units}
         theme={theme}
         onToggle={(id) => setVisible((v) => ({ ...v, [id]: !v[id] }))}
         onOpacity={(id, val) => setOpacity((o) => ({ ...o, [id]: val }))}
         onDarkToggle={() => setDark((d) => !d)}
+        onUnitsToggle={() => setUnits((u) => (u === "imperial" ? "metric" : "imperial"))}
       />
       <MeasureButton
         active={measureMode}
@@ -580,12 +859,20 @@ export function Map() {
           pts={measurePts}
           loading={profileLoading}
           profile={profile}
+          units={units}
           theme={theme}
           onClose={() => setMeasureMode(false)}
         />
       )}
       {!measureMode && point && (
-        <InfoPanel data={point} theme={theme} onClose={() => setPoint(null)} />
+        <InfoPanel
+          data={point}
+          forecast={forecast}
+          forecastLoading={forecastLoading}
+          units={units}
+          theme={theme}
+          onClose={() => { setPoint(null); setForecast(null); }}
+        />
       )}
     </>
   );
@@ -598,19 +885,23 @@ function LayerPanel({
   visible,
   opacity,
   dark,
+  units,
   theme,
   onToggle,
   onOpacity,
   onDarkToggle,
+  onUnitsToggle,
 }: {
   groups: LayerGroup[];
   visible: Record<string, boolean>;
   opacity: Record<string, number>;
   dark: boolean;
+  units: Units;
   theme: Theme;
   onToggle: (id: string) => void;
   onOpacity: (id: string, val: number) => void;
   onDarkToggle: () => void;
+  onUnitsToggle: () => void;
 }) {
   return (
     <div
@@ -647,22 +938,42 @@ function LayerPanel({
         <span style={{ fontWeight: 700, fontSize: 12, letterSpacing: "0.08em", color: theme.muted }}>
           LAYERS
         </span>
-        <button
-          onClick={onDarkToggle}
-          title={dark ? "Switch to light mode" : "Switch to dark mode"}
-          style={{
-            background: "none",
-            border: "none",
-            cursor: "pointer",
-            fontSize: 15,
-            padding: "2px 4px",
-            borderRadius: 4,
-            color: theme.text,
-            lineHeight: 1,
-          }}
-        >
-          {dark ? "☀️" : "🌙"}
-        </button>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button
+            onClick={onUnitsToggle}
+            title={`Switch to ${units === "imperial" ? "metric" : "imperial"}`}
+            style={{
+              background: "none",
+              border: `1px solid ${theme.divider}`,
+              borderRadius: 4,
+              cursor: "pointer",
+              fontSize: 10,
+              fontWeight: 700,
+              padding: "2px 5px",
+              color: theme.muted,
+              lineHeight: 1,
+              letterSpacing: "0.04em",
+            }}
+          >
+            {units === "imperial" ? "metric" : "imperial"}
+          </button>
+          <button
+            onClick={onDarkToggle}
+            title={dark ? "Switch to light mode" : "Switch to dark mode"}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontSize: 15,
+              padding: "2px 4px",
+              borderRadius: 4,
+              color: theme.text,
+              lineHeight: 1,
+            }}
+          >
+            {dark ? "☀️" : "🌙"}
+          </button>
+        </div>
       </div>
 
       {/* Groups */}
@@ -715,15 +1026,17 @@ function LayerPanel({
                 />
                 <span>{layer.label}</span>
               </label>
-              <input
-                type="range"
-                min={0}
-                max={1}
-                step={0.05}
-                value={opacity[layer.id] ?? layer.opacity}
-                onChange={(e) => onOpacity(layer.id, parseFloat(e.target.value))}
-                style={{ width: "100%", accentColor: group.color, margin: 0, display: "block" }}
-              />
+              {!layer.noSlider && (
+                <input
+                  type="range"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={opacity[layer.id] ?? layer.opacity}
+                  onChange={(e) => onOpacity(layer.id, parseFloat(e.target.value))}
+                  style={{ width: "100%", accentColor: group.color, margin: 0, display: "block" }}
+                />
+              )}
               {layer.legend && visible[layer.id] && (
                 <div style={{ marginTop: 4 }}>
                   <div style={{ height: 7, borderRadius: 3, background: layer.legend.gradient }} />
@@ -790,20 +1103,72 @@ function LayerPanel({
 
 // ── InfoPanel ──────────────────────────────────────────────────────────────────
 
+// ── SNOTEL popup HTML (plain HTML string for maplibregl.Popup) ─────────────────
+
+function coerceNum(v: unknown): number | null {
+  if (v == null || v === "null" || v === "") return null;
+  const n = Number(v);
+  return isNaN(n) || n === -9999 ? null : n;
+}
+
+function buildSnotelPopupHtml(p: Record<string, unknown>, units: Units): string {
+  const imp = units === "imperial";
+  const swe   = coerceNum(p.swe_in);
+  const depth = coerceNum(p.snow_depth_in);
+  const temp  = coerceNum(p.temp_f);
+  const pct   = coerceNum(p.swe_pct_normal);
+  const elev  = coerceNum(p.elevation_ft);
+
+  const sweStr = swe != null ? (imp ? `${swe.toFixed(1)}"` : `${(swe * 25.4).toFixed(0)} mm`) : "—";
+  const depthStr = depth != null ? (imp ? `${depth.toFixed(0)}"` : `${(depth * 2.54).toFixed(0)} cm`) : "—";
+  const tempStr = temp != null ? (imp ? `${temp.toFixed(0)}°F` : `${((temp - 32) * 5 / 9).toFixed(1)}°C`) : "—";
+  const elevStr = elev != null ? (imp ? `${elev.toFixed(0)} ft` : `${(elev * 0.3048).toFixed(0)} m`) : "—";
+  const pctStr = pct != null ? `${pct.toFixed(0)}% of normal` : "% of normal unavailable";
+  const color = String(p.color ?? "#888");
+
+  return `<div style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:13px;min-width:180px;color:#1a1a1a;background:#fff;padding:2px">
+    <div style="font-weight:700;margin-bottom:6px;color:#1a1a1a">${p.name ?? "Station"}</div>
+    <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
+      <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};border:1.5px solid #fff;box-shadow:0 0 0 1px #ccc"></span>
+      <span style="color:${color};font-weight:600">${pctStr}</span>
+    </div>
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <tr><td style="color:#777;padding:2px 0">SWE</td><td style="text-align:right;font-weight:600;color:#1a1a1a">${sweStr}</td></tr>
+      <tr><td style="color:#777;padding:2px 0">Snow depth</td><td style="text-align:right;font-weight:600;color:#1a1a1a">${depthStr}</td></tr>
+      <tr><td style="color:#777;padding:2px 0">Temperature</td><td style="text-align:right;font-weight:600;color:#1a1a1a">${tempStr}</td></tr>
+      <tr><td style="color:#777;padding:2px 0">Elevation</td><td style="text-align:right;color:#1a1a1a">${elevStr}</td></tr>
+    </table>
+    <div style="color:#aaa;font-size:10px;margin-top:6px">Updated ${p.updated ?? "—"}</div>
+  </div>`;
+}
+
+// ── InfoPanel ──────────────────────────────────────────────────────────────────
+
 function InfoPanel({
   data,
+  forecast,
+  forecastLoading,
+  units,
   theme,
   onClose,
 }: {
   data: PointData;
+  forecast: ForecastPeriod[] | null;
+  forecastLoading: boolean;
+  units: Units;
   theme: Theme;
   onClose: () => void;
 }) {
+  const imp = units === "imperial";
   const fmt = (n: number | undefined, dec = 0) =>
     n == null || n === -9999 ? "—" : n.toFixed(dec);
 
   const elevM = data.elevation != null && data.elevation !== -9999 ? data.elevation : null;
-  const elevFt = elevM != null ? (elevM * 3.28084).toFixed(0) : null;
+  const elevStr = elevM != null
+    ? imp
+      ? `${(elevM * 3.28084).toFixed(0)} ft`
+      : `${elevM.toFixed(0)} m`
+    : "—";
 
   return (
     <div
@@ -814,52 +1179,109 @@ function InfoPanel({
         transform: "translateX(-50%)",
         background: theme.panel,
         borderRadius: 8,
-        padding: "9px 16px",
+        padding: "10px 16px",
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
         fontSize: 13,
         color: theme.text,
-        boxShadow: "0 2px 10px rgba(0,0,0,0.22)",
-        display: "flex",
-        alignItems: "center",
-        gap: 20,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.24)",
         zIndex: 1000,
-        whiteSpace: "nowrap",
+        maxWidth: "calc(100vw - 40px)",
+        minWidth: 320,
       }}
     >
-      {data.loading ? (
-        <span style={{ color: theme.muted }}>Loading…</span>
-      ) : (
-        <>
-          <span>
-            <b>Elev</b>{" "}
-            {elevM != null ? `${fmt(elevM)} m / ${elevFt} ft` : "—"}
-          </span>
-          <span><b>Slope</b> {fmt(data.slope, 1)}°</span>
-          <span>
-            <b>Aspect</b>{" "}
-            {data.aspect != null && data.aspect !== -9999
-              ? `${fmt(data.aspect, 0)}° ${aspectCompass(data.aspect)}`
-              : "—"}
-          </span>
-          <span style={{ color: theme.muted, fontSize: 11 }}>
-            {data.lat.toFixed(4)}°, {data.lon.toFixed(4)}°
-          </span>
-        </>
+      {/* Terrain row */}
+      <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
+        {data.loading ? (
+          <span style={{ color: theme.muted }}>Loading…</span>
+        ) : (
+          <>
+            <span><b>Elev</b> {elevStr}</span>
+            <span><b>Slope</b> {fmt(data.slope, 1)}°</span>
+            <span>
+              <b>Aspect</b>{" "}
+              {data.aspect != null && data.aspect !== -9999
+                ? `${fmt(data.aspect, 0)}° ${aspectCompass(data.aspect)}`
+                : "—"}
+            </span>
+            {data.tempF != null && (
+              <span>
+                <b>Temp</b>{" "}
+                {imp
+                  ? `${Math.round(data.tempF)}°F`
+                  : `${Math.round((data.tempF - 32) * 5 / 9)}°C`}
+              </span>
+            )}
+            {data.snowDepthIn != null && data.snowDepthIn > 0 && (
+              <span>
+                <b>Snow</b>{" "}
+                {imp
+                  ? `${data.snowDepthIn.toFixed(0)}"`
+                  : `${Math.round(data.snowDepthIn * 2.54)} cm`}
+              </span>
+            )}
+            <span style={{ color: theme.muted, fontSize: 11 }}>
+              {data.lat.toFixed(4)}°, {data.lon.toFixed(4)}°
+            </span>
+          </>
+        )}
+        <button
+          onClick={onClose}
+          style={{
+            marginLeft: "auto",
+            background: "none",
+            border: "none",
+            cursor: "pointer",
+            color: theme.muted,
+            fontSize: 16,
+            lineHeight: 1,
+            padding: 0,
+            flexShrink: 0,
+          }}
+        >
+          ×
+        </button>
+      </div>
+
+      {/* Forecast rows */}
+      {forecastLoading && (
+        <div style={{ marginTop: 8, color: theme.muted, fontSize: 12 }}>Loading forecast…</div>
       )}
-      <button
-        onClick={onClose}
-        style={{
-          background: "none",
-          border: "none",
-          cursor: "pointer",
-          color: theme.muted,
-          fontSize: 16,
-          lineHeight: 1,
-          padding: "0 0 0 4px",
-        }}
-      >
-        ×
-      </button>
+      {!forecastLoading && forecast && forecast.length > 0 && (
+        <div style={{ marginTop: 8, borderTop: `1px solid ${theme.divider}`, paddingTop: 8 }}>
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: `repeat(${Math.min(forecast.length, 4)}, 1fr)`,
+              gap: "6px 10px",
+            }}
+          >
+            {forecast.slice(0, 8).map((p, i) => {
+              const tempVal = p.temperature;
+              const tempStr = imp
+                ? `${tempVal}°F`
+                : `${((tempVal - 32) * 5 / 9).toFixed(0)}°C`;
+              // NWS wind is always mph strings like "15 mph" or "10 to 20 mph"
+              const windStr = imp
+                ? p.windSpeed
+                : p.windSpeed.replace(/\d+/g, (n) => String(Math.round(Number(n) * 1.60934))).replace("mph", "km/h");
+              const precip = p.probabilityOfPrecipitation?.value;
+              return (
+                <div key={i} style={{ fontSize: 11 }}>
+                  <div style={{ fontWeight: 700, color: theme.muted, marginBottom: 2 }}>
+                    {p.name}
+                  </div>
+                  <div style={{ fontWeight: 600 }}>{tempStr}</div>
+                  <div style={{ color: theme.muted }}>{windStr} {p.windDirection}</div>
+                  {precip != null && (
+                    <div style={{ color: "#4a90d9" }}>{precip}% precip</div>
+                  )}
+                  <div style={{ color: theme.muted, marginTop: 1 }}>{p.shortForecast}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -908,29 +1330,38 @@ function MeasurePanel({
   pts,
   loading,
   profile,
+  units,
   theme,
   onClose,
 }: {
   pts: [number, number][];
   loading: boolean;
   profile: ProfileResponse | null;
+  units: Units;
   theme: Theme;
   onClose: () => void;
 }) {
+  const imp = units === "imperial";
   let content: React.ReactNode;
 
   if (loading) {
     content = <span style={{ color: theme.muted }}>Sampling terrain…</span>;
   } else if (profile) {
     const s = profile.summary;
-    const distMi = (s.distance_m / 1609.344).toFixed(2);
-    const gainFt = s.elevation_gain_m != null ? Math.round(s.elevation_gain_m * 3.28084) : null;
-    const lossFt = s.elevation_loss_m != null ? Math.round(s.elevation_loss_m * 3.28084) : null;
+    const distStr = imp
+      ? `${(s.distance_m / 1609.344).toFixed(2)} mi`
+      : `${(s.distance_m / 1000).toFixed(2)} km`;
+    const gainStr = s.elevation_gain_m != null
+      ? imp ? `+${Math.round(s.elevation_gain_m * 3.28084)} ft` : `+${Math.round(s.elevation_gain_m)} m`
+      : null;
+    const lossStr = s.elevation_loss_m != null
+      ? imp ? `−${Math.round(s.elevation_loss_m * 3.28084)} ft` : `−${Math.round(s.elevation_loss_m)} m`
+      : null;
     const avg = s.avg_slope_deg;
     content = (
       <>
         <span style={{ color: theme.muted, fontSize: 11 }}>A→B</span>
-        <span><b>Dist</b> {distMi} mi</span>
+        <span><b>Dist</b> {distStr}</span>
         <span>
           <b>Avg slope</b>{" "}
           <span style={{ color: avg != null ? slopeColor(avg) : theme.muted, fontWeight: 700 }}>
@@ -938,8 +1369,8 @@ function MeasurePanel({
           </span>
         </span>
         <span><b>Max</b> {s.max_slope_deg != null ? `${s.max_slope_deg.toFixed(1)}°` : "—"}</span>
-        {gainFt != null && <span style={{ color: "#1a9641" }}>+{gainFt} ft</span>}
-        {lossFt != null && <span style={{ color: theme.muted }}>−{lossFt} ft</span>}
+        {gainStr && <span style={{ color: "#1a9641" }}>{gainStr}</span>}
+        {lossStr && <span style={{ color: theme.muted }}>{lossStr}</span>}
       </>
     );
   } else if (pts.length === 1) {

@@ -58,7 +58,7 @@ _SLOPE_CMAP = json.dumps(_build_slope_colormap())
 
 
 @router.get("/slope/{z}/{x}/{y}")
-async def slope_tile(z: int, x: int, y: int, region: str = "colorado") -> Response:
+async def slope_tile(z: int, x: int, y: int, region: str = "sanjuans") -> Response:
     """Proxy a slope tile from TiTiler with the CalTopo V1 color ramp."""
     settings = get_settings()
     async with httpx.AsyncClient(timeout=15) as client:

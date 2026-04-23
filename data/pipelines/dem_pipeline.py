@@ -32,6 +32,7 @@ try:
     from rasterio.merge import merge as rio_merge
     from rasterio.shutil import copy as rio_copy
     from rasterio import warp as rwarp
+    from rasterio.windows import Window
     import boto3
     from botocore.client import Config
 except ImportError as exc:
@@ -172,15 +173,14 @@ def mosaic_and_reproject(paths: list[Path], out_path: Path,
                          clip_bounds: tuple | None = None) -> tuple:
     """
     Merge tiles (optionally clipped to clip_bounds), reproject to EPSG:3857,
-    write as COG.  Returns (arr_1hw, profile, transform).
+    write as COG.  Returns (None, profile, transform) — the array is NOT kept
+    in memory; use compute_derivatives_windowed to read dem_path in strips.
     Skips the heavy computation if out_path already exists.
 
     clip_bounds: (W, S, E, N) in source CRS (geographic degrees).
-    Passing a small bbox here is the main lever for fast test runs — only the
-    pixels inside the box are processed at every subsequent step.
     """
     if out_path.exists():
-        step(f"DEM COG exists, loading from {out_path.name} ...")
+        step(f"DEM COG exists, reading metadata from {out_path.name} ...")
         with rasterio.open(out_path) as ds:
             dst_tf = ds.transform
             profile = {
@@ -193,9 +193,8 @@ def mosaic_and_reproject(paths: list[Path], out_path: Path,
                 "transform": dst_tf,
                 "nodata": ds.nodata,
             }
-            dem_arr = ds.read()
-        print(f"  shape={dem_arr.shape}  nodata={profile['nodata']}")
-        return dem_arr, profile, dst_tf
+        print(f"  {profile['width']}×{profile['height']}  nodata={profile['nodata']}")
+        return None, profile, dst_tf
 
     step(f"Mosaicking {len(paths)} tiles ...")
     srcs = [rasterio.open(p) for p in paths]
@@ -242,100 +241,140 @@ def mosaic_and_reproject(paths: list[Path], out_path: Path,
     }
     print(f"  reprojected  shape={dst.shape}")
     write_cog(dst, profile, out_path)
+    del dst
+    gc.collect()
     print(f"  → {out_path.name}")
-    return dst, profile, dst_tf
+    return None, profile, dst_tf
 
 
-def _dem_gradients(dem_2d: np.ndarray, res_x: float, res_y: float):
-    """
-    Return (dx, dy) geographic gradients from a raster-convention 2D array.
-    Row 0 is north; negating the row-gradient converts to geographic y convention.
-    Negate in-place to avoid an extra full-array allocation.
-    """
-    dy_arr, dx = np.gradient(dem_2d, res_y, res_x)
-    dy_arr *= -1  # in-place: array rows increase southward → geography y increases northward
-    return dx, dy_arr
-
-
-def compute_hillshade(
-    dem: np.ndarray,
+def compute_derivatives_windowed(
+    dem_path: Path,
+    cog_dir: Path,
     res_x: float,
     res_y: float,
     nodata=None,
+    strip_height: int = 2048,
+    overlap: int = 32,
     azimuth: float = 315.0,
     altitude: float = 45.0,
-) -> np.ndarray:
-    """Return hillshade as uint8 array (1 × H × W). Sun at NW, 45° altitude.
-
-    Uses float32 throughout and in-place operations to keep peak memory near
-    3× the DEM size rather than 6× (the float64 equivalent).
+) -> tuple[Path, Path, Path]:
     """
-    step("Computing hillshade ...")
-    d = dem[0].astype(np.float32)
-    if nodata is not None:
-        d = np.where(d == nodata, np.nan, d)
+    Compute hillshade, slope, and aspect from dem_path in horizontal strips so
+    peak RAM stays around 2-3 GB regardless of DEM size.
 
-    dx, dy = _dem_gradients(d, res_x, res_y)
-    del d
+    Each strip is read with `overlap` rows of padding above and below for
+    accurate np.gradient values at strip boundaries.  Only the interior
+    (non-overlap) rows are written to output.
+    """
+    step("Computing hillshade / slope / aspect (windowed) ...")
 
-    slope = np.arctan(np.sqrt(dx**2 + dy**2))
-    aspect = np.arctan2(dy, dx)   # math convention (CCW from east)
-    del dx, dy
+    hs_path    = cog_dir / "hillshade.tif"
+    slope_path = cog_dir / "slope.tif"
+    aspect_path = cog_dir / "aspect.tif"
 
     sun_zenith  = float(np.radians(90.0 - altitude))
     sun_azimuth = float(np.radians(360.0 - azimuth + 90.0))  # geographic → math
 
-    # In-place construction of shade to avoid keeping multiple full float32 arrays
-    shade = np.cos(sun_zenith) * np.cos(slope)          # 1 temp (cos slope), then shade
-    tmp = sun_azimuth - aspect
-    del aspect
-    np.cos(tmp, out=tmp)                                 # cos in-place
-    np.multiply(tmp, np.sin(slope), out=tmp)             # 1 temp (sin slope)
-    del slope
-    tmp *= np.sin(sun_zenith)                            # scalar, no alloc
-    shade += tmp
-    del tmp
+    common = dict(driver="GTiff", tiled=True, blockxsize=512, blockysize=512,
+                  compress="deflate", BIGTIFF="YES")
 
-    np.clip(shade, 0.0, 1.0, out=shade)
-    shade *= 255.0
-    np.nan_to_num(shade, nan=0.0, copy=False)
-    hs = shade.astype(np.uint8)
-    del shade
-    return hs[np.newaxis]
+    hs_tmp     = str(hs_path)    + ".tmp.tif"
+    slope_tmp  = str(slope_path) + ".tmp.tif"
+    aspect_tmp = str(aspect_path) + ".tmp.tif"
 
+    with rasterio.open(dem_path) as dem_ds:
+        height = dem_ds.height
+        width  = dem_ds.width
+        nd     = nodata if nodata is not None else dem_ds.nodata
+        base   = dict(width=width, height=height, count=1, crs=dem_ds.crs,
+                      transform=dem_ds.transform)
 
-def compute_slope(dem: np.ndarray, res_x: float, res_y: float, nodata=None) -> np.ndarray:
-    """Return slope in degrees as float32 array (1 × H × W). Nodata = -9999."""
-    step("Computing slope ...")
-    d = dem[0].astype(np.float32)
-    if nodata is not None:
-        d = np.where(d == nodata, np.nan, d)
+        hs_prof    = {**base, "dtype": "uint8",   "nodata": 0}
+        slope_prof = {**base, "dtype": "float32", "nodata": -9999.0}
+        asp_prof   = {**base, "dtype": "float32", "nodata": -9999.0}
 
-    dx, dy = _dem_gradients(d, res_x, res_y)
-    del d
-    slope = np.degrees(np.arctan(np.sqrt(dx**2 + dy**2)))
-    del dx, dy
-    np.nan_to_num(slope, nan=-9999.0, copy=False)
-    return slope[np.newaxis]
+        with (
+            rasterio.open(hs_tmp,    "w", **{**hs_prof,    **common}) as hs_ds,
+            rasterio.open(slope_tmp, "w", **{**slope_prof, **common}) as sl_ds,
+            rasterio.open(aspect_tmp,"w", **{**asp_prof,   **common}) as as_ds,
+        ):
+            n_strips = (height + strip_height - 1) // strip_height
+            for i in range(n_strips):
+                r_start = i * strip_height
+                r_end   = min(r_start + strip_height, height)
 
+                read_start = max(0, r_start - overlap)
+                read_end   = min(height, r_end + overlap)
+                top_pad    = r_start - read_start   # rows of padding at top of read window
 
-def compute_aspect(dem: np.ndarray, res_x: float, res_y: float, nodata=None) -> np.ndarray:
-    """
-    Return aspect in degrees (0 = north, clockwise) as float32 (1 × H × W).
-    Nodata = -9999.
-    """
-    step("Computing aspect ...")
-    d = dem[0].astype(np.float32)
-    if nodata is not None:
-        d = np.where(d == nodata, np.nan, d)
+                win = Window(col_off=0, row_off=read_start,
+                             width=width, height=read_end - read_start)
+                d = dem_ds.read(1, window=win).astype(np.float32)
 
-    dx, dy = _dem_gradients(d, res_x, res_y)
-    del d
-    # atan2(dx, dy): dy>0 (uphill north), dx=0 → 0° = north ✓
-    aspect = np.degrees(np.arctan2(dx, dy)) % 360.0
-    del dx, dy
-    np.nan_to_num(aspect, nan=-9999.0, copy=False)
-    return aspect[np.newaxis]
+                if nd is not None:
+                    d[d == nd] = np.nan
+
+                # Gradient: rows increase southward; negate dy for geographic north
+                dy_arr, dx = np.gradient(d, res_y, res_x)
+                dy_arr *= -1
+                del d
+
+                s    = top_pad
+                e_r  = s + (r_end - r_start)
+
+                # Extract interior rows from gradient arrays (slices → new arrays)
+                dx_i  = dx[s:e_r].copy()
+                dy_i  = dy_arr[s:e_r].copy()
+                del dx, dy_arr
+
+                mag        = np.sqrt(dx_i**2 + dy_i**2)
+                slope_rad  = np.arctan(mag)
+                del mag
+                aspect_rad = np.arctan2(dy_i, dx_i)
+                del dx_i, dy_i
+
+                # Hillshade
+                shade = (
+                    np.cos(sun_zenith) * np.cos(slope_rad)
+                    + np.sin(sun_zenith) * np.sin(slope_rad) * np.cos(sun_azimuth - aspect_rad)
+                )
+                np.clip(shade, 0.0, 1.0, out=shade)
+                shade *= 255.0
+                np.nan_to_num(shade, nan=0.0, copy=False)
+                hs_strip = shade.astype(np.uint8)
+                del shade
+
+                # Slope (degrees)
+                slope_deg = np.degrees(slope_rad)
+                del slope_rad
+                np.nan_to_num(slope_deg, nan=-9999.0, copy=False)
+
+                # Aspect (degrees, 0=north clockwise)
+                aspect_deg = np.degrees(aspect_rad) % 360.0
+                del aspect_rad
+                np.nan_to_num(aspect_deg, nan=-9999.0, copy=False)
+
+                out_win = Window(col_off=0, row_off=r_start,
+                                 width=width, height=r_end - r_start)
+                hs_ds.write(hs_strip[np.newaxis],                     window=out_win)
+                sl_ds.write(slope_deg[np.newaxis].astype(np.float32), window=out_win)
+                as_ds.write(aspect_deg[np.newaxis].astype(np.float32),window=out_win)
+
+                del hs_strip, slope_deg, aspect_deg
+                print(f"  strip {i+1}/{n_strips}  rows {r_start}–{r_end-1}", flush=True)
+
+    # Build overviews and finalize each output as a COG
+    for tmp, out in [(hs_tmp, hs_path), (slope_tmp, slope_path), (aspect_tmp, aspect_path)]:
+        step(f"Finalizing {out.name} ...")
+        with rasterio.open(tmp, "r+") as ds:
+            ds.build_overviews([2, 4, 8, 16, 32, 64], Resampling.average)
+            ds.update_tags(ns="rio_overview", resampling="average")
+        rio_copy(tmp, str(out), copy_src_overviews=True,
+                 driver="GTiff", tiled=True, blockxsize=512, blockysize=512,
+                 compress="deflate", BIGTIFF="YES")
+        os.remove(tmp)
+
+    return hs_path, slope_path, aspect_path
 
 
 def write_cog(arr: np.ndarray, profile: dict, out_path: Path) -> None:
@@ -481,37 +520,22 @@ def main() -> None:
     # Pass bbox as clip_bounds so the merge output is trimmed to exactly the
     # requested area — critical for fast test runs with small bboxes.
     clip_bounds = (bbox[0], bbox[1], bbox[2], bbox[3])  # W, S, E, N
-    dem_arr, base_profile, dst_tf = mosaic_and_reproject(tile_paths, dem_path,
-                                                         clip_bounds=clip_bounds)
+    _, base_profile, dst_tf = mosaic_and_reproject(tile_paths, dem_path,
+                                                   clip_bounds=clip_bounds)
 
-    # Pixel dimensions in metres (EPSG:3857 native unit)
-    res_x = abs(dst_tf.a)   # column spacing (east)
-    res_y = abs(dst_tf.e)   # row spacing (south — already positive here)
+    res_x  = abs(dst_tf.a)   # column spacing (east)
+    res_y  = abs(dst_tf.e)   # row spacing (south — already positive here)
     nodata = base_profile.get("nodata")
 
-    # ── 3. hillshade ─────────────────────────────────────────────────────────
-    hs_arr = compute_hillshade(dem_arr, res_x, res_y, nodata=nodata)
-    hs_path = cog_dir / "hillshade.tif"
-    write_cog(hs_arr, {**base_profile, "dtype": "uint8", "nodata": 0}, hs_path)
-    print(f"  → {hs_path.name}")
-    del hs_arr
-    gc.collect()
-
-    # ── 4. slope ─────────────────────────────────────────────────────────────
-    slope_arr = compute_slope(dem_arr, res_x, res_y, nodata=nodata)
+    # ── 3–5. hillshade / slope / aspect (windowed — no large arrays in RAM) ───
+    hs_path    = cog_dir / "hillshade.tif"
     slope_path = cog_dir / "slope.tif"
-    write_cog(slope_arr, {**base_profile, "dtype": "float32", "nodata": -9999.0}, slope_path)
-    print(f"  → {slope_path.name}")
-    del slope_arr
-    gc.collect()
-
-    # ── 5. aspect ─────────────────────────────────────────────────────────────
-    aspect_arr = compute_aspect(dem_arr, res_x, res_y, nodata=nodata)
     aspect_path = cog_dir / "aspect.tif"
-    write_cog(aspect_arr, {**base_profile, "dtype": "float32", "nodata": -9999.0}, aspect_path)
-    print(f"  → {aspect_path.name}")
-    del aspect_arr
-    gc.collect()
+
+    if hs_path.exists() and slope_path.exists() and aspect_path.exists():
+        step("Derivative COGs exist — skipping hillshade/slope/aspect.")
+    else:
+        compute_derivatives_windowed(dem_path, cog_dir, res_x, res_y, nodata=nodata)
 
     # ── 6. upload ─────────────────────────────────────────────────────────────
     prefix = args.region.rstrip("/")
