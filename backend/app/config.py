@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     titiler_url: str = "http://titiler:8000"
     martin_url: str = "http://martin:3000"
 
+    # --- Strava OAuth --------------------------------------------------------
+    strava_client_id: str = ""
+    strava_client_secret: str = ""
+    strava_redirect_uri: str = "http://localhost:8000/auth/strava/callback"
+    strava_success_url: str = "http://localhost:5173"
+
     # --- CORS ---------------------------------------------------------------
     cors_allow_origins: str = "http://localhost:5173"
 

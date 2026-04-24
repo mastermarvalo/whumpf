@@ -158,6 +158,10 @@ services:
       TITILER_URL: http://localhost:8001
       MARTIN_URL: http://localhost:3000
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS:-http://localhost:5173}
+      STRAVA_CLIENT_ID: ${STRAVA_CLIENT_ID:-}
+      STRAVA_CLIENT_SECRET: ${STRAVA_CLIENT_SECRET:-}
+      STRAVA_REDIRECT_URI: ${STRAVA_REDIRECT_URI:-http://localhost:8000/auth/strava/callback}
+      STRAVA_SUCCESS_URL: ${STRAVA_SUCCESS_URL:-http://localhost:5173}
     volumes:
       - ./backend/app:/app/app
     ulimits:

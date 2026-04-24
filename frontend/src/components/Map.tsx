@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import { apiFetch } from "../auth";
+import type { StravaStatus } from "../App";
 
 const TITILER_URL = import.meta.env.VITE_TITILER_URL ?? "http://localhost:8001";
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -591,9 +592,46 @@ function setSnotelVisibility(map: maplibregl.Map | null, visible: boolean) {
   }
 }
 
+// ── Strava map layer helpers ───────────────────────────────────────────────────
+
+function addStravaLayers(map: maplibregl.Map) {
+  if (map.getSource("strava")) return;
+  map.addSource("strava", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({
+    id: "strava-lines",
+    type: "line",
+    source: "strava",
+    paint: {
+      "line-color": ["get", "color"],
+      "line-width": 2,
+      "line-opacity": 0.75,
+    },
+  });
+}
+
+function setStravaData(map: maplibregl.Map | null, geojson: object) {
+  if (!map) return;
+  const src = map.getSource("strava") as maplibregl.GeoJSONSource | undefined;
+  src?.setData(geojson as Parameters<typeof src.setData>[0]);
+}
+
+function setStravaVisibility(map: maplibregl.Map | null, visible: boolean) {
+  if (!map) return;
+  if (map.getLayer("strava-lines"))
+    map.setLayoutProperty("strava-lines", "visibility", visible ? "visible" : "none");
+}
+
 // ── Map component ──────────────────────────────────────────────────────────────
 
-export function Map({ onLogout }: { onLogout: () => void }) {
+export function Map({
+  onLogout,
+  stravaStatus,
+  onStravaStatusChange,
+}: {
+  onLogout: () => void;
+  stravaStatus: StravaStatus;
+  onStravaStatusChange: () => void;
+}) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const searchMarkerRef = useRef<maplibregl.Marker | null>(null);
@@ -614,6 +652,9 @@ export function Map({ onLogout }: { onLogout: () => void }) {
   const [forecast, setForecast] = useState<ForecastPeriod[] | null>(null);
   const [forecastLoading, setForecastLoading] = useState(false);
   const [snotelLoaded, setSnotelLoaded] = useState(false);
+  const [stravaVisible, setStravaVisible] = useState(true);
+  const [stravaLoaded, setStravaLoaded] = useState(false);
+  const stravaDataRef = useRef<object | null>(null);
 
   // Refs so style-load callbacks can read current state without stale closures.
   const visibleRef = useRef(visible);
@@ -647,6 +688,8 @@ export function Map({ onLogout }: { onLogout: () => void }) {
       addMeasureLayers(map);
       addSnotelLayers(map);
       setSnotelVisibility(map, visibleRef.current["snotel"] ?? false);
+      addStravaLayers(map);
+      if (stravaDataRef.current) setStravaData(map, stravaDataRef.current);
     });
 
     // SNOTEL station popup — look up from the ref to bypass MapLibre's tile serialization.
@@ -735,6 +778,8 @@ export function Map({ onLogout }: { onLogout: () => void }) {
       addSnotelLayers(map);
       if (snotelDataRef.current) setSnotelData(map, snotelDataRef.current);
       setSnotelVisibility(map, visibleRef.current["snotel"] ?? false);
+      addStravaLayers(map);
+      if (stravaDataRef.current) setStravaData(map, stravaDataRef.current);
     });
   }, [dark]);
 
@@ -822,6 +867,30 @@ export function Map({ onLogout }: { onLogout: () => void }) {
       .catch((err) => console.warn("SNOTEL fetch failed", err));
   }, [visible, snotelLoaded]);
 
+  // Fetch Strava activities when connected; sync visibility.
+  useEffect(() => {
+    setStravaVisibility(mapRef.current, stravaVisible);
+  }, [stravaVisible]);
+
+  useEffect(() => {
+    if (!stravaStatus.connected) {
+      stravaDataRef.current = null;
+      setStravaData(mapRef.current, { type: "FeatureCollection", features: [] });
+      setStravaLoaded(false);
+      return;
+    }
+    if (stravaLoaded) return;
+    apiFetch(`${API_URL}/strava/activities`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((geojson) => {
+        if (!geojson) return;
+        stravaDataRef.current = geojson;
+        setStravaData(mapRef.current, geojson);
+        setStravaLoaded(true);
+      })
+      .catch((err) => console.warn("Strava fetch failed", err));
+  }, [stravaStatus.connected, stravaLoaded]);
+
   const theme = dark ? THEMES.dark : THEMES.light;
 
   function flyToCoords(lat: number, lon: number) {
@@ -850,6 +919,18 @@ export function Map({ onLogout }: { onLogout: () => void }) {
         onDarkToggle={() => setDark((d) => !d)}
         onUnitsToggle={() => setUnits((u) => (u === "imperial" ? "metric" : "imperial"))}
         onLogout={onLogout}
+        stravaStatus={stravaStatus}
+        stravaVisible={stravaVisible}
+        onStravaToggle={() => setStravaVisible((v) => !v)}
+        onStravaConnect={async () => {
+          const r = await apiFetch(`${API_URL}/auth/strava/authorize`);
+          if (r.ok) { const { url } = await r.json(); window.location.href = url; }
+        }}
+        onStravaDisconnect={async () => {
+          await apiFetch(`${API_URL}/auth/strava/disconnect`, { method: "DELETE" });
+          setStravaLoaded(false);
+          onStravaStatusChange();
+        }}
       />
       <MeasureButton
         active={measureMode}
@@ -894,6 +975,11 @@ function LayerPanel({
   onDarkToggle,
   onUnitsToggle,
   onLogout,
+  stravaStatus,
+  stravaVisible,
+  onStravaToggle,
+  onStravaConnect,
+  onStravaDisconnect,
 }: {
   groups: LayerGroup[];
   visible: Record<string, boolean>;
@@ -906,6 +992,11 @@ function LayerPanel({
   onDarkToggle: () => void;
   onUnitsToggle: () => void;
   onLogout: () => void;
+  stravaStatus: StravaStatus;
+  stravaVisible: boolean;
+  onStravaToggle: () => void;
+  onStravaConnect: () => void;
+  onStravaDisconnect: () => void;
 }) {
   return (
     <div
@@ -1101,6 +1192,68 @@ function LayerPanel({
           ))}
         </div>
       ))}
+
+      {/* Strava section */}
+      <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${theme.divider}` }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="#fc4c02" style={{ flexShrink: 0 }}>
+            <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
+          </svg>
+          <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", color: theme.muted, textTransform: "uppercase" }}>
+            Strava
+          </span>
+        </div>
+        {stravaStatus.connected ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer" }}>
+              <input
+                type="checkbox"
+                checked={stravaVisible}
+                onChange={onStravaToggle}
+                style={{ accentColor: "#fc4c02", cursor: "pointer" }}
+              />
+              <span style={{ fontSize: 13 }}>Activities</span>
+            </label>
+            <div style={{ fontSize: 11, color: theme.muted }}>
+              {stravaStatus.athlete_name ?? "Connected"}
+            </div>
+            <button
+              onClick={onStravaDisconnect}
+              style={{
+                padding: "4px 0",
+                border: `1px solid ${theme.divider}`,
+                borderRadius: 4,
+                background: "none",
+                color: theme.muted,
+                fontFamily: "ui-sans-serif, system-ui, sans-serif",
+                fontSize: 11,
+                cursor: "pointer",
+              }}
+            >
+              Disconnect
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={onStravaConnect}
+            style={{
+              width: "100%",
+              padding: "6px 0",
+              border: "none",
+              borderRadius: 5,
+              background: "#fc4c02",
+              color: "#fff",
+              fontFamily: "ui-sans-serif, system-ui, sans-serif",
+              fontSize: 12,
+              fontWeight: 600,
+              cursor: "pointer",
+              letterSpacing: "0.02em",
+            }}
+          >
+            Connect Strava
+          </button>
+        )}
+      </div>
 
       {/* Sign out */}
       <button

@@ -13,7 +13,7 @@ from app import __version__
 from app.config import get_settings
 from app.db import get_engine
 from app.models import Base
-from app.routers import auth, health, snowpack, terrain, tiles
+from app.routers import auth, health, snowpack, strava, terrain, tiles
 
 logger = logging.getLogger("whumpf")
 logging.basicConfig(
@@ -51,6 +51,7 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(auth.router)
+    app.include_router(strava.router)
     app.include_router(tiles.router)
     app.include_router(terrain.router)
     app.include_router(snowpack.router)

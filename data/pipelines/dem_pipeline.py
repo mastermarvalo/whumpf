@@ -16,6 +16,7 @@ Deps (install into a local venv first):
 """
 
 import argparse
+import contextlib
 import gc
 import os
 import sys
@@ -197,15 +198,14 @@ def mosaic_and_reproject(paths: list[Path], out_path: Path,
         return None, profile, dst_tf
 
     step(f"Mosaicking {len(paths)} tiles ...")
-    srcs = [rasterio.open(p) for p in paths]
     merge_kwargs: dict = {}
     if clip_bounds is not None:
         merge_kwargs["bounds"] = clip_bounds   # (left, bottom, right, top) = (W,S,E,N)
-    mosaic, out_tf = rio_merge(srcs, **merge_kwargs)
-    src_crs  = srcs[0].crs
-    src_nodata = srcs[0].nodata
-    for s in srcs:
-        s.close()
+    with contextlib.ExitStack() as stack:
+        srcs = [stack.enter_context(rasterio.open(p)) for p in paths]
+        src_crs = srcs[0].crs
+        src_nodata = srcs[0].nodata
+        mosaic, out_tf = rio_merge(srcs, **merge_kwargs)
     print(f"  mosaic  shape={mosaic.shape}  crs={src_crs}  nodata={src_nodata}")
 
     step(f"Reprojecting to {OUTPUT_CRS} ...")
