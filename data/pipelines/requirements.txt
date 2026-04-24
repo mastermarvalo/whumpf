@@ -3,6 +3,9 @@
 #   python3 -m venv .venv
 #   source .venv/bin/activate
 #   pip install -r data/pipelines/requirements.txt
+#
+# For --resolution 1m you also need the GDAL CLI tools (not pip):
+#   sudo apt-get install -y gdal-bin
 rasterio>=1.4
 numpy>=2.0
 boto3>=1.35
