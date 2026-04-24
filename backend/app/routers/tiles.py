@@ -133,11 +133,6 @@ async def slope_tile(z: int, x: int, y: int, region: str = "sanjuans") -> Respon
 
 # ── contour tiles ──────────────────────────────────────────────────────────────
 
-# Minor contour every 40m (~130ft); major every 200m (~660ft).
-# These match standard USGS 1:24,000 topo map intervals converted to metric.
-_MINOR_M = 40.0
-_MAJOR_M = 200.0
-
 # Render at 2× pixel density and LANCZOS-downsample for anti-aliasing.
 _RENDER_PX = 512
 _OUT_PX = 256
@@ -151,11 +146,25 @@ _COG_ENV = dict(
 )
 
 # Minor line: dark, semi-transparent, thin.  Major: darker, opaque-ish, thicker.
-# Values are (R, G, B, A) for PIL; width is at _RENDER_PX (halved when displayed).
+# Pixel widths are at _RENDER_PX resolution (halved after LANCZOS downsample).
 _MINOR_COLOR = (30, 30, 30, 110)
 _MAJOR_COLOR = (10, 10, 10, 200)
-_MINOR_WIDTH = 2   # px at 2x = ~1px at display
-_MAJOR_WIDTH = 4   # px at 2x = ~2px at display
+_MINOR_WIDTH = 2   # px at 2x = ~1px displayed
+_MAJOR_WIDTH = 4   # px at 2x = ~2px displayed
+
+
+def _contour_intervals(z: int) -> tuple[float, float]:
+    """Return (minor_m, major_m) contour intervals for a given zoom level.
+
+    z >= 14  →  12m / 60m   (~40ft/200ft, CalTopo planning resolution)
+    z 11-13  →  40m / 200m  (~130ft/660ft, overview)
+    z < 11   →  100m only   (major-only; minor == major so minor_levels is empty)
+    """
+    if z >= 14:
+        return 12.0, 60.0
+    if z >= 11:
+        return 40.0, 200.0
+    return 100.0, 100.0
 
 
 def _build_dem_url(settings, region: str) -> str:
@@ -163,8 +172,12 @@ def _build_dem_url(settings, region: str) -> str:
     return f"/vsicurl/{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{region}/dem.tif"
 
 
-def _render_contours(dem_url: str, xmin: float, ymin: float, xmax: float, ymax: float) -> bytes | None:
-    """Blocking: read DEM window, generate contour lines, return transparent PNG bytes."""
+def _render_contours(
+    dem_url: str, xmin: float, ymin: float, xmax: float, ymax: float, z: int
+) -> bytes | None:
+    """Blocking: read DEM window, generate zoom-adaptive contours, return PNG bytes."""
+    minor_m, major_m = _contour_intervals(z)
+
     data = np.full((_RENDER_PX, _RENDER_PX), -9999.0, dtype=np.float32)
     dst_transform = from_bounds(xmin, ymin, xmax, ymax, _RENDER_PX, _RENDER_PX)
 
@@ -191,20 +204,18 @@ def _render_contours(dem_url: str, xmin: float, ymin: float, xmax: float, ymax: 
         return None
 
     elev_min, elev_max = float(valid.min()), float(valid.max())
-    if elev_max - elev_min < _MINOR_M:
+    if elev_max - elev_min < minor_m:
         return None  # flat tile — no contours to draw
 
     # Replace nodata with NaN so contourpy skips those regions.
     grid = np.where(data != -9999.0, data, np.nan)
 
-    # Compute contour levels within the tile's elevation range.
-    minor_start = math.ceil(elev_min / _MINOR_M) * _MINOR_M
-    all_levels = np.arange(minor_start, elev_max, _MINOR_M).tolist()
-    major_set = {
-        round(math.ceil(elev_min / _MAJOR_M) * _MAJOR_M + k * _MAJOR_M, 6)
-        for k in range(int((elev_max - elev_min) / _MAJOR_M) + 2)
-        if math.ceil(elev_min / _MAJOR_M) * _MAJOR_M + k * _MAJOR_M <= elev_max
-    }
+    # Build level lists. When minor_m == major_m (z < 11) every level lands in
+    # major_set so minor_levels is empty and only thick lines are drawn.
+    minor_start = math.ceil(elev_min / minor_m) * minor_m
+    all_levels = np.arange(minor_start, elev_max, minor_m).tolist()
+    major_start = math.ceil(elev_min / major_m) * major_m
+    major_set = {round(major_start + k * major_m, 6) for k in range(int((elev_max - elev_min) / major_m) + 2)}
     minor_levels = [l for l in all_levels if round(l, 6) not in major_set]
     major_levels = [l for l in all_levels if round(l, 6) in major_set]
 
@@ -235,7 +246,10 @@ def _render_contours(dem_url: str, xmin: float, ymin: float, xmax: float, ymax: 
 
 @router.get("/contours/{z}/{x}/{y}")
 async def contour_tile(z: int, x: int, y: int, region: str = "sanjuans") -> Response:
-    """Render DEM contour lines (40m minor / 200m major) as a transparent PNG tile."""
+    """Render zoom-adaptive DEM contour lines as a transparent PNG tile.
+
+    z<11: 100m major only  |  z11-13: 40m/200m  |  z>=14: 12m/60m (CalTopo quality)
+    """
     import asyncio
 
     settings = get_settings()
@@ -244,7 +258,7 @@ async def contour_tile(z: int, x: int, y: int, region: str = "sanjuans") -> Resp
 
     loop = asyncio.get_event_loop()
     png = await loop.run_in_executor(
-        _POOL, _render_contours, dem_url, xmin, ymin, xmax, ymax
+        _POOL, _render_contours, dem_url, xmin, ymin, xmax, ymax, z
     )
     if png is None:
         return Response(status_code=204)
