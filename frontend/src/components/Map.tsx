@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
+import { apiFetch } from "../auth";
 
 const TITILER_URL = import.meta.env.VITE_TITILER_URL ?? "http://localhost:8001";
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -95,14 +96,14 @@ async function fetchSpotData(lat: number, lng: number): Promise<SpotData> {
   ]);
 
   const periods: ForecastPeriod[] = (forecastData?.properties?.periods ?? []).slice(0, 8);
-  // gridData values: temperature in °C, snowDepth in mm
+  // gridData values: temperature in °C, snowDepth in metres (wmoUnit:m)
   const tempC: number | null = gridData?.properties?.temperature?.values?.[0]?.value ?? null;
-  const snowMm: number | null = gridData?.properties?.snowDepth?.values?.[0]?.value ?? null;
+  const snowM: number | null = gridData?.properties?.snowDepth?.values?.[0]?.value ?? null;
 
   return {
     periods,
     tempF: tempC != null ? tempC * 9 / 5 + 32 : null,
-    snowDepthIn: snowMm != null ? snowMm / 25.4 : null,
+    snowDepthIn: snowM != null ? snowM / 0.0254 : null,
   };
 }
 
@@ -470,7 +471,7 @@ async function fetchProfile(
     region: REGION,
     n: "64",
   });
-  const r = await fetch(`${API_URL}/terrain/profile?${p}`);
+  const r = await apiFetch(`${API_URL}/terrain/profile?${p}`);
   if (!r.ok) throw new Error(`${r.status}`);
   return r.json() as Promise<ProfileResponse>;
 }
@@ -592,7 +593,7 @@ function setSnotelVisibility(map: maplibregl.Map | null, visible: boolean) {
 
 // ── Map component ──────────────────────────────────────────────────────────────
 
-export function Map() {
+export function Map({ onLogout }: { onLogout: () => void }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const searchMarkerRef = useRef<maplibregl.Marker | null>(null);
@@ -810,7 +811,7 @@ export function Map() {
     }
     setSnotelVisibility(map, true);
     if (snotelLoaded) return;
-    fetch(`${API_URL}/snowpack/stations`)
+    apiFetch(`${API_URL}/snowpack/stations`)
       .then((r) => (r.ok ? r.json() : null))
       .then((geojson) => {
         if (!geojson) return;
@@ -848,6 +849,7 @@ export function Map() {
         onOpacity={(id, val) => setOpacity((o) => ({ ...o, [id]: val }))}
         onDarkToggle={() => setDark((d) => !d)}
         onUnitsToggle={() => setUnits((u) => (u === "imperial" ? "metric" : "imperial"))}
+        onLogout={onLogout}
       />
       <MeasureButton
         active={measureMode}
@@ -891,6 +893,7 @@ function LayerPanel({
   onOpacity,
   onDarkToggle,
   onUnitsToggle,
+  onLogout,
 }: {
   groups: LayerGroup[];
   visible: Record<string, boolean>;
@@ -902,6 +905,7 @@ function LayerPanel({
   onOpacity: (id: string, val: number) => void;
   onDarkToggle: () => void;
   onUnitsToggle: () => void;
+  onLogout: () => void;
 }) {
   return (
     <div
@@ -1097,6 +1101,26 @@ function LayerPanel({
           ))}
         </div>
       ))}
+
+      {/* Sign out */}
+      <button
+        onClick={onLogout}
+        style={{
+          marginTop: 10,
+          width: "100%",
+          padding: "6px 0",
+          border: `1px solid ${theme.divider}`,
+          borderRadius: 5,
+          background: "none",
+          color: theme.muted,
+          fontFamily: "ui-sans-serif, system-ui, sans-serif",
+          fontSize: 11,
+          cursor: "pointer",
+          letterSpacing: "0.04em",
+        }}
+      >
+        Sign out
+      </button>
     </div>
   );
 }

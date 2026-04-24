@@ -7,7 +7,9 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from app.auth.dependencies import get_current_user
 from app.config import Settings, get_settings
+from app.models.user import User
 from app.services.cog_sampler import sample_profile
 
 router = APIRouter(prefix="/terrain", tags=["terrain"])
@@ -68,6 +70,7 @@ def terrain_profile(
     region: str = "sanjuans",
     n: int = Query(default=64, ge=10, le=256),
     settings: Settings = Depends(get_settings),
+    _auth: User = Depends(get_current_user),
 ) -> ProfileResponse:
     """Sample slope and elevation along a line between two coordinates."""
     try:
