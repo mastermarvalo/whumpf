@@ -70,6 +70,9 @@ async def slope_tile(z: int, x: int, y: int, region: str = "sanjuans") -> Respon
                     "rescale": "0,60",
                     "nodata": "-9999",
                     "colormap": _SLOPE_CMAP,
+                    # 2px buffer gives TiTiler neighbour context at tile edges so the
+                    # colormap application doesn't seam at tile boundaries.
+                    "buffer": 2,
                 },
             )
         except httpx.RequestError as exc:

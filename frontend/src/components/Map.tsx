@@ -108,6 +108,8 @@ interface ActiveLayer {
   defaultVisible: boolean;
   noSlider?: boolean;
   legend?: Legend;
+  // Extra MapLibre raster paint properties merged in at layer creation (e.g. saturation, resampling).
+  blendPaint?: { "raster-saturation"?: number; "raster-resampling"?: "linear" | "nearest" };
 }
 
 interface UpcomingLayer {
@@ -249,10 +251,12 @@ const LAYER_GROUPS: LayerGroup[] = [
       {
         id: "slope",
         label: "Slope angle",
-        // Served via API proxy which applies the CalTopo V1 colormap server-side
+        // Served via API proxy which applies the CalTopo V1 colormap server-side.
+        // Backend adds buffer=2 so TiTiler has neighbour context at tile edges.
         tiles: [`${API_URL}/tiles/slope/{z}/{x}/{y}?region=${REGION}`],
         opacity: 0.75,
         defaultVisible: false,
+        blendPaint: { "raster-saturation": -0.3 },
         legend: {
           gradient: "linear-gradient(to right, transparent 0%, #1a9641 25%, #ffeb00 45%, #d7191c 67%, #2b7bb9 100%)",
           stops: ["0°", "15°", "27°", "40°", "60°"],
@@ -261,13 +265,17 @@ const LAYER_GROUPS: LayerGroup[] = [
       {
         id: "aspect",
         label: "Aspect",
+        // buffer=2: TiTiler fetches 2 extra pixels per edge so hue transitions
+        // don't seam at tile boundaries when resampled.
         tiles: cogTiles(`${REGION}/aspect.tif`, {
           colormap_name: "hsv",
           rescale: "0,360",
           nodata: "-9999",
+          buffer: "2",
         }),
         opacity: 0.7,
         defaultVisible: false,
+        blendPaint: { "raster-saturation": -0.4 },
         legend: {
           gradient:
             "linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)",
@@ -603,7 +611,12 @@ function addOverlayLayers(
         id: layer.id,
         type: "raster",
         source: layer.id,
-        paint: { "raster-opacity": opacity[layer.id] ?? layer.opacity },
+        paint: {
+          "raster-opacity": opacity[layer.id] ?? layer.opacity,
+          "raster-fade-duration": 400,  // tiles crossfade in instead of popping
+          "raster-resampling": "linear",
+          ...(layer.blendPaint ?? {}),
+        },
         layout: { visibility: visible[layer.id] ? "visible" : "none" },
       },
       firstLabelId,
