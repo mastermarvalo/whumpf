@@ -12,10 +12,17 @@ const INITIAL_CENTER: [number, number] = [-105.5, 39.0];
 const INITIAL_ZOOM = 7;
 const COLORADO_MTN_BOUNDS: [number, number, number, number] = [-109.06, 37.0, -104.5, 41.0];
 
-type BasemapId = "light" | "dark" | "topo" | "satellite" | "hybrid";
+// "streets" = vector basemap (light or dark per theme toggle).
+// The other three are raster basemaps independent of the theme.
+type BasemapId = "streets" | "topo" | "satellite" | "hybrid";
 
 const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
 const OMP_GLYPHS = "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf";
+
+const VECTOR_STYLES = {
+  light: "https://tiles.openfreemap.org/styles/positron",
+  dark:  "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+};
 
 function rasterStyle(
   tiles: string[],
@@ -61,23 +68,19 @@ function hybridStyle(): maplibregl.StyleSpecification {
   };
 }
 
-const MAP_STYLES: Record<BasemapId, string | maplibregl.StyleSpecification> = {
-  light:     "https://tiles.openfreemap.org/styles/positron",
-  dark:      "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+const RASTER_STYLES: Record<"topo" | "satellite" | "hybrid", maplibregl.StyleSpecification> = {
   // Esri World Topo Map: contours, shaded relief, trails, water — no API key required.
-  topo:      rasterStyle(
-    [`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`],
-    "Esri",
-  ),
+  topo:      rasterStyle([`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`], "Esri"),
   // maxzoom: 17 — beyond that Esri returns a "not available yet" placeholder JPEG.
   // MapLibre overzooms the z17 tile instead of requesting z18+.
-  satellite: rasterStyle(
-    [`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`],
-    "Esri, DigitalGlobe",
-    17,
-  ),
+  satellite: rasterStyle([`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`], "Esri, DigitalGlobe", 17),
   hybrid:    hybridStyle(),
 };
+
+function getMapStyle(basemap: BasemapId, dark: boolean): string | maplibregl.StyleSpecification {
+  if (basemap === "streets") return VECTOR_STYLES[dark ? "dark" : "light"];
+  return RASTER_STYLES[basemap];
+}
 
 function cogS3(path: string) {
   return `s3://${MINIO_BUCKET}/${path}`;
@@ -725,7 +728,8 @@ export function Map({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const searchMarkerRef = useRef<maplibregl.Marker | null>(null);
 
-  const [basemap, setBasemap] = useState<BasemapId>("light");
+  const [dark, setDark] = useState(true);
+  const [basemap, setBasemap] = useState<BasemapId>("streets");
   const [visible, setVisible] = useState<Record<string, boolean>>(
     () => Object.fromEntries(OVERLAY_LAYERS.map((l) => [l.id, l.defaultVisible])),
   );
@@ -765,7 +769,7 @@ export function Map({
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: MAP_STYLES.light,
+      style: getMapStyle("streets", true),
       center: INITIAL_CENTER,
       zoom: INITIAL_ZOOM,
       renderWorldCopies: false,
@@ -897,11 +901,11 @@ export function Map({
     return () => { map.remove(); mapRef.current = null; };
   }, []);
 
-  // Switch basemap style when dark mode toggles; re-add overlay layers after.
+  // Switch basemap style when basemap or dark mode changes; re-add overlay layers after.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    map.setStyle(MAP_STYLES[basemap]);
+    map.setStyle(getMapStyle(basemap, dark));
     map.once("style.load", () => {
       addOverlayLayers(map, visibleRef.current, opacityRef.current);
       addMeasureLayers(map);
@@ -913,7 +917,7 @@ export function Map({
       if (stravaDataRef.current) setStravaData(map, stravaDataRef.current);
       applyStravaHighlight(map, selectedStravaIdRef.current);
     });
-  }, [basemap]);
+  }, [basemap, dark]);
 
   // Sync visibility state → MapLibre.
   // Don't gate on isStyleLoaded() — it returns false while tiles load (style layers still exist).
@@ -1030,13 +1034,11 @@ export function Map({
       .catch((err) => console.warn("Strava fetch failed", err));
   }, [stravaStatus.connected, stravaLoaded]);
 
-  const dark = basemap === "dark";
   const theme = dark ? THEMES.dark : THEMES.light;
 
-  // Auto-enable hillshade at a sensible opacity when switching to a terrain basemap.
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+  // Auto-enable hillshade at a sensible opacity when switching to a raster basemap.
   useEffect(() => {
-    if (basemap === "satellite" || basemap === "hybrid" || basemap === "topo") {
+    if (basemap !== "streets") {
       setVisible(v => ({ ...v, hillshade: true }));
       const op = basemap === "satellite" ? 0.4 : basemap === "hybrid" ? 0.35 : 0.45;
       setOpacity(o => ({ ...o, hillshade: op }));
@@ -1061,11 +1063,13 @@ export function Map({
         groups={LAYER_GROUPS}
         visible={visible}
         opacity={opacity}
+        dark={dark}
         basemap={basemap}
         units={units}
         theme={theme}
         onToggle={(id) => setVisible((v) => ({ ...v, [id]: !v[id] }))}
         onOpacity={(id, val) => setOpacity((o) => ({ ...o, [id]: val }))}
+        onDarkToggle={() => setDark(d => !d)}
         onBasemapChange={setBasemap}
         onUnitsToggle={() => setUnits((u) => (u === "imperial" ? "metric" : "imperial"))}
         onLogout={onLogout}
@@ -1127,11 +1131,13 @@ function LayerPanel({
   groups,
   visible,
   opacity,
+  dark,
   basemap,
   units,
   theme,
   onToggle,
   onOpacity,
+  onDarkToggle,
   onBasemapChange,
   onUnitsToggle,
   onLogout,
@@ -1144,11 +1150,13 @@ function LayerPanel({
   groups: LayerGroup[];
   visible: Record<string, boolean>;
   opacity: Record<string, number>;
+  dark: boolean;
   basemap: BasemapId;
   units: Units;
   theme: Theme;
   onToggle: (id: string) => void;
   onOpacity: (id: string, val: number) => void;
+  onDarkToggle: () => void;
   onBasemapChange: (id: BasemapId) => void;
   onUnitsToggle: () => void;
   onLogout: () => void;
@@ -1193,29 +1201,47 @@ function LayerPanel({
         <span style={{ fontWeight: 700, fontSize: 12, letterSpacing: "0.08em", color: theme.muted }}>
           LAYERS
         </span>
-        <button
-          onClick={onUnitsToggle}
-          title={`Switch to ${units === "imperial" ? "metric" : "imperial"}`}
-          style={{
-            background: "none",
-            border: `1px solid ${theme.divider}`,
-            borderRadius: 4,
-            cursor: "pointer",
-            fontSize: 10,
-            fontWeight: 700,
-            padding: "2px 5px",
-            color: theme.muted,
-            lineHeight: 1,
-            letterSpacing: "0.04em",
-          }}
-        >
-          {units === "imperial" ? "metric" : "imperial"}
-        </button>
+        <div style={{ display: "flex", gap: 4 }}>
+          <button
+            onClick={onUnitsToggle}
+            title={`Switch to ${units === "imperial" ? "metric" : "imperial"}`}
+            style={{
+              background: "none",
+              border: `1px solid ${theme.divider}`,
+              borderRadius: 4,
+              cursor: "pointer",
+              fontSize: 10,
+              fontWeight: 700,
+              padding: "2px 5px",
+              color: theme.muted,
+              lineHeight: 1,
+              letterSpacing: "0.04em",
+            }}
+          >
+            {units === "imperial" ? "metric" : "imperial"}
+          </button>
+          <button
+            onClick={onDarkToggle}
+            title={dark ? "Switch to light mode" : "Switch to dark mode"}
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontSize: 15,
+              padding: "2px 4px",
+              borderRadius: 4,
+              color: theme.text,
+              lineHeight: 1,
+            }}
+          >
+            {dark ? "☀️" : "🌙"}
+          </button>
+        </div>
       </div>
 
-      {/* Basemap picker */}
+      {/* Basemap picker — Streets follows the light/dark toggle; raster options are independent */}
       <div style={{ display: "flex", gap: 3, marginBottom: 10 }}>
-        {(["light", "dark", "topo", "satellite", "hybrid"] as const).map((id) => (
+        {(["streets", "topo", "satellite", "hybrid"] as const).map((id) => (
           <button
             key={id}
             onClick={() => onBasemapChange(id)}
@@ -1233,7 +1259,7 @@ function LayerPanel({
               letterSpacing: "0.02em",
             }}
           >
-            {id === "satellite" ? "Sat" : id === "hybrid" ? "Hyb" : id.charAt(0).toUpperCase() + id.slice(1)}
+            {id === "streets" ? "Streets" : id === "satellite" ? "Sat" : id === "hybrid" ? "Hyb" : "Topo"}
           </button>
         ))}
       </div>
