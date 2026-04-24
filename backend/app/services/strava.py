@@ -140,6 +140,9 @@ def activities_to_geojson(activities: list[dict]) -> dict:
         if len(coords) < 2:
             continue
         sport = act.get("sport_type") or act.get("type") or "Other"
+        primary = (act.get("photos") or {}).get("primary") or {}
+        photo_urls = primary.get("urls") or {}
+        photo_url = photo_urls.get("600") or photo_urls.get("100") or None
         features.append({
             "type": "Feature",
             "geometry": {"type": "LineString", "coordinates": coords},
@@ -152,6 +155,18 @@ def activities_to_geojson(activities: list[dict]) -> dict:
                 "elapsed_time_s": act.get("elapsed_time", 0),
                 "total_elevation_gain_m": act.get("total_elevation_gain", 0),
                 "start_date": act.get("start_date", ""),
+                "photo_url": photo_url,
             },
         })
     return {"type": "FeatureCollection", "features": features}
+
+
+async def fetch_activity_detail(access_token: str, activity_id: int) -> dict:
+    async with httpx.AsyncClient() as client:
+        r = await client.get(
+            f"{STRAVA_API_BASE}/activities/{activity_id}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        return r.json()

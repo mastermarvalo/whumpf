@@ -8,6 +8,7 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     host: true,
+    allowedHosts: ["whumpf.co"],
     // Polling avoids inotify exhaustion when running inside a container with a
     // host-mounted src volume (low max_user_instances on the Podman host).
     watch: {

@@ -128,6 +128,37 @@ def strava_status(
     )
 
 
+class ActivityDetailOut(BaseModel):
+    description: str | None = None
+    photo_url: str | None = None
+
+
+@router.get("/strava/activities/{activity_id}", response_model=ActivityDetailOut)
+async def strava_activity_detail(
+    activity_id: int,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> ActivityDetailOut:
+    conn = session.scalars(
+        select(StravaConnection).where(StravaConnection.user_id == user.id)
+    ).first()
+    if not conn:
+        raise HTTPException(404, "Strava not connected")
+    try:
+        access_token = await strava_svc.refresh_token(conn, session)
+        detail = await strava_svc.fetch_activity_detail(access_token, activity_id)
+    except Exception as exc:
+        logger.error("Strava activity detail fetch failed: %s", exc)
+        raise HTTPException(502, f"Strava unavailable: {exc}") from exc
+    primary = (detail.get("photos") or {}).get("primary") or {}
+    photo_urls = primary.get("urls") or {}
+    photo_url = photo_urls.get("600") or photo_urls.get("100") or None
+    return ActivityDetailOut(
+        description=detail.get("description") or None,
+        photo_url=photo_url,
+    )
+
+
 @router.get("/strava/activities")
 async def strava_activities(
     user: User = Depends(get_current_user),

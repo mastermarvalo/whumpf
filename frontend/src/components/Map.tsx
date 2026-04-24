@@ -8,8 +8,8 @@ const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const MINIO_BUCKET = "dem-cogs";
 const REGION = "sanjuans";
 
-const INITIAL_CENTER: [number, number] = [-107.75, 37.95];
-const INITIAL_ZOOM = 10;
+const INITIAL_CENTER: [number, number] = [-105.5, 39.0];
+const INITIAL_ZOOM = 7;
 const COLORADO_MTN_BOUNDS: [number, number, number, number] = [-109.06, 37.0, -104.5, 41.0];
 
 const MAP_STYLES = {
@@ -49,6 +49,18 @@ interface UpcomingLayer {
   id: string;
   label: string;
 }
+
+type ActivityCardProps = {
+  id: number;
+  name: string;
+  sport_type: string;
+  color: string;
+  distance_m: number;
+  elapsed_time_s: number;
+  total_elevation_gain_m: number;
+  start_date: string;
+  photo_url: string | null;
+};
 
 // ── weather / snowpack provider config ────────────────────────────────────────
 // Swap any URL string here to change the underlying data source.
@@ -621,6 +633,21 @@ function setStravaVisibility(map: maplibregl.Map | null, visible: boolean) {
     map.setLayoutProperty("strava-lines", "visibility", visible ? "visible" : "none");
 }
 
+function applyStravaHighlight(map: maplibregl.Map | null, selectedId: number | null) {
+  if (!map || !map.getLayer("strava-lines")) return;
+  if (selectedId == null) {
+    map.setPaintProperty("strava-lines", "line-opacity", 0.75);
+    map.setPaintProperty("strava-lines", "line-width", 2);
+  } else {
+    map.setPaintProperty("strava-lines", "line-opacity", [
+      "case", ["==", ["get", "id"], selectedId], 1.0, 0.15,
+    ]);
+    map.setPaintProperty("strava-lines", "line-width", [
+      "case", ["==", ["get", "id"], selectedId], 4, 1.5,
+    ]);
+  }
+}
+
 // ── Map component ──────────────────────────────────────────────────────────────
 
 export function Map({
@@ -655,6 +682,8 @@ export function Map({
   const [stravaVisible, setStravaVisible] = useState(true);
   const [stravaLoaded, setStravaLoaded] = useState(false);
   const stravaDataRef = useRef<object | null>(null);
+  const selectedStravaIdRef = useRef<number | null>(null);
+  const [stravaCard, setStravaCard] = useState<{ activities: ActivityCardProps[]; index: number } | null>(null);
 
   // Refs so style-load callbacks can read current state without stale closures.
   const visibleRef = useRef(visible);
@@ -690,6 +719,7 @@ export function Map({
       setSnotelVisibility(map, visibleRef.current["snotel"] ?? false);
       addStravaLayers(map);
       if (stravaDataRef.current) setStravaData(map, stravaDataRef.current);
+      applyStravaHighlight(map, selectedStravaIdRef.current);
     });
 
     // SNOTEL station popup — look up from the ref to bypass MapLibre's tile serialization.
@@ -720,6 +750,42 @@ export function Map({
       });
     }
 
+    // Strava activity click — open card with nearby runs.
+    map.on("click", "strava-lines", (e) => {
+      if (measureModeRef.current) return;
+      e.originalEvent.stopPropagation();
+      const px = e.point;
+      const bbox: [maplibregl.PointLike, maplibregl.PointLike] = [
+        [px.x - 12, px.y - 12],
+        [px.x + 12, px.y + 12],
+      ];
+      const feats = map.queryRenderedFeatures(bbox, { layers: ["strava-lines"] });
+      const seen = new Set<number>();
+      const activities: ActivityCardProps[] = [];
+      for (const feat of feats) {
+        const p = feat.properties as Record<string, unknown>;
+        const id = Number(p.id);
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        activities.push({
+          id,
+          name: String(p.name ?? ""),
+          sport_type: String(p.sport_type ?? ""),
+          color: String(p.color ?? "#95a5a6"),
+          distance_m: Number(p.distance_m ?? 0),
+          elapsed_time_s: Number(p.elapsed_time_s ?? 0),
+          total_elevation_gain_m: Number(p.total_elevation_gain_m ?? 0),
+          start_date: String(p.start_date ?? ""),
+          photo_url: typeof p.photo_url === "string" ? p.photo_url : null,
+        });
+      }
+      if (activities.length > 0) setStravaCard({ activities, index: 0 });
+    });
+    map.on("mouseenter", "strava-lines", () => { map.getCanvas().style.cursor = "pointer"; });
+    map.on("mouseleave", "strava-lines", () => {
+      if (!measureModeRef.current) map.getCanvas().style.cursor = "";
+    });
+
     map.on("click", async (e) => {
       const { lng, lat } = e.lngLat;
 
@@ -729,6 +795,9 @@ export function Map({
         layers: ["snotel-circles", "snotel-names", "snotel-labels"],
       });
       if (onSnotel.length > 0) return;
+
+      const onStrava = map.queryRenderedFeatures(e.point, { layers: ["strava-lines"] });
+      if (onStrava.length > 0) return;
 
       if (measureModeRef.current) {
         const pts = measurePtsRef.current;
@@ -780,6 +849,7 @@ export function Map({
       setSnotelVisibility(map, visibleRef.current["snotel"] ?? false);
       addStravaLayers(map);
       if (stravaDataRef.current) setStravaData(map, stravaDataRef.current);
+      applyStravaHighlight(map, selectedStravaIdRef.current);
     });
   }, [dark]);
 
@@ -866,6 +936,13 @@ export function Map({
       })
       .catch((err) => console.warn("SNOTEL fetch failed", err));
   }, [visible, snotelLoaded]);
+
+  // Highlight selected Strava route; dim all others.
+  useEffect(() => {
+    const selectedId = stravaCard ? (stravaCard.activities[stravaCard.index]?.id ?? null) : null;
+    selectedStravaIdRef.current = selectedId;
+    applyStravaHighlight(mapRef.current, selectedId);
+  }, [stravaCard]);
 
   // Fetch Strava activities when connected; sync visibility.
   useEffect(() => {
@@ -955,6 +1032,16 @@ export function Map({
           units={units}
           theme={theme}
           onClose={() => { setPoint(null); setForecast(null); }}
+        />
+      )}
+      {stravaCard && (
+        <StravaActivityCard
+          activities={stravaCard.activities}
+          index={stravaCard.index}
+          onIndexChange={(i) => setStravaCard((c) => c ? { ...c, index: i } : null)}
+          onClose={() => setStravaCard(null)}
+          units={units}
+          theme={theme}
         />
       )}
     </>
@@ -1592,6 +1679,181 @@ function MeasurePanel({
       >
         ×
       </button>
+    </div>
+  );
+}
+
+// ── StravaActivityCard ─────────────────────────────────────────────────────────
+
+function StravaActivityCard({
+  activities,
+  index,
+  onIndexChange,
+  onClose,
+  units,
+  theme,
+}: {
+  activities: ActivityCardProps[];
+  index: number;
+  onIndexChange: (i: number) => void;
+  onClose: () => void;
+  units: Units;
+  theme: Theme;
+}) {
+  const act = activities[index];
+  const descCache = useRef<Record<number, string | null>>({});
+  const [description, setDescription] = useState<string | null | "loading">("loading");
+
+  useEffect(() => {
+    if (act.id in descCache.current) {
+      setDescription(descCache.current[act.id]);
+      return;
+    }
+    setDescription("loading");
+    apiFetch(`${API_URL}/strava/activities/${act.id}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        const desc = (data?.description as string | null) ?? null;
+        descCache.current[act.id] = desc;
+        setDescription(desc);
+        if (data?.photo_url && !act.photo_url) {
+          act.photo_url = data.photo_url as string;
+        }
+      })
+      .catch(() => {
+        descCache.current[act.id] = null;
+        setDescription(null);
+      });
+  }, [act.id]);
+
+  const dist = units === "imperial"
+    ? `${(act.distance_m * 0.000621371).toFixed(1)} mi`
+    : `${(act.distance_m / 1000).toFixed(1)} km`;
+
+  const elapsed = (() => {
+    const h = Math.floor(act.elapsed_time_s / 3600);
+    const m = Math.floor((act.elapsed_time_s % 3600) / 60);
+    return h > 0 ? `${h}h ${m}m` : `${m}m`;
+  })();
+
+  const elev = units === "imperial"
+    ? `+${Math.round(act.total_elevation_gain_m * 3.28084).toLocaleString()} ft`
+    : `+${Math.round(act.total_elevation_gain_m).toLocaleString()} m`;
+
+  const date = act.start_date
+    ? new Date(act.start_date).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    : "";
+
+  const sportLabel = act.sport_type.replace(/([A-Z])/g, " $1").trim();
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        bottom: 80,
+        right: 10,
+        width: 300,
+        background: theme.panel,
+        borderRadius: 10,
+        boxShadow: "0 4px 24px rgba(0,0,0,0.28)",
+        overflow: "hidden",
+        fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        zIndex: 1000,
+        color: theme.text,
+      }}
+    >
+      {act.photo_url && (
+        <img
+          src={act.photo_url}
+          alt=""
+          style={{ width: "100%", height: 160, objectFit: "cover", display: "block" }}
+          onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }}
+        />
+      )}
+
+      <div style={{ padding: "12px 14px" }}>
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 6 }}>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <span style={{
+              display: "inline-block",
+              background: act.color,
+              color: "#fff",
+              fontSize: 10,
+              fontWeight: 700,
+              padding: "2px 7px",
+              borderRadius: 4,
+              letterSpacing: "0.05em",
+              marginBottom: 5,
+              textTransform: "uppercase",
+            }}>
+              {sportLabel}
+            </span>
+            <div style={{ fontWeight: 700, fontSize: 14, lineHeight: 1.3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {act.name}
+            </div>
+            <div style={{ fontSize: 12, color: theme.muted, marginTop: 2 }}>{date}</div>
+          </div>
+          <button
+            onClick={onClose}
+            style={{ background: "none", border: "none", cursor: "pointer", color: theme.muted, fontSize: 18, lineHeight: 1, padding: "0 0 0 8px", flexShrink: 0 }}
+          >×</button>
+        </div>
+
+        <div style={{
+          display: "flex",
+          borderTop: `1px solid ${theme.divider}`,
+          borderBottom: `1px solid ${theme.divider}`,
+          padding: "8px 0",
+          margin: "8px 0",
+          textAlign: "center",
+        }}>
+          {([
+            { label: "Distance", value: dist },
+            { label: "Time", value: elapsed },
+            { label: "Elevation", value: elev },
+          ] as const).map(({ label, value }, i) => (
+            <div key={label} style={{ flex: 1, borderLeft: i > 0 ? `1px solid ${theme.divider}` : "none", padding: "0 6px" }}>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>{value}</div>
+              <div style={{ fontSize: 10, color: theme.muted, textTransform: "uppercase", letterSpacing: "0.05em", marginTop: 1 }}>{label}</div>
+            </div>
+          ))}
+        </div>
+
+        {description === "loading" && (
+          <div style={{ fontSize: 12, color: theme.muted, marginBottom: 6 }}>Loading…</div>
+        )}
+        {description && description !== "loading" && (
+          <div style={{ fontSize: 12, lineHeight: 1.5, marginBottom: 6, maxHeight: 80, overflowY: "auto", color: theme.text }}>
+            {description}
+          </div>
+        )}
+
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <a
+            href={`https://www.strava.com/activities/${act.id}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            style={{ fontSize: 12, color: "#FC4C02", textDecoration: "none", fontWeight: 600 }}
+          >
+            View on Strava ↗
+          </a>
+          {activities.length > 1 && (
+            <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 12, color: theme.muted }}>
+              <button
+                onClick={() => onIndexChange(index - 1)}
+                disabled={index === 0}
+                style={{ background: "none", border: "none", cursor: index === 0 ? "default" : "pointer", color: index === 0 ? theme.muted : theme.text, fontSize: 16, padding: "0 2px", lineHeight: 1 }}
+              >‹</button>
+              <span>{index + 1} / {activities.length}</span>
+              <button
+                onClick={() => onIndexChange(index + 1)}
+                disabled={index === activities.length - 1}
+                style={{ background: "none", border: "none", cursor: index === activities.length - 1 ? "default" : "pointer", color: index === activities.length - 1 ? theme.muted : theme.text, fontSize: 16, padding: "0 2px", lineHeight: 1 }}
+              >›</button>
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
