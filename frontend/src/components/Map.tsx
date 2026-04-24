@@ -12,9 +12,33 @@ const INITIAL_CENTER: [number, number] = [-105.5, 39.0];
 const INITIAL_ZOOM = 7;
 const COLORADO_MTN_BOUNDS: [number, number, number, number] = [-109.06, 37.0, -104.5, 41.0];
 
-const MAP_STYLES = {
-  light: "https://tiles.openfreemap.org/styles/positron",
-  dark: "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+type BasemapId = "light" | "dark" | "topo" | "satellite" | "hybrid";
+
+function rasterStyle(tiles: string[], attribution: string): maplibregl.StyleSpecification {
+  return {
+    version: 8,
+    // Glyphs needed for SNOTEL symbol layers on raster basemaps.
+    glyphs: "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf",
+    sources: { basemap: { type: "raster", tiles, tileSize: 256, attribution } },
+    layers: [{ id: "basemap", type: "raster", source: "basemap" }],
+  };
+}
+
+const MAP_STYLES: Record<BasemapId, string | maplibregl.StyleSpecification> = {
+  light:     "https://tiles.openfreemap.org/styles/positron",
+  dark:      "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+  topo:      rasterStyle(
+    ["https://basemap.national-map.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}"],
+    "USGS National Map",
+  ),
+  satellite: rasterStyle(
+    ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+    "Esri, DigitalGlobe",
+  ),
+  hybrid:    rasterStyle(
+    ["https://basemap.national-map.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}"],
+    "USGS Imagery+Topo",
+  ),
 };
 
 function cogS3(path: string) {
@@ -663,7 +687,7 @@ export function Map({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const searchMarkerRef = useRef<maplibregl.Marker | null>(null);
 
-  const [dark, setDark] = useState(false);
+  const [basemap, setBasemap] = useState<BasemapId>("light");
   const [visible, setVisible] = useState<Record<string, boolean>>(
     () => Object.fromEntries(OVERLAY_LAYERS.map((l) => [l.id, l.defaultVisible])),
   );
@@ -839,7 +863,7 @@ export function Map({
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    map.setStyle(dark ? MAP_STYLES.dark : MAP_STYLES.light);
+    map.setStyle(MAP_STYLES[basemap]);
     map.once("style.load", () => {
       addOverlayLayers(map, visibleRef.current, opacityRef.current);
       addMeasureLayers(map);
@@ -851,7 +875,7 @@ export function Map({
       if (stravaDataRef.current) setStravaData(map, stravaDataRef.current);
       applyStravaHighlight(map, selectedStravaIdRef.current);
     });
-  }, [dark]);
+  }, [basemap]);
 
   // Sync visibility state → MapLibre.
   // Don't gate on isStyleLoaded() — it returns false while tiles load (style layers still exist).
@@ -968,7 +992,18 @@ export function Map({
       .catch((err) => console.warn("Strava fetch failed", err));
   }, [stravaStatus.connected, stravaLoaded]);
 
+  const dark = basemap === "dark";
   const theme = dark ? THEMES.dark : THEMES.light;
+
+  // Auto-enable hillshade at a sensible opacity when switching to a terrain basemap.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (basemap === "satellite" || basemap === "hybrid" || basemap === "topo") {
+      setVisible(v => ({ ...v, hillshade: true }));
+      const op = basemap === "satellite" ? 0.4 : basemap === "hybrid" ? 0.35 : 0.45;
+      setOpacity(o => ({ ...o, hillshade: op }));
+    }
+  }, [basemap]);
 
   function flyToCoords(lat: number, lon: number) {
     const map = mapRef.current;
@@ -988,12 +1023,12 @@ export function Map({
         groups={LAYER_GROUPS}
         visible={visible}
         opacity={opacity}
-        dark={dark}
+        basemap={basemap}
         units={units}
         theme={theme}
         onToggle={(id) => setVisible((v) => ({ ...v, [id]: !v[id] }))}
         onOpacity={(id, val) => setOpacity((o) => ({ ...o, [id]: val }))}
-        onDarkToggle={() => setDark((d) => !d)}
+        onBasemapChange={setBasemap}
         onUnitsToggle={() => setUnits((u) => (u === "imperial" ? "metric" : "imperial"))}
         onLogout={onLogout}
         stravaStatus={stravaStatus}
@@ -1054,12 +1089,12 @@ function LayerPanel({
   groups,
   visible,
   opacity,
-  dark,
+  basemap,
   units,
   theme,
   onToggle,
   onOpacity,
-  onDarkToggle,
+  onBasemapChange,
   onUnitsToggle,
   onLogout,
   stravaStatus,
@@ -1071,12 +1106,12 @@ function LayerPanel({
   groups: LayerGroup[];
   visible: Record<string, boolean>;
   opacity: Record<string, number>;
-  dark: boolean;
+  basemap: BasemapId;
   units: Units;
   theme: Theme;
   onToggle: (id: string) => void;
   onOpacity: (id: string, val: number) => void;
-  onDarkToggle: () => void;
+  onBasemapChange: (id: BasemapId) => void;
   onUnitsToggle: () => void;
   onLogout: () => void;
   stravaStatus: StravaStatus;
@@ -1114,48 +1149,55 @@ function LayerPanel({
           display: "flex",
           alignItems: "center",
           justifyContent: "space-between",
-          marginBottom: 10,
+          marginBottom: 7,
         }}
       >
         <span style={{ fontWeight: 700, fontSize: 12, letterSpacing: "0.08em", color: theme.muted }}>
           LAYERS
         </span>
-        <div style={{ display: "flex", gap: 4 }}>
+        <button
+          onClick={onUnitsToggle}
+          title={`Switch to ${units === "imperial" ? "metric" : "imperial"}`}
+          style={{
+            background: "none",
+            border: `1px solid ${theme.divider}`,
+            borderRadius: 4,
+            cursor: "pointer",
+            fontSize: 10,
+            fontWeight: 700,
+            padding: "2px 5px",
+            color: theme.muted,
+            lineHeight: 1,
+            letterSpacing: "0.04em",
+          }}
+        >
+          {units === "imperial" ? "metric" : "imperial"}
+        </button>
+      </div>
+
+      {/* Basemap picker */}
+      <div style={{ display: "flex", gap: 3, marginBottom: 10 }}>
+        {(["light", "dark", "topo", "satellite", "hybrid"] as const).map((id) => (
           <button
-            onClick={onUnitsToggle}
-            title={`Switch to ${units === "imperial" ? "metric" : "imperial"}`}
+            key={id}
+            onClick={() => onBasemapChange(id)}
             style={{
-              background: "none",
-              border: `1px solid ${theme.divider}`,
+              flex: 1,
+              padding: "3px 0",
+              border: `1.5px solid ${basemap === id ? theme.accent : theme.divider}`,
               borderRadius: 4,
+              background: basemap === id ? theme.accent : "none",
+              color: basemap === id ? "#fff" : theme.muted,
+              fontFamily: "ui-sans-serif, system-ui, sans-serif",
+              fontSize: 9,
+              fontWeight: basemap === id ? 700 : 400,
               cursor: "pointer",
-              fontSize: 10,
-              fontWeight: 700,
-              padding: "2px 5px",
-              color: theme.muted,
-              lineHeight: 1,
-              letterSpacing: "0.04em",
+              letterSpacing: "0.02em",
             }}
           >
-            {units === "imperial" ? "metric" : "imperial"}
+            {id === "satellite" ? "Sat" : id === "hybrid" ? "Hyb" : id.charAt(0).toUpperCase() + id.slice(1)}
           </button>
-          <button
-            onClick={onDarkToggle}
-            title={dark ? "Switch to light mode" : "Switch to dark mode"}
-            style={{
-              background: "none",
-              border: "none",
-              cursor: "pointer",
-              fontSize: 15,
-              padding: "2px 4px",
-              borderRadius: 4,
-              color: theme.text,
-              lineHeight: 1,
-            }}
-          >
-            {dark ? "☀️" : "🌙"}
-          </button>
-        </div>
+        ))}
       </div>
 
       {/* Groups */}
