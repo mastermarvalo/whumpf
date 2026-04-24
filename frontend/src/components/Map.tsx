@@ -14,31 +14,69 @@ const COLORADO_MTN_BOUNDS: [number, number, number, number] = [-109.06, 37.0, -1
 
 type BasemapId = "light" | "dark" | "topo" | "satellite" | "hybrid";
 
-function rasterStyle(tiles: string[], attribution: string): maplibregl.StyleSpecification {
+const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
+const OMP_GLYPHS = "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf";
+
+function rasterStyle(
+  tiles: string[],
+  attribution: string,
+  maxzoom?: number,
+): maplibregl.StyleSpecification {
   return {
     version: 8,
     // Glyphs needed for SNOTEL symbol layers on raster basemaps.
-    glyphs: "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf",
-    sources: { basemap: { type: "raster", tiles, tileSize: 256, attribution } },
+    glyphs: OMP_GLYPHS,
+    sources: {
+      basemap: { type: "raster", tiles, tileSize: 256, attribution, ...(maxzoom ? { maxzoom } : {}) },
+    },
     layers: [{ id: "basemap", type: "raster", source: "basemap" }],
+  };
+}
+
+// Satellite + transparent label/road overlay (classic "hybrid" view).
+function hybridStyle(): maplibregl.StyleSpecification {
+  return {
+    version: 8,
+    glyphs: OMP_GLYPHS,
+    sources: {
+      sat: {
+        type: "raster",
+        tiles: [`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`],
+        tileSize: 256,
+        maxzoom: 17,
+        attribution: "Esri, DigitalGlobe",
+      },
+      ref: {
+        type: "raster",
+        // Transparent PNG overlay — labels, roads, boundaries on top of satellite.
+        tiles: [`${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`],
+        tileSize: 256,
+        maxzoom: 17,
+      },
+    },
+    layers: [
+      { id: "basemap-sat", type: "raster", source: "sat" },
+      { id: "basemap-ref", type: "raster", source: "ref" },
+    ],
   };
 }
 
 const MAP_STYLES: Record<BasemapId, string | maplibregl.StyleSpecification> = {
   light:     "https://tiles.openfreemap.org/styles/positron",
   dark:      "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+  // Esri World Topo Map: contours, shaded relief, trails, water — no API key required.
   topo:      rasterStyle(
-    ["https://basemap.national-map.gov/arcgis/rest/services/USGSTopo/MapServer/tile/{z}/{y}/{x}"],
-    "USGS National Map",
+    [`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`],
+    "Esri",
   ),
+  // maxzoom: 17 — beyond that Esri returns a "not available yet" placeholder JPEG.
+  // MapLibre overzooms the z17 tile instead of requesting z18+.
   satellite: rasterStyle(
-    ["https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}"],
+    [`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`],
     "Esri, DigitalGlobe",
+    17,
   ),
-  hybrid:    rasterStyle(
-    ["https://basemap.national-map.gov/arcgis/rest/services/USGSImageryTopo/MapServer/tile/{z}/{y}/{x}"],
-    "USGS Imagery+Topo",
-  ),
+  hybrid:    hybridStyle(),
 };
 
 function cogS3(path: string) {
