@@ -265,13 +265,15 @@ const LAYER_GROUPS: LayerGroup[] = [
       {
         id: "aspect",
         label: "Aspect",
-        // buffer=2: TiTiler fetches 2 extra pixels per edge so hue transitions
-        // don't seam at tile boundaries when resampled.
+        // buffer=2: TiTiler fetches extra pixels per edge so hue transitions
+        // don't seam at tile boundaries. width/height=512: 2:1 downscale in
+        // MapLibre smooths the blocky 10m DEM cells.
         tiles: cogTiles(`${REGION}/aspect.tif`, {
           colormap_name: "hsv",
           rescale: "0,360",
           nodata: "-9999",
           buffer: "2",
+          tilesize: "512",
         }),
         opacity: 0.7,
         defaultVisible: false,
@@ -281,6 +283,16 @@ const LAYER_GROUPS: LayerGroup[] = [
             "linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)",
           stops: ["N", "E", "S", "W", "N"],
         },
+      },
+      {
+        id: "contours",
+        label: "Contour lines",
+        // Transparent PNG tiles rendered server-side from the DEM COG.
+        // 40m minor / 200m major intervals — drawn on top of slope/aspect.
+        tiles: [`${API_URL}/tiles/contours/{z}/{x}/{y}?region=${REGION}`],
+        opacity: 1.0,
+        defaultVisible: false,
+        noSlider: true,
       },
     ],
     upcoming: [],

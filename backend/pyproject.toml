@@ -35,4 +35,8 @@ dependencies = [
     "pyproj>=3.7",
     "rasterio>=1.4",
     "numpy>=2.1",
+
+    # Contour tile rendering
+    "contourpy>=1.2",
+    "Pillow>=10.4",
 ]
