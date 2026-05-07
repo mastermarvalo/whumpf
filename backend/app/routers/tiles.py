@@ -3,6 +3,7 @@ TiTiler can't handle natively."""
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -91,26 +92,29 @@ _SLOPE_CMAP = json.dumps(_build_slope_colormap())
 
 
 @router.get("/slope/{z}/{x}/{y}")
-async def slope_tile(z: int, x: int, y: int, region: str = "sanjuans") -> Response:
+async def slope_tile(
+    z: int, x: int, y: int,
+    region: str = "colorado",
+    hires: bool = False,
+) -> Response:
     """Proxy a slope tile from TiTiler with the CalTopo V1 color ramp.
 
+    hires=true serves from slope_hires.tif (1m priority-stack derivative).
     Requests 512×512 from TiTiler so MapLibre's 2:1 display downscale
-    acts as bilinear anti-aliasing, reducing the blocky 10m-cell appearance.
+    acts as bilinear anti-aliasing, reducing the blocky DEM cell appearance.
     """
+    cog_name = "slope_hires.tif" if hires else "slope.tif"
     settings = get_settings()
     async with httpx.AsyncClient(timeout=15) as client:
         try:
             resp = await client.get(
                 f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png",
                 params={
-                    "url": _s3(f"{region}/slope.tif"),
+                    "url": _s3(f"{region}/{cog_name}"),
                     "rescale": "0,60",
                     "nodata": "-9999",
                     "colormap": _SLOPE_CMAP,
-                    # 2px buffer gives TiTiler neighbour context at tile edges.
                     "buffer": 2,
-                    # 512×512 output; MapLibre source has tileSize:256 so it
-                    # downscales 2:1 → bilinear smoothing of the 10m DEM cells.
                     "tilesize": 512,
                 },
             )
@@ -167,9 +171,10 @@ def _contour_intervals(z: int) -> tuple[float, float]:
     return 100.0, 100.0
 
 
-def _build_dem_url(settings, region: str) -> str:
-    """vsicurl HTTP URL for the DEM COG in MinIO — avoids S3 credential issues."""
-    return f"/vsicurl/{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{region}/dem.tif"
+def _build_dem_url(settings, region: str, hires: bool = False) -> str:
+    """vsicurl HTTP URL for a DEM COG in MinIO — avoids S3 credential issues."""
+    name = "dem_hires.tif" if hires else "dem.tif"
+    return f"/vsicurl/{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{region}/{name}"
 
 
 def _render_contours(
@@ -244,21 +249,46 @@ def _render_contours(
     return buf.getvalue()
 
 
+def _render_contours_with_fallback(
+    dem_url: str, fallback_url: str | None,
+    xmin: float, ymin: float, xmax: float, ymax: float, z: int,
+) -> bytes | None:
+    """Try dem_url; if rasterio fails to open it, retry with fallback_url."""
+    try:
+        return _render_contours(dem_url, xmin, ymin, xmax, ymax, z)
+    except Exception:
+        if fallback_url:
+            return _render_contours(fallback_url, xmin, ymin, xmax, ymax, z)
+        return None
+
+
 @router.get("/contours/{z}/{x}/{y}")
-async def contour_tile(z: int, x: int, y: int, region: str = "sanjuans") -> Response:
+async def contour_tile(z: int, x: int, y: int, region: str = "colorado") -> Response:
     """Render zoom-adaptive DEM contour lines as a transparent PNG tile.
 
     z<11: 100m major only  |  z11-13: 40m/200m  |  z>=14: 12m/60m (CalTopo quality)
-    """
-    import asyncio
 
+    At z>=13, prefers dem_hires.tif (1m) over dem.tif (10m) when hires data
+    exists for the region. Falls back to dem.tif transparently if hires is absent.
+    """
     settings = get_settings()
     xmin, ymin, xmax, ymax = _tile_mercator_bounds(z, x, y)
-    dem_url = _build_dem_url(settings, region)
+
+    base_url  = _build_dem_url(settings, region, hires=False)
+    hires_url = _build_dem_url(settings, region, hires=True) if z >= 13 else None
+
+    if hires_url:
+        # Prefer hires; _render_contours_with_fallback retries with base on open failure.
+        dem_url      = hires_url
+        fallback_url = base_url
+    else:
+        dem_url      = base_url
+        fallback_url = None
 
     loop = asyncio.get_event_loop()
     png = await loop.run_in_executor(
-        _POOL, _render_contours, dem_url, xmin, ymin, xmax, ymax, z
+        _POOL, _render_contours_with_fallback,
+        dem_url, fallback_url, xmin, ymin, xmax, ymax, z,
     )
     if png is None:
         return Response(status_code=204)

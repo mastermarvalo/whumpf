@@ -1,8 +1,4 @@
-/**
- * Tiny status pill in the bottom-right that pings /readyz and reports
- * whether the backend + Postgres are alive. Cheap, reassuring, kills the
- * "is anything actually wired up?" question on day one.
- */
+import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -21,6 +17,7 @@ async function fetchReady(): Promise<ReadyResponse> {
 }
 
 export function StatusBar() {
+  const [hovered, setHovered] = useState(false);
   const { data, isError } = useQuery({
     queryKey: ["readyz"],
     queryFn: fetchReady,
@@ -29,8 +26,8 @@ export function StatusBar() {
   });
 
   const ok = data?.ready === true;
-  const bg = isError ? "#8b0000" : ok ? "#1a5928" : "#8a6d00";
-  const label = isError
+  const dotColor = isError ? "#e05a2b" : ok ? "#2eaa6e" : "#f4c430";
+  const tipText = isError
     ? "api unreachable"
     : ok
       ? `whumpf ${data?.version} · ${data?.env}`
@@ -38,21 +35,45 @@ export function StatusBar() {
 
   return (
     <div
+      onMouseEnter={() => setHovered(true)}
+      onMouseLeave={() => setHovered(false)}
       style={{
         position: "absolute",
         right: 12,
         bottom: 12,
-        padding: "6px 10px",
-        background: bg,
-        color: "#fff",
-        fontFamily: "ui-monospace, monospace",
-        fontSize: 12,
-        borderRadius: 4,
-        pointerEvents: "none",
-        opacity: 0.9,
+        zIndex: 900,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        width: 20,
+        height: 20,
+        cursor: "default",
+        userSelect: "none",
       }}
     >
-      {label}
+      {hovered && (
+        <div
+          style={{
+            position: "absolute",
+            right: 0,
+            bottom: "calc(100% + 5px)",
+            background: "rgba(18,18,28,0.96)",
+            color: "#ddd",
+            padding: "5px 9px",
+            borderRadius: 5,
+            fontSize: 11,
+            fontFamily: "ui-monospace, monospace",
+            whiteSpace: "nowrap",
+            border: "1px solid rgba(255,255,255,0.08)",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.35)",
+            pointerEvents: "none",
+          }}
+        >
+          <span style={{ color: dotColor }}>●</span>
+          {" "}{tipText}
+        </div>
+      )}
+      <span style={{ color: "#555", fontSize: 15, lineHeight: 1 }}>ⓘ</span>
     </div>
   );
 }

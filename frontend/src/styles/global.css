@@ -13,11 +13,36 @@ body,
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
 }
 
-/* Force MapLibre popups to render in light mode regardless of color-scheme. */
+/* Dark popup theme — matches app panel: rgba(18,18,28,0.96) */
 .maplibregl-popup-content {
-  color-scheme: light;
-  color: #1a1a1a;
-  background: #fff;
+  color-scheme: dark;
+  color: #eee;
+  background: rgba(18, 18, 28, 0.96);
+  border-radius: 8px !important;
+  padding: 10px 12px !important;
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.55) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* Tip arrow — use a solid equivalent of rgba(18,18,28,0.96) on dark map. */
+.maplibregl-popup-anchor-top    .maplibregl-popup-tip { border-bottom-color: #12121c !important; }
+.maplibregl-popup-anchor-bottom .maplibregl-popup-tip { border-top-color:    #12121c !important; }
+.maplibregl-popup-anchor-left   .maplibregl-popup-tip { border-right-color:  #12121c !important; }
+.maplibregl-popup-anchor-right  .maplibregl-popup-tip { border-left-color:   #12121c !important; }
+.maplibregl-popup-anchor-top-left     .maplibregl-popup-tip { border-bottom-color: #12121c !important; }
+.maplibregl-popup-anchor-top-right    .maplibregl-popup-tip { border-bottom-color: #12121c !important; }
+.maplibregl-popup-anchor-bottom-left  .maplibregl-popup-tip { border-top-color:    #12121c !important; }
+.maplibregl-popup-anchor-bottom-right .maplibregl-popup-tip { border-top-color:    #12121c !important; }
+
+/* Close button legible on dark background. */
+.maplibregl-popup-close-button {
+  color: #aaa;
+  font-size: 18px;
+  padding: 2px 6px;
+}
+.maplibregl-popup-close-button:hover {
+  color: #fff;
+  background: transparent;
 }
 
 /* MapLibre attribution should stay legible on dark backgrounds. */

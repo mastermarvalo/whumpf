@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import maplibregl from "maplibre-gl";
 import { apiFetch } from "../auth";
 import type { StravaStatus } from "../App";
@@ -6,11 +6,30 @@ import type { StravaStatus } from "../App";
 const TITILER_URL = import.meta.env.VITE_TITILER_URL ?? "http://localhost:8001";
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 const MINIO_BUCKET = "dem-cogs";
-const REGION = "sanjuans";
+const REGION = "colorado";
 
 const INITIAL_CENTER: [number, number] = [-105.5, 39.0];
 const INITIAL_ZOOM = 7;
 const COLORADO_MTN_BOUNDS: [number, number, number, number] = [-109.06, 37.0, -104.5, 41.0];
+// Padded Colorado bbox used as map maxBounds when region lock is on.
+const CO_MAX_BOUNDS: [number, number, number, number] = [-109.5, 36.5, -101.5, 41.5];
+
+// Inverted polygon: world rectangle with Colorado cut out as a hole.
+// Renders as a black fill masking everything outside Colorado.
+const CO_MASK_GEOJSON = {
+  type: "FeatureCollection",
+  features: [{
+    type: "Feature",
+    geometry: {
+      type: "Polygon",
+      coordinates: [
+        [[-180, -90], [180, -90], [180, 90], [-180, 90], [-180, -90]],  // outer world
+        [[-109.25, 36.80], [-101.85, 36.80], [-101.85, 41.20], [-109.25, 41.20], [-109.25, 36.80]], // CO hole (CW)
+      ],
+    },
+    properties: {},
+  }],
+};
 
 // "streets" = vector basemap (light or dark per theme toggle).
 // The other three are raster basemaps independent of the theme.
@@ -95,8 +114,9 @@ function cogTiles(cogPath: string, extra: Record<string, string> = {}): string[]
 // ── types ──────────────────────────────────────────────────────────────────────
 
 interface Legend {
-  gradient: string;
-  stops: string[];
+  gradient?: string;
+  stops?: string[];
+  swatches?: Array<{ color: string; label: string }>;
 }
 
 interface ActiveLayer {
@@ -108,6 +128,9 @@ interface ActiveLayer {
   defaultVisible: boolean;
   noSlider?: boolean;
   legend?: Legend;
+  // Minimum zoom at which the tile source starts loading (default: 6).
+  // Set higher for hires layers so MapLibre skips requests at overview zoom levels.
+  sourceMinzoom?: number;
   // Extra MapLibre raster paint properties merged in at layer creation (e.g. saturation, resampling).
   blendPaint?: { "raster-saturation"?: number; "raster-resampling"?: "linear" | "nearest" };
 }
@@ -322,11 +345,43 @@ const LAYER_GROUPS: LayerGroup[] = [
     id: "avalanche",
     label: "Avalanche",
     color: "#e05a2b",
-    active: [],
-    upcoming: [
-      { id: "caic-danger", label: "CAIC Danger Rose" },
-      { id: "caic-obs", label: "Field Observations" },
+    active: [
+      {
+        id: "caic-danger",
+        label: "CAIC Danger Zones",
+        kind: "geojson",
+        tiles: [],
+        opacity: 0.5,
+        defaultVisible: false,
+        noSlider: true,
+        legend: {
+          swatches: [
+            { color: "#00b200", label: "Low" },
+            { color: "#f4e500", label: "Mod" },
+            { color: "#ff9933", label: "Consid" },
+            { color: "#d7191c", label: "High" },
+            { color: "#000000", label: "Extreme" },
+          ],
+        },
+      },
+      {
+        id: "caic-obs",
+        label: "Field Observations",
+        kind: "geojson",
+        tiles: [],
+        opacity: 1,
+        defaultVisible: false,
+        noSlider: true,
+        legend: {
+          swatches: [
+            { color: "#d7191c", label: "Caught" },
+            { color: "#ff9933", label: "Saw avy" },
+            { color: "#5ba3f5", label: "Field obs" },
+          ],
+        },
+      },
     ],
+    upcoming: [],
   },
   {
     id: "weather",
@@ -428,7 +483,22 @@ const THEMES = {
   },
 };
 
-// ── coord search ──────────────────────────────────────────────────────────────
+const MOBILE_NAV_H = 56; // px — height of the bottom nav bar on mobile
+
+function useIsMobile() {
+  const [mobile, setMobile] = useState(() => window.innerWidth < 640);
+  useEffect(() => {
+    const fn = () => setMobile(window.innerWidth < 640);
+    window.addEventListener("resize", fn);
+    return () => window.removeEventListener("resize", fn);
+  }, []);
+  return mobile;
+}
+
+// ── coord search + Photon geocoder ────────────────────────────────────────────
+
+// Colorado bbox for Photon: lon_min,lat_min,lon_max,lat_max
+const CO_BBOX = "-109.06,37.0,-102.05,41.0";
 
 function parseCoords(raw: string): [number, number] | null {
   const parts = raw.trim().split(/[\s,]+/).filter(Boolean);
@@ -439,87 +509,215 @@ function parseCoords(raw: string): [number, number] | null {
   return null;
 }
 
+interface PhotonFeature {
+  geometry: { coordinates: [number, number] };
+  properties: {
+    name?: string;
+    street?: string;
+    city?: string;
+    county?: string;
+    state?: string;
+    type?: string;
+    osm_type?: string;
+  };
+}
+
+function photonLabel(f: PhotonFeature): string {
+  const p = f.properties;
+  const parts: string[] = [];
+  if (p.name) parts.push(p.name);
+  if (p.street && p.street !== p.name) parts.push(p.street);
+  if (p.city && p.city !== p.name) parts.push(p.city);
+  else if (p.county) parts.push(p.county);
+  return parts.join(", ");
+}
+
+function photonSub(f: PhotonFeature): string {
+  const p = f.properties;
+  const type = p.type ?? p.osm_type ?? "";
+  const county = p.county ?? "";
+  return [type, county].filter(Boolean).join(" · ");
+}
+
 function SearchBar({
   theme,
+  mobile,
   onSearch,
 }: {
   theme: Theme;
+  mobile: boolean;
   onSearch: (lat: number, lon: number) => void;
 }) {
   const [value, setValue] = useState("");
-  const [error, setError] = useState(false);
+  const [suggestions, setSuggestions] = useState<PhotonFeature[]>([]);
+  const [activeIdx, setActiveIdx] = useState(-1);
+  const [open, setOpen] = useState(false);
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
 
-  function submit() {
-    const coords = parseCoords(value);
-    if (!coords) { setError(true); return; }
-    setError(false);
-    onSearch(coords[0], coords[1]);
+  function commit(lat: number, lon: number) {
+    setOpen(false);
+    setSuggestions([]);
+    onSearch(lat, lon);
   }
+
+  function submitValue(raw: string) {
+    const coords = parseCoords(raw);
+    if (coords) { commit(coords[0], coords[1]); return; }
+    // If there's an active suggestion use it; otherwise use first suggestion
+    const pick = activeIdx >= 0 ? suggestions[activeIdx] : suggestions[0];
+    if (pick) {
+      const [lon, lat] = pick.geometry.coordinates;
+      setValue(photonLabel(pick));
+      commit(lat, lon);
+    }
+  }
+
+  useEffect(() => {
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    if (value.trim().length < 2 || parseCoords(value)) {
+      setSuggestions([]);
+      setOpen(false);
+      return;
+    }
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const url =
+          `https://photon.komoot.io/api/?q=${encodeURIComponent(value)}&bbox=${CO_BBOX}&limit=7&lang=en`;
+        const resp = await fetch(url);
+        if (!resp.ok) return;
+        const data = await resp.json();
+        const feats: PhotonFeature[] = data.features ?? [];
+        setSuggestions(feats);
+        setActiveIdx(-1);
+        setOpen(feats.length > 0);
+      } catch {
+        // network failure — silently ignore
+      }
+    }, 280);
+  }, [value]);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    function onDown(e: MouseEvent) {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", onDown);
+    return () => document.removeEventListener("mousedown", onDown);
+  }, []);
+
+  const inputStyle: CSSProperties = {
+    flex: 1,
+    minWidth: 0,
+    padding: "9px 12px",
+    borderRadius: 6,
+    border: `1.5px solid ${theme.divider}`,
+    background: theme.panel,
+    color: theme.text,
+    fontFamily: "ui-sans-serif, system-ui, sans-serif",
+    fontSize: 14,
+    outline: "none",
+    boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+  };
 
   return (
     <div
+      ref={containerRef}
       style={{
         position: "fixed",
         top: 10,
-        left: "50%",
-        transform: "translateX(-50%)",
+        ...(mobile
+          ? { left: 10, right: 10 }
+          : { left: "55%", transform: "translateX(-50%)", width: 380 }),
         zIndex: 1000,
         display: "flex",
         flexDirection: "column",
-        alignItems: "center",
+        alignItems: "stretch",
         gap: 4,
       }}
     >
       <form
-        onSubmit={(e) => { e.preventDefault(); submit(); }}
+        onSubmit={(e) => { e.preventDefault(); submitValue(value); }}
         style={{ display: "flex", gap: 4 }}
       >
         <input
           value={value}
-          onChange={(e) => { setValue(e.target.value); setError(false); }}
-          placeholder="lat, lon — e.g. 37.95, −107.75"
-          style={{
-            width: 260,
-            padding: "7px 12px",
-            borderRadius: 6,
-            border: `1.5px solid ${error ? "#e05a2b" : theme.divider}`,
-            background: theme.panel,
-            color: theme.text,
-            fontFamily: "ui-sans-serif, system-ui, sans-serif",
-            fontSize: 13,
-            outline: "none",
-            boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+          onChange={(e) => { setValue(e.target.value); }}
+          onFocus={() => { if (suggestions.length > 0) setOpen(true); }}
+          onKeyDown={(e) => {
+            if (!open) return;
+            if (e.key === "ArrowDown") {
+              e.preventDefault();
+              setActiveIdx((i) => Math.min(i + 1, suggestions.length - 1));
+            } else if (e.key === "ArrowUp") {
+              e.preventDefault();
+              setActiveIdx((i) => Math.max(i - 1, -1));
+            } else if (e.key === "Escape") {
+              setOpen(false);
+            }
           }}
+          placeholder="Search Colorado trails, peaks, places…"
+          autoComplete="off"
+          style={inputStyle}
         />
         <button
           type="submit"
           style={{
-            padding: "7px 13px",
+            padding: "9px 16px",
             borderRadius: 6,
             border: "none",
             background: theme.accent,
             color: "#fff",
             fontFamily: "ui-sans-serif, system-ui, sans-serif",
-            fontSize: 13,
+            fontSize: 14,
             cursor: "pointer",
             boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+            flexShrink: 0,
           }}
         >
           Go
         </button>
       </form>
-      {error && (
+
+      {open && suggestions.length > 0 && (
         <div
           style={{
             background: theme.panel,
-            color: "#e05a2b",
-            fontSize: 11,
-            padding: "3px 10px",
-            borderRadius: 4,
-            boxShadow: "0 1px 4px rgba(0,0,0,0.15)",
+            border: `1px solid ${theme.divider}`,
+            borderRadius: 6,
+            boxShadow: "0 4px 16px rgba(0,0,0,0.35)",
+            overflow: "hidden",
           }}
         >
-          Enter lat, lon — e.g. 37.95, −107.75
+          {suggestions.map((f, i) => (
+            <div
+              key={i}
+              onMouseDown={(e) => {
+                e.preventDefault();
+                const [lon, lat] = f.geometry.coordinates;
+                setValue(photonLabel(f));
+                commit(lat, lon);
+              }}
+              onMouseEnter={() => setActiveIdx(i)}
+              style={{
+                padding: "8px 12px",
+                cursor: "pointer",
+                background: i === activeIdx ? "rgba(255,255,255,0.07)" : "transparent",
+                borderTop: i > 0 ? `1px solid ${theme.divider}` : undefined,
+              }}
+            >
+              <div style={{ fontSize: 13, color: theme.text, fontWeight: 500 }}>
+                {photonLabel(f)}
+              </div>
+              {photonSub(f) && (
+                <div style={{ fontSize: 11, color: theme.muted, marginTop: 1 }}>
+                  {photonSub(f)}
+                </div>
+              )}
+            </div>
+          ))}
         </div>
       )}
     </div>
@@ -537,6 +735,26 @@ interface PointData {
   aspect?: number;
   tempF?: number | null;
   snowDepthIn?: number | null;
+  locationName?: string | null;
+}
+
+async function reverseGeocode(lat: number, lon: number): Promise<string | null> {
+  try {
+    const r = await fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lon}`);
+    if (!r.ok) return null;
+    const d = await r.json();
+    const p = d.features?.[0]?.properties;
+    if (!p) return null;
+    const parts: string[] = [];
+    if (p.name) parts.push(p.name);
+    if (p.street && p.street !== p.name) parts.push(p.street);
+    if (p.city) parts.push(p.city);
+    else if (p.county) parts.push(p.county);
+    if (p.state) parts.push(p.state);
+    return parts.length ? parts.join(", ") : null;
+  } catch {
+    return null;
+  }
 }
 
 function aspectCompass(deg: number): string {
@@ -599,6 +817,157 @@ function updateMeasureSource(map: maplibregl.Map | null, pts: [number, number][]
   );
 }
 
+// ── mobile sheet + nav ────────────────────────────────────────────────────────
+
+function MobileSheet({
+  open,
+  onClose,
+  theme,
+  children,
+}: {
+  open: boolean;
+  onClose: () => void;
+  theme: Theme;
+  children: React.ReactNode;
+}) {
+  return (
+    <>
+      <div
+        onClick={onClose}
+        style={{
+          position: "fixed",
+          inset: 0,
+          zIndex: 1001,
+          background: "rgba(0,0,0,0.35)",
+          opacity: open ? 1 : 0,
+          pointerEvents: open ? "auto" : "none",
+          transition: "opacity 0.25s",
+        }}
+      />
+      <div
+        style={{
+          position: "fixed",
+          bottom: 0,
+          left: 0,
+          right: 0,
+          zIndex: 1002,
+          background: theme.panel,
+          borderRadius: "16px 16px 0 0",
+          maxHeight: "82vh",
+          overflowY: "auto",
+          transform: open ? "translateY(0)" : "translateY(100%)",
+          transition: "transform 0.3s cubic-bezier(0.32,0.72,0,1)",
+          paddingBottom: "env(safe-area-inset-bottom)",
+        }}
+      >
+        <div style={{ display: "flex", justifyContent: "center", padding: "10px 0 2px" }}>
+          <div style={{ width: 40, height: 4, borderRadius: 2, background: theme.divider }} />
+        </div>
+        {children}
+      </div>
+    </>
+  );
+}
+
+function MobileNav({
+  theme,
+  layersOpen,
+  measureActive,
+  onLayersToggle,
+  onMeasureToggle,
+}: {
+  theme: Theme;
+  layersOpen: boolean;
+  measureActive: boolean;
+  onLayersToggle: () => void;
+  onMeasureToggle: () => void;
+}) {
+  function NavBtn({
+    label,
+    active,
+    onClick,
+    icon,
+  }: {
+    label: string;
+    active: boolean;
+    onClick: () => void;
+    icon: React.ReactNode;
+  }) {
+    return (
+      <button
+        onClick={onClick}
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          alignItems: "center",
+          justifyContent: "center",
+          gap: 3,
+          background: "none",
+          border: "none",
+          cursor: "pointer",
+          color: active ? theme.accent : theme.muted,
+          padding: "6px 0",
+          fontSize: 10,
+          fontFamily: "ui-sans-serif, system-ui, sans-serif",
+          fontWeight: active ? 700 : 400,
+          letterSpacing: "0.04em",
+          minHeight: 44,
+        }}
+      >
+        {icon}
+        {label}
+      </button>
+    );
+  }
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        bottom: 0,
+        left: 0,
+        right: 0,
+        height: MOBILE_NAV_H,
+        background: theme.panel,
+        borderTop: `1px solid ${theme.divider}`,
+        display: "flex",
+        alignItems: "stretch",
+        zIndex: 1000,
+        paddingBottom: "env(safe-area-inset-bottom)",
+        boxShadow: "0 -2px 12px rgba(0,0,0,0.12)",
+      }}
+    >
+      <NavBtn
+        label="Layers"
+        active={layersOpen}
+        onClick={onLayersToggle}
+        icon={
+          <svg width="20" height="16" viewBox="0 0 20 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+            <line x1="1" y1="2" x2="19" y2="2"/>
+            <line x1="1" y1="8" x2="19" y2="8"/>
+            <line x1="1" y1="14" x2="19" y2="14"/>
+          </svg>
+        }
+      />
+      <NavBtn
+        label="Measure"
+        active={measureActive}
+        onClick={onMeasureToggle}
+        icon={
+          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+            <line x1="2" y1="16" x2="16" y2="2"/>
+            <line x1="2" y1="16" x2="5" y2="16"/>
+            <line x1="2" y1="16" x2="2" y2="13"/>
+            <line x1="9" y1="9" x2="11" y2="7"/>
+            <line x1="5.5" y1="12.5" x2="7.5" y2="10.5"/>
+          </svg>
+        }
+      />
+    </div>
+  );
+}
+
 // ── map setup helpers ──────────────────────────────────────────────────────────
 
 function addOverlayLayers(
@@ -606,7 +975,13 @@ function addOverlayLayers(
   visible: Record<string, boolean>,
   opacity: Record<string, number>,
 ) {
-  const firstLabelId = map.getStyle().layers.find((l) => l.type === "symbol")?.id;
+  // On vector basemaps, insert overlays before the first symbol layer so labels stay on top.
+  // On hybrid, insert before basemap-ref (the transparent road/label overlay) for the same reason.
+  // On plain raster basemaps (topo, satellite) there are no symbol layers — append to top.
+  const beforeId: string | undefined =
+    map.getLayer("basemap-ref")
+      ? "basemap-ref"
+      : map.getStyle().layers.find((l) => l.type === "symbol")?.id;
   for (const layer of OVERLAY_LAYERS) {
     if (layer.kind === "geojson") continue; // managed separately
     map.addSource(layer.id, {
@@ -614,7 +989,7 @@ function addOverlayLayers(
       tiles: layer.tiles,
       tileSize: 256,
       bounds: COLORADO_MTN_BOUNDS,
-      minzoom: 6,
+      minzoom: layer.sourceMinzoom ?? 6,
       maxzoom: 16,
       attribution: "USGS 3DEP",
     });
@@ -631,7 +1006,7 @@ function addOverlayLayers(
         },
         layout: { visibility: visible[layer.id] ? "visible" : "none" },
       },
-      firstLabelId,
+      beforeId,
     );
   }
 }
@@ -723,6 +1098,132 @@ function setStravaVisibility(map: maplibregl.Map | null, visible: boolean) {
     map.setLayoutProperty("strava-lines", "visibility", visible ? "visible" : "none");
 }
 
+// ── CAIC danger zone map layer helpers ────────────────────────────────────────
+
+function addCaicLayers(map: maplibregl.Map) {
+  if (map.getSource("caic-danger")) return;
+  map.addSource("caic-danger", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({
+    id: "caic-danger-fill",
+    type: "fill",
+    source: "caic-danger",
+    paint: {
+      "fill-color": ["get", "color"],
+      "fill-opacity": 0.35,
+    },
+  });
+  map.addLayer({
+    id: "caic-danger-line",
+    type: "line",
+    source: "caic-danger",
+    paint: {
+      "line-color": ["get", "color"],
+      "line-width": 1.5,
+      "line-opacity": 0.8,
+    },
+  });
+}
+
+function setCaicData(map: maplibregl.Map | null, geojson: object) {
+  if (!map) return;
+  const src = map.getSource("caic-danger") as maplibregl.GeoJSONSource | undefined;
+  src?.setData(geojson as Parameters<typeof src.setData>[0]);
+}
+
+function setCaicVisibility(map: maplibregl.Map | null, visible: boolean) {
+  if (!map) return;
+  const v = visible ? "visible" : "none";
+  for (const id of ["caic-danger-fill", "caic-danger-line"]) {
+    if (map.getLayer(id)) map.setLayoutProperty(id, "visibility", v);
+  }
+}
+
+// ── CAIC field observations map layer helpers ─────────────────────────────────
+
+const OBS_COLORS: Record<string, string> = {
+  caught: "#d7191c",
+  avy:    "#ff9933",
+  field:  "#5ba3f5",
+};
+
+function addObsLayers(map: maplibregl.Map) {
+  if (map.getSource("caic-obs")) return;
+  map.addSource("caic-obs", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
+  map.addLayer({
+    id: "caic-obs-circles",
+    type: "circle",
+    source: "caic-obs",
+    paint: {
+      "circle-color": ["match", ["get", "obs_type"],
+        "caught", OBS_COLORS.caught,
+        "avy",    OBS_COLORS.avy,
+        OBS_COLORS.field,
+      ],
+      "circle-radius": 7,
+      "circle-stroke-width": 1.5,
+      "circle-stroke-color": "#fff",
+      "circle-opacity": 0.9,
+    },
+  });
+}
+
+function setObsData(map: maplibregl.Map | null, geojson: object) {
+  if (!map) return;
+  const src = map.getSource("caic-obs") as maplibregl.GeoJSONSource | undefined;
+  src?.setData(geojson as Parameters<typeof src.setData>[0]);
+}
+
+function setObsVisibility(map: maplibregl.Map | null, visible: boolean) {
+  if (!map || !map.getLayer("caic-obs-circles")) return;
+  map.setLayoutProperty("caic-obs-circles", "visibility", visible ? "visible" : "none");
+}
+
+function buildObsPopupHtml(p: Record<string, unknown>): string {
+  const obsType = String(p.obs_type ?? "field");
+  const color = OBS_COLORS[obsType] ?? OBS_COLORS.field;
+  const typeLabel = obsType === "caught" ? "Caught in Avalanche"
+    : obsType === "avy" ? "Avalanche Observed"
+    : "Field Observation";
+  const observer = p.is_anonymous ? "Anonymous" : String(p.observer ?? "Unknown");
+  const org = p.organization ? `<span style="color:#aaa"> · ${p.organization}</span>` : "";
+  const date = p.observed_at
+    ? new Date(String(p.observed_at)).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })
+    : "";
+  const zone = p.zone ? `<div style="font-size:11px;color:#aaa;margin-top:1px">${p.zone}</div>` : "";
+  const route = p.route ? `<div style="font-size:11px;color:#ccc;margin-top:4px"><b>Route:</b> ${String(p.route).slice(0, 120)}</div>` : "";
+  const desc = p.description
+    ? `<div style="font-size:12px;color:#ddd;margin-top:8px;line-height:1.45">${String(p.description).slice(0, 300)}${String(p.description).length > 300 ? "…" : ""}</div>`
+    : "";
+  const avyBadge = Number(p.avy_count) > 0
+    ? `<span style="background:${OBS_COLORS.avy};color:#fff;border-radius:3px;padding:1px 6px;font-size:10px;margin-left:6px">${p.avy_count} avy obs</span>`
+    : "";
+  const link = p.link
+    ? `<div style="margin-top:10px"><a href="${p.link}" target="_blank" rel="noopener" style="color:#5ba3f5;font-size:11px;text-decoration:none">View full report →</a></div>`
+    : "";
+  return `
+    <div style="font-family:ui-sans-serif,system-ui,sans-serif;min-width:220px;max-width:290px">
+      <div style="display:flex;align-items:center;gap:7px;margin-bottom:6px">
+        <span style="width:9px;height:9px;border-radius:50%;background:${color};flex-shrink:0;border:1.5px solid #fff"></span>
+        <b style="font-size:13px;color:#eee">${typeLabel}</b>${avyBadge}
+      </div>
+      <div style="font-size:12px;color:#ccc">${observer}${org}</div>
+      <div style="font-size:11px;color:#888">${date}</div>
+      ${zone}${route}${desc}${link}
+    </div>`;
+}
+
+function addColoradoMask(map: maplibregl.Map) {
+  map.addSource("co-mask", { type: "geojson", data: CO_MASK_GEOJSON as any });
+  map.addLayer({ id: "co-mask-fill", type: "fill", source: "co-mask",
+    paint: { "fill-color": "#000000", "fill-opacity": 1 },
+  });
+}
+
+function setMaskVisibility(map: maplibregl.Map | null, visible: boolean) {
+  if (!map || !map.getLayer("co-mask-fill")) return;
+  map.setLayoutProperty("co-mask-fill", "visibility", visible ? "visible" : "none");
+}
+
 function applyStravaHighlight(map: maplibregl.Map | null, selectedId: number | null) {
   if (!map || !map.getLayer("strava-lines")) return;
   if (selectedId == null) {
@@ -753,6 +1254,9 @@ export function Map({
   const mapRef = useRef<maplibregl.Map | null>(null);
   const searchMarkerRef = useRef<maplibregl.Marker | null>(null);
 
+  const isMobile = useIsMobile();
+  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+
   const [dark, setDark] = useState(true);
   const [basemap, setBasemap] = useState<BasemapId>("streets");
   const [visible, setVisible] = useState<Record<string, boolean>>(
@@ -770,6 +1274,12 @@ export function Map({
   const [forecast, setForecast] = useState<ForecastPeriod[] | null>(null);
   const [forecastLoading, setForecastLoading] = useState(false);
   const [snotelLoaded, setSnotelLoaded] = useState(false);
+  const [caicLoaded, setCaicLoaded] = useState(false);
+  const [obsLoaded, setObsLoaded] = useState(false);
+  const obsDataRef = useRef<object | null>(null);
+  const [boundsLocked, setBoundsLocked] = useState(true);
+  const [layerPanelCollapsed, setLayerPanelCollapsed] = useState(false);
+  const caicDataRef = useRef<object | null>(null);
   const [stravaVisible, setStravaVisible] = useState(true);
   const [stravaLoaded, setStravaLoaded] = useState(false);
   const stravaDataRef = useRef<object | null>(null);
@@ -797,6 +1307,7 @@ export function Map({
       style: getMapStyle("streets", true),
       center: INITIAL_CENTER,
       zoom: INITIAL_ZOOM,
+      maxBounds: CO_MAX_BOUNDS,
       renderWorldCopies: false,
     });
 
@@ -805,12 +1316,42 @@ export function Map({
 
     map.on("load", () => {
       addOverlayLayers(map, visibleRef.current, opacityRef.current);
+      addColoradoMask(map); // sits above raster overlays, below vector data
       addMeasureLayers(map);
       addSnotelLayers(map);
       setSnotelVisibility(map, visibleRef.current["snotel"] ?? false);
+      addCaicLayers(map);
+      if (caicDataRef.current) setCaicData(map, caicDataRef.current);
+      setCaicVisibility(map, visibleRef.current["caic-danger"] ?? false);
+      addObsLayers(map);
+      if (obsDataRef.current) setObsData(map, obsDataRef.current);
+      setObsVisibility(map, visibleRef.current["caic-obs"] ?? false);
       addStravaLayers(map);
       if (stravaDataRef.current) setStravaData(map, stravaDataRef.current);
       applyStravaHighlight(map, selectedStravaIdRef.current);
+    });
+
+    // CAIC danger zone popup — fetch full danger rose + problems from AVID.
+    map.on("click", "caic-danger-fill", (e) => {
+      if (measureModeRef.current) return;
+      e.originalEvent.stopPropagation();
+      if (!e.features?.[0]) return;
+      const { lat, lng } = e.lngLat;
+      const popup = new maplibregl.Popup({ closeButton: true, maxWidth: "320px" })
+        .setLngLat(e.lngLat)
+        .setHTML(`<div style="font-family:sans-serif;font-size:12px;color:#ccc;padding:4px">Loading…</div>`)
+        .addTo(map);
+      fetch(`${API_URL}/avalanche/zone_detail?lat=${lat}&lng=${lng}`)
+        .then((r) => (r.ok ? r.json() : null))
+        .then((detail) => {
+          if (!detail) return;
+          popup.setHTML(buildCaicDetailHtml(detail));
+        })
+        .catch(() => { /* leave loading popup */ });
+    });
+    map.on("mouseenter", "caic-danger-fill", () => { map.getCanvas().style.cursor = "pointer"; });
+    map.on("mouseleave", "caic-danger-fill", () => {
+      if (!measureModeRef.current) map.getCanvas().style.cursor = "";
     });
 
     // SNOTEL station popup — look up from the ref to bypass MapLibre's tile serialization.
@@ -840,6 +1381,23 @@ export function Map({
         if (!measureModeRef.current) map.getCanvas().style.cursor = "";
       });
     }
+
+    // CAIC field observation click — popup with obs details.
+    map.on("click", "caic-obs-circles", (e) => {
+      if (measureModeRef.current) return;
+      e.originalEvent.stopPropagation();
+      const feat = e.features?.[0];
+      if (!feat) return;
+      const p = feat.properties as Record<string, unknown>;
+      new maplibregl.Popup({ closeButton: true, maxWidth: "300px" })
+        .setLngLat(e.lngLat)
+        .setHTML(buildObsPopupHtml(p))
+        .addTo(map);
+    });
+    map.on("mouseenter", "caic-obs-circles", () => { map.getCanvas().style.cursor = "pointer"; });
+    map.on("mouseleave", "caic-obs-circles", () => {
+      if (!measureModeRef.current) map.getCanvas().style.cursor = "";
+    });
 
     // Strava activity click — open card with nearby runs.
     map.on("click", "strava-lines", (e) => {
@@ -887,6 +1445,12 @@ export function Map({
       });
       if (onSnotel.length > 0) return;
 
+      const onCaic = map.queryRenderedFeatures(e.point, { layers: ["caic-danger-fill"] });
+      if (onCaic.length > 0) return;
+
+      const onObs = map.queryRenderedFeatures(e.point, { layers: ["caic-obs-circles"] });
+      if (onObs.length > 0) return;
+
       const onStrava = map.queryRenderedFeatures(e.point, { layers: ["strava-lines"] });
       if (onStrava.length > 0) return;
 
@@ -900,9 +1464,15 @@ export function Map({
         return;
       }
 
-      setPoint({ lon: lng, lat, loading: true });
+      setPoint({ lon: lng, lat, loading: true, locationName: null });
       setForecast(null);
       setForecastLoading(true);
+
+      // Drop a marker at the clicked location (same style as search marker).
+      searchMarkerRef.current?.remove();
+      searchMarkerRef.current = new maplibregl.Marker({ color: "#4a90d9" })
+        .setLngLat([lng, lat])
+        .addTo(map);
 
       const pick = (name: string) =>
         fetch(
@@ -912,12 +1482,13 @@ export function Map({
           .then((d) => d?.values?.[0] as number | undefined)
           .catch(() => undefined);
 
-      const [[elevation, slope, aspect], spotData] = await Promise.all([
+      const [[elevation, slope, aspect], spotData, locationName] = await Promise.all([
         Promise.all([pick("dem"), pick("slope"), pick("aspect")]),
         fetchSpotData(lat, lng).catch(() => ({ periods: [] as ForecastPeriod[], tempF: null, snowDepthIn: null })),
+        reverseGeocode(lat, lng),
       ]);
 
-      setPoint({ lon: lng, lat, loading: false, elevation, slope, aspect, tempF: spotData.tempF, snowDepthIn: spotData.snowDepthIn });
+      setPoint({ lon: lng, lat, loading: false, elevation, slope, aspect, tempF: spotData.tempF, snowDepthIn: spotData.snowDepthIn, locationName });
       setForecast(spotData.periods.length ? spotData.periods : null);
       setForecastLoading(false);
     });
@@ -933,11 +1504,18 @@ export function Map({
     map.setStyle(getMapStyle(basemap, dark));
     map.once("style.load", () => {
       addOverlayLayers(map, visibleRef.current, opacityRef.current);
+      addColoradoMask(map);
       addMeasureLayers(map);
       updateMeasureSource(map, measurePtsRef.current);
       addSnotelLayers(map);
       if (snotelDataRef.current) setSnotelData(map, snotelDataRef.current);
       setSnotelVisibility(map, visibleRef.current["snotel"] ?? false);
+      addCaicLayers(map);
+      if (caicDataRef.current) setCaicData(map, caicDataRef.current);
+      setCaicVisibility(map, visibleRef.current["caic-danger"] ?? false);
+      addObsLayers(map);
+      if (obsDataRef.current) setObsData(map, obsDataRef.current);
+      setObsVisibility(map, visibleRef.current["caic-obs"] ?? false);
       addStravaLayers(map);
       if (stravaDataRef.current) setStravaData(map, stravaDataRef.current);
       applyStravaHighlight(map, selectedStravaIdRef.current);
@@ -1028,6 +1606,46 @@ export function Map({
       .catch((err) => console.warn("SNOTEL fetch failed", err));
   }, [visible, snotelLoaded]);
 
+  // Fetch CAIC danger zones the first time the layer is enabled.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!visible["caic-danger"]) {
+      setCaicVisibility(map, false);
+      return;
+    }
+    setCaicVisibility(map, true);
+    if (caicLoaded) return;
+    fetch(`${API_URL}/avalanche/forecast`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((geojson) => {
+        if (!geojson) return;
+        caicDataRef.current = geojson;
+        setCaicData(mapRef.current, geojson);
+        setCaicLoaded(true);
+      })
+      .catch((err) => console.warn("CAIC fetch failed", err));
+  }, [visible, caicLoaded]);
+
+  // Fetch CAIC field observations the first time the layer is enabled.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!visible["caic-obs"]) {
+      setObsVisibility(map, false);
+      return;
+    }
+    setObsVisibility(map, true);
+    if (obsLoaded) return;
+    fetch(`${API_URL}/avalanche/observations`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((geojson) => {
+        if (!geojson) return;
+        obsDataRef.current = geojson;
+        setObsData(mapRef.current, geojson);
+        setObsLoaded(true);
+      })
+      .catch((err) => console.warn("Obs fetch failed", err));
+  }, [visible, obsLoaded]);
+
   // Highlight selected Strava route; dim all others.
   useEffect(() => {
     const selectedId = stravaCard ? (stravaCard.activities[stravaCard.index]?.id ?? null) : null;
@@ -1070,6 +1688,13 @@ export function Map({
     }
   }, [basemap]);
 
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.setMaxBounds(boundsLocked ? CO_MAX_BOUNDS : null);
+    setMaskVisibility(map, boundsLocked);
+  }, [boundsLocked]);
+
   function flyToCoords(lat: number, lon: number) {
     const map = mapRef.current;
     if (!map) return;
@@ -1080,42 +1705,76 @@ export function Map({
       .addTo(map);
   }
 
+  const layerPanelProps = {
+    groups: LAYER_GROUPS,
+    visible,
+    opacity,
+    dark,
+    basemap,
+    units,
+    theme,
+    onToggle: (id: string) => setVisible((v) => ({ ...v, [id]: !v[id] })),
+    onOpacity: (id: string, val: number) => setOpacity((o) => ({ ...o, [id]: val })),
+    onDarkToggle: () => setDark(d => !d),
+    onBasemapChange: setBasemap,
+    onUnitsToggle: () => setUnits((u) => (u === "imperial" ? "metric" : "imperial")),
+    onLogout,
+    stravaStatus,
+    stravaVisible,
+    onStravaToggle: () => setStravaVisible((v) => !v),
+    onStravaConnect: async () => {
+      const r = await apiFetch(`${API_URL}/auth/strava/authorize`);
+      if (r.ok) { const { url } = await r.json(); window.location.href = url; }
+    },
+    onStravaDisconnect: async () => {
+      await apiFetch(`${API_URL}/auth/strava/disconnect`, { method: "DELETE" });
+      setStravaLoaded(false);
+      onStravaStatusChange();
+    },
+    collapsed: layerPanelCollapsed,
+    onCollapsedChange: setLayerPanelCollapsed,
+  };
+
+  // On mobile, bottom-floating panels sit above the nav bar.
+  const mobileBottom = MOBILE_NAV_H + 8;
+
   return (
     <>
       <div ref={containerRef} style={{ position: "absolute", inset: 0 }} />
-      <SearchBar theme={theme} onSearch={flyToCoords} />
-      <LayerPanel
-        groups={LAYER_GROUPS}
-        visible={visible}
-        opacity={opacity}
-        dark={dark}
-        basemap={basemap}
-        units={units}
-        theme={theme}
-        onToggle={(id) => setVisible((v) => ({ ...v, [id]: !v[id] }))}
-        onOpacity={(id, val) => setOpacity((o) => ({ ...o, [id]: val }))}
-        onDarkToggle={() => setDark(d => !d)}
-        onBasemapChange={setBasemap}
-        onUnitsToggle={() => setUnits((u) => (u === "imperial" ? "metric" : "imperial"))}
-        onLogout={onLogout}
-        stravaStatus={stravaStatus}
-        stravaVisible={stravaVisible}
-        onStravaToggle={() => setStravaVisible((v) => !v)}
-        onStravaConnect={async () => {
-          const r = await apiFetch(`${API_URL}/auth/strava/authorize`);
-          if (r.ok) { const { url } = await r.json(); window.location.href = url; }
-        }}
-        onStravaDisconnect={async () => {
-          await apiFetch(`${API_URL}/auth/strava/disconnect`, { method: "DELETE" });
-          setStravaLoaded(false);
-          onStravaStatusChange();
-        }}
-      />
-      <MeasureButton
-        active={measureMode}
-        theme={theme}
-        onToggle={() => setMeasureMode((m) => !m)}
-      />
+
+      <SearchBar theme={theme} mobile={isMobile} onSearch={flyToCoords} />
+
+      {/* Desktop: fixed top-left panel */}
+      {!isMobile && <LayerPanel {...layerPanelProps} />}
+
+      {/* Mobile: bottom sheet */}
+      {isMobile && (
+        <MobileSheet open={mobilePanelOpen} onClose={() => setMobilePanelOpen(false)} theme={theme}>
+          <LayerPanel {...layerPanelProps} mobile />
+        </MobileSheet>
+      )}
+
+      {/* Desktop only: toolbox panel (below hamburger) */}
+      {!isMobile && (
+        <ToolboxPanel
+          measureActive={measureMode}
+          layerPanelCollapsed={layerPanelCollapsed}
+          theme={theme}
+          onMeasureToggle={() => setMeasureMode((m) => !m)}
+        />
+      )}
+
+      {/* Mobile bottom nav */}
+      {isMobile && (
+        <MobileNav
+          theme={theme}
+          layersOpen={mobilePanelOpen}
+          measureActive={measureMode}
+          onLayersToggle={() => setMobilePanelOpen((o) => !o)}
+          onMeasureToggle={() => setMeasureMode((m) => !m)}
+        />
+      )}
+
       {measureMode && (
         <MeasurePanel
           pts={measurePts}
@@ -1123,6 +1782,8 @@ export function Map({
           profile={profile}
           units={units}
           theme={theme}
+          mobile={isMobile}
+          mobileBottom={mobileBottom}
           onClose={() => setMeasureMode(false)}
         />
       )}
@@ -1133,7 +1794,9 @@ export function Map({
           forecastLoading={forecastLoading}
           units={units}
           theme={theme}
-          onClose={() => { setPoint(null); setForecast(null); }}
+          mobile={isMobile}
+          mobileBottom={mobileBottom}
+          onClose={() => { setPoint(null); setForecast(null); searchMarkerRef.current?.remove(); searchMarkerRef.current = null; }}
         />
       )}
       {stravaCard && (
@@ -1144,8 +1807,38 @@ export function Map({
           onClose={() => setStravaCard(null)}
           units={units}
           theme={theme}
+          mobile={isMobile}
+          mobileBottom={mobileBottom}
         />
       )}
+
+      {/* Region lock toggle — bottom-right, above MapLibre attribution */}
+      <button
+        onClick={() => setBoundsLocked((l) => !l)}
+        title={boundsLocked ? "Expand map beyond Colorado" : "Lock map to Colorado"}
+        style={{
+          position: "fixed",
+          bottom: 28,
+          right: 10,
+          zIndex: 900,
+          display: "flex",
+          alignItems: "center",
+          gap: 5,
+          padding: "5px 10px",
+          borderRadius: 5,
+          border: `1px solid ${boundsLocked ? theme.accent : theme.divider}`,
+          background: theme.panel,
+          color: boundsLocked ? theme.accent : theme.muted,
+          fontSize: 12,
+          fontFamily: "ui-sans-serif, system-ui, sans-serif",
+          cursor: "pointer",
+          boxShadow: "0 1px 6px rgba(0,0,0,0.3)",
+          userSelect: "none",
+        }}
+      >
+        <span style={{ fontSize: 13 }}>{boundsLocked ? "🔒" : "🌐"}</span>
+        {boundsLocked ? "Colorado" : "Unlocked"}
+      </button>
     </>
   );
 }
@@ -1160,6 +1853,7 @@ function LayerPanel({
   basemap,
   units,
   theme,
+  mobile,
   onToggle,
   onOpacity,
   onDarkToggle,
@@ -1171,6 +1865,8 @@ function LayerPanel({
   onStravaToggle,
   onStravaConnect,
   onStravaDisconnect,
+  collapsed: collapsedProp,
+  onCollapsedChange,
 }: {
   groups: LayerGroup[];
   visible: Record<string, boolean>;
@@ -1179,6 +1875,7 @@ function LayerPanel({
   basemap: BasemapId;
   units: Units;
   theme: Theme;
+  mobile?: boolean;
   onToggle: (id: string) => void;
   onOpacity: (id: string, val: number) => void;
   onDarkToggle: () => void;
@@ -1190,10 +1887,58 @@ function LayerPanel({
   onStravaToggle: () => void;
   onStravaConnect: () => void;
   onStravaDisconnect: () => void;
+  collapsed?: boolean;
+  onCollapsedChange?: (c: boolean) => void;
 }) {
+  const collapsed = mobile ? false : (collapsedProp ?? false);
+  const setCollapsed = (c: boolean) => onCollapsedChange?.(c);
+
+  const btnBase: CSSProperties = {
+    position: "fixed",
+    top: 10,
+    left: 10,
+    background: theme.panel,
+    border: "none",
+    borderRadius: 8,
+    width: 36,
+    height: 36,
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    cursor: "pointer",
+    boxShadow: "0 2px 12px rgba(0,0,0,0.18)",
+    zIndex: 1000,
+    color: theme.text,
+    fontSize: 16,
+    padding: 0,
+    userSelect: "none",
+  };
+
+  // On mobile the sheet handles show/hide — no collapse toggle needed.
+  if (!mobile && collapsed) {
+    return (
+      <button style={btnBase} onClick={() => setCollapsed(false)} title="Show layers">
+        <svg width="16" height="14" viewBox="0 0 16 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+          <line x1="1" y1="2" x2="15" y2="2"/>
+          <line x1="1" y1="7" x2="15" y2="7"/>
+          <line x1="1" y1="12" x2="15" y2="12"/>
+        </svg>
+      </button>
+    );
+  }
+
   return (
     <div
-      style={{
+      style={mobile ? {
+        padding: "4px 16px 16px",
+        fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        fontSize: 14,
+        color: theme.text,
+        display: "flex",
+        flexDirection: "column",
+        gap: 0,
+        userSelect: "none",
+      } : {
         position: "fixed",
         top: 10,
         left: 10,
@@ -1209,6 +1954,7 @@ function LayerPanel({
         gap: 0,
         zIndex: 1000,
         width: 210,
+        boxSizing: "border-box",
         maxHeight: "calc(100vh - 20px)",
         overflowY: "auto",
         userSelect: "none",
@@ -1223,9 +1969,34 @@ function LayerPanel({
           marginBottom: 7,
         }}
       >
-        <span style={{ fontWeight: 700, fontSize: 12, letterSpacing: "0.08em", color: theme.muted }}>
-          LAYERS
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+          {!mobile && (
+            <button
+              onClick={() => setCollapsed(true)}
+              title="Collapse layers"
+              style={{
+                background: "none",
+                border: "none",
+                cursor: "pointer",
+                padding: "2px 2px",
+                borderRadius: 4,
+                color: theme.muted,
+                display: "flex",
+                alignItems: "center",
+                lineHeight: 1,
+              }}
+            >
+              <svg width="14" height="12" viewBox="0 0 16 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+                <line x1="1" y1="2" x2="15" y2="2"/>
+                <line x1="1" y1="7" x2="15" y2="7"/>
+                <line x1="1" y1="12" x2="15" y2="12"/>
+              </svg>
+            </button>
+          )}
+          <span style={{ fontWeight: 700, fontSize: mobile ? 13 : 12, letterSpacing: "0.08em", color: theme.muted }}>
+            LAYERS
+          </span>
+        </div>
         <div style={{ display: "flex", gap: 4 }}>
           <button
             onClick={onUnitsToggle}
@@ -1291,16 +2062,17 @@ function LayerPanel({
 
       {/* Groups */}
       {groups.map((group, gi) => (
-        <div key={group.id} style={{ marginBottom: gi < groups.length - 1 ? 12 : 0 }}>
-          {/* Group header */}
+        <div key={group.id} style={{ marginTop: gi === 0 ? 0 : 14 }}>
+          {/* Divider + header */}
+          {gi > 0 && (
+            <div style={{ borderTop: `1px solid ${theme.divider}`, marginBottom: 10 }} />
+          )}
           <div
             style={{
               display: "flex",
               alignItems: "center",
               gap: 6,
-              marginBottom: 6,
-              paddingBottom: 5,
-              borderBottom: `1px solid ${theme.divider}`,
+              marginBottom: 7,
             }}
           >
             <span
@@ -1315,9 +2087,9 @@ function LayerPanel({
             <span
               style={{
                 fontSize: 11,
-                fontWeight: 600,
-                letterSpacing: "0.06em",
-                color: theme.muted,
+                fontWeight: 700,
+                letterSpacing: "0.07em",
+                color: theme.text,
                 textTransform: "uppercase",
               }}
             >
@@ -1327,43 +2099,69 @@ function LayerPanel({
 
           {/* Active layers */}
           {group.active.map((layer) => (
-            <div key={layer.id} style={{ marginBottom: 8 }}>
+            <div key={layer.id} style={{ marginBottom: mobile ? 12 : 8 }}>
               <label
-                style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", marginBottom: 3 }}
+                style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", marginBottom: 3, minHeight: mobile ? 36 : undefined }}
               >
                 <input
                   type="checkbox"
                   checked={visible[layer.id] ?? false}
                   onChange={() => onToggle(layer.id)}
-                  style={{ accentColor: group.color, cursor: "pointer" }}
+                  style={{ accentColor: group.color, cursor: "pointer", width: mobile ? 18 : undefined, height: mobile ? 18 : undefined }}
                 />
                 <span>{layer.label}</span>
               </label>
               {!layer.noSlider && (
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={opacity[layer.id] ?? layer.opacity}
-                  onChange={(e) => onOpacity(layer.id, parseFloat(e.target.value))}
-                  style={{ width: "100%", accentColor: group.color, margin: 0, display: "block" }}
-                />
+                <div style={{
+                  overflow: "hidden",
+                  maxHeight: visible[layer.id] ? "28px" : "0px",
+                  opacity: visible[layer.id] ? 1 : 0,
+                  transition: "max-height 200ms ease, opacity 200ms ease",
+                }}>
+                  <input
+                    type="range"
+                    min={0}
+                    max={1}
+                    step={0.05}
+                    value={opacity[layer.id] ?? layer.opacity}
+                    onChange={(e) => onOpacity(layer.id, parseFloat(e.target.value))}
+                    style={{ width: "100%", accentColor: group.color, margin: 0, display: "block" }}
+                  />
+                </div>
               )}
               {layer.legend && visible[layer.id] && (
                 <div style={{ marginTop: 4 }}>
-                  <div style={{ height: 7, borderRadius: 3, background: layer.legend.gradient }} />
-                  <div
-                    style={{
-                      display: "flex",
-                      justifyContent: "space-between",
-                      fontSize: 10,
-                      color: theme.muted,
-                      marginTop: 2,
-                    }}
-                  >
-                    {layer.legend.stops.map((s, i) => <span key={i}>{s}</span>)}
-                  </div>
+                  {layer.legend.swatches ? (
+                    <div style={{ display: "flex", gap: 3 }}>
+                      {layer.legend.swatches.map((sw) => (
+                        <div key={sw.label} style={{ flex: 1, textAlign: "center" }}>
+                          <div style={{
+                            height: 7, borderRadius: 2,
+                            background: sw.color,
+                            border: sw.color === "#000000" ? "1px solid #555" : undefined,
+                          }} />
+                          <div style={{ fontSize: 9, color: theme.muted, marginTop: 2, lineHeight: 1.2 }}>
+                            {sw.label}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <>
+                      <div style={{ height: 7, borderRadius: 3, background: layer.legend.gradient }} />
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          fontSize: 10,
+                          color: theme.muted,
+                          marginTop: 2,
+                        }}
+                      >
+                        {layer.legend.stops?.map((s, i) => <span key={i}>{s}</span>)}
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -1498,6 +2296,134 @@ function LayerPanel({
 
 // ── InfoPanel ──────────────────────────────────────────────────────────────────
 
+// ── CAIC detail popup HTML ─────────────────────────────────────────────────────
+
+const _DANGER_COLORS: Record<string, string> = {
+  low: "#00b200", moderate: "#f4e500", considerable: "#ff9933",
+  high: "#d7191c", extreme: "#1a1a1a", noForecast: "#666",
+};
+const _DANGER_LABELS: Record<string, string> = {
+  low: "Low", moderate: "Moderate", considerable: "Considerable",
+  high: "High", extreme: "Extreme", noForecast: "No Rating",
+};
+const _ELEV_LABELS: Record<string, string> = { alp: "Alpine", tln: "Treeline", btl: "Below Treeline" };
+
+function _dangerBadge(level: string): string {
+  const c = _DANGER_COLORS[level] ?? "#666";
+  const fg = level === "moderate" ? "#333" : "#fff";
+  const lbl = _DANGER_LABELS[level] ?? level;
+  return `<span style="background:${c};color:${fg};border-radius:3px;padding:1px 5px;font-size:10px;font-weight:700">${lbl}</span>`;
+}
+
+function _dangerTriangle(danger: { alp: string; tln: string; btl: string }): string {
+  // Isoceles triangle W=60 H=60, divided into 3 equal-height bands.
+  // At y=20: left=20, right=40. At y=40: left=10, right=50.
+  const alp = _DANGER_COLORS[danger.alp] ?? "#666";
+  const tln = _DANGER_COLORS[danger.tln] ?? "#666";
+  const btl = _DANGER_COLORS[danger.btl] ?? "#666";
+  return `<svg width="60" height="60" viewBox="0 0 60 60" style="flex-shrink:0">
+    <polygon points="10,40 50,40 60,60 0,60" fill="${btl}"/>
+    <polygon points="20,20 40,20 50,40 10,40" fill="${tln}"/>
+    <polygon points="30,0 20,20 40,20" fill="${alp}"/>
+    <text x="30" y="55" text-anchor="middle" font-size="7" fill="rgba(0,0,0,0.5)" font-family="sans-serif">BTL</text>
+    <text x="30" y="35" text-anchor="middle" font-size="7" fill="rgba(0,0,0,0.5)" font-family="sans-serif">TLN</text>
+    <text x="30" y="16" text-anchor="middle" font-size="7" fill="rgba(0,0,0,0.45)" font-family="sans-serif">ALP</text>
+  </svg>`;
+}
+
+function _aspectRose(aspectElevations: string[], color: string): string {
+  const cx = 20, cy = 20, ri = 6, ro = 17;
+  const dirs = ["n","ne","e","se","s","sw","w","nw"];
+  // Which base aspects are hit (any elevation)
+  const hit = new Set(aspectElevations.map(ae => ae.split("_")[0]));
+  const svgAngles: Record<string, number> = {
+    n: -90, ne: -45, e: 0, se: 45, s: 90, sw: 135, w: 180, nw: 225
+  };
+  let paths = "";
+  for (const dir of dirs) {
+    const theta = (svgAngles[dir] * Math.PI) / 180;
+    const half = (22.5 * Math.PI) / 180;
+    const a1 = theta - half, a2 = theta + half;
+    const x1i = cx + ri * Math.cos(a1), y1i = cy + ri * Math.sin(a1);
+    const x2i = cx + ri * Math.cos(a2), y2i = cy + ri * Math.sin(a2);
+    const x1o = cx + ro * Math.cos(a1), y1o = cy + ro * Math.sin(a1);
+    const x2o = cx + ro * Math.cos(a2), y2o = cy + ro * Math.sin(a2);
+    const f = (n: number) => n.toFixed(1);
+    const fill = hit.has(dir) ? color : "rgba(255,255,255,0.1)";
+    paths += `<path d="M${f(x1i)},${f(y1i)} A${ri},${ri} 0 0,1 ${f(x2i)},${f(y2i)} L${f(x2o)},${f(y2o)} A${ro},${ro} 0 0,0 ${f(x1o)},${f(y1o)} Z" fill="${fill}" stroke="rgba(255,255,255,0.15)" stroke-width="0.5"/>`;
+  }
+  return `<svg width="40" height="40" viewBox="0 0 40 40" style="flex-shrink:0">
+    ${paths}
+    <text x="${cx}" y="${cy - ro - 2}" text-anchor="middle" font-size="6" fill="rgba(255,255,255,0.5)" font-family="sans-serif">N</text>
+  </svg>`;
+}
+
+interface CaicProblem {
+  label: string; likelihood: string; size_min: string; size_max: string;
+  aspects: string[]; elevations: string[]; aspect_elevations: string[];
+}
+interface CaicZoneDetail {
+  forecaster: string; valid_date: string;
+  danger: { alp: string; tln: string; btl: string };
+  problems: CaicProblem[];
+  link: string;
+}
+
+// Problem type → accent color for the aspect rose
+const _PROBLEM_COLORS: Record<string, string> = {
+  "Wet Loose": "#ff9933", "Wind Slab": "#4a90d9", "Storm Slab": "#9b59b6",
+  "Persistent Slab": "#e05a2b", "Deep Persistent Slab": "#c0392b",
+  "Cornice": "#f4e500", "Glide Avalanche": "#2ecc71",
+};
+
+function buildCaicDetailHtml(d: CaicZoneDetail): string {
+  const meta = [
+    d.forecaster ? `<span>${d.forecaster}</span>` : "",
+    d.valid_date ? `<span style="color:#888">${d.valid_date}</span>` : "",
+  ].filter(Boolean).join(" · ");
+
+  const roseHtml = _dangerTriangle(d.danger);
+  const roseLabels = (["alp","tln","btl"] as const).map((k) =>
+    `<div style="font-size:11px;line-height:1.6">
+      <span style="color:#aaa;font-size:10px">${_ELEV_LABELS[k]}</span><br/>
+      ${_dangerBadge(d.danger[k])}
+    </div>`
+  ).join("");
+
+  const dangerSection = `
+    <div style="display:flex;gap:10px;align-items:center;margin:8px 0 10px">
+      ${roseHtml}
+      <div style="display:flex;flex-direction:column;gap:2px">${roseLabels}</div>
+    </div>`;
+
+  const problemsHtml = d.problems.length === 0 ? "" : `
+    <div style="font-weight:700;font-size:10px;letter-spacing:.05em;color:#aaa;margin-bottom:4px">AVALANCHE PROBLEMS</div>
+    ${d.problems.map((p) => {
+      const color = _PROBLEM_COLORS[p.label] ?? "#e05a2b";
+      const elevStr = p.elevations.map(e => _ELEV_LABELS[e] ?? e).join(", ");
+      const sizeStr = p.size_min && p.size_max ? `Size ${p.size_min}–${p.size_max}` : "";
+      return `<div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:8px">
+        ${_aspectRose(p.aspect_elevations, color)}
+        <div style="line-height:1.5">
+          <div style="font-weight:700;font-size:12px;color:${color}">${p.label}</div>
+          <div style="font-size:11px">${[p.likelihood, sizeStr].filter(Boolean).join(" · ")}</div>
+          ${p.aspects.length ? `<div style="font-size:10px;color:#aaa">${p.aspects.join(", ")}${elevStr ? ` · ${elevStr}` : ""}</div>` : ""}
+        </div>
+      </div>`;
+    }).join("")}`;
+
+  const linkHtml = `<a href="${d.link}" target="_blank" rel="noopener"
+    style="color:#e05a2b;font-size:11px;text-decoration:none">CAIC Backcountry Forecast →</a>`;
+
+  return `<div style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:12px;color:#eee;line-height:1.4">
+    <div style="font-weight:700;font-size:13px;margin-bottom:2px">CAIC Forecast</div>
+    ${meta ? `<div style="font-size:10px;color:#888;margin-bottom:6px">${meta}</div>` : ""}
+    ${dangerSection}
+    ${problemsHtml}
+    ${linkHtml}
+  </div>`;
+}
+
 // ── SNOTEL popup HTML (plain HTML string for maplibregl.Popup) ─────────────────
 
 function coerceNum(v: unknown): number | null {
@@ -1521,19 +2447,19 @@ function buildSnotelPopupHtml(p: Record<string, unknown>, units: Units): string 
   const pctStr = pct != null ? `${pct.toFixed(0)}% of normal` : "% of normal unavailable";
   const color = String(p.color ?? "#888");
 
-  return `<div style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:13px;min-width:180px;color:#1a1a1a;background:#fff;padding:2px">
-    <div style="font-weight:700;margin-bottom:6px;color:#1a1a1a">${p.name ?? "Station"}</div>
+  return `<div style="font-family:ui-sans-serif,system-ui,sans-serif;font-size:13px;min-width:180px;color:#eee">
+    <div style="font-weight:700;margin-bottom:6px">${p.name ?? "Station"}</div>
     <div style="display:flex;align-items:center;gap:6px;margin-bottom:6px">
-      <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};border:1.5px solid #fff;box-shadow:0 0 0 1px #ccc"></span>
+      <span style="display:inline-block;width:10px;height:10px;border-radius:50%;background:${color};border:1.5px solid rgba(255,255,255,0.2)"></span>
       <span style="color:${color};font-weight:600">${pctStr}</span>
     </div>
     <table style="width:100%;border-collapse:collapse;font-size:12px">
-      <tr><td style="color:#777;padding:2px 0">SWE</td><td style="text-align:right;font-weight:600;color:#1a1a1a">${sweStr}</td></tr>
-      <tr><td style="color:#777;padding:2px 0">Snow depth</td><td style="text-align:right;font-weight:600;color:#1a1a1a">${depthStr}</td></tr>
-      <tr><td style="color:#777;padding:2px 0">Temperature</td><td style="text-align:right;font-weight:600;color:#1a1a1a">${tempStr}</td></tr>
-      <tr><td style="color:#777;padding:2px 0">Elevation</td><td style="text-align:right;color:#1a1a1a">${elevStr}</td></tr>
+      <tr><td style="color:#888;padding:2px 0">SWE</td><td style="text-align:right;font-weight:600">${sweStr}</td></tr>
+      <tr><td style="color:#888;padding:2px 0">Snow depth</td><td style="text-align:right;font-weight:600">${depthStr}</td></tr>
+      <tr><td style="color:#888;padding:2px 0">Temperature</td><td style="text-align:right;font-weight:600">${tempStr}</td></tr>
+      <tr><td style="color:#888;padding:2px 0">Elevation</td><td style="text-align:right">${elevStr}</td></tr>
     </table>
-    <div style="color:#aaa;font-size:10px;margin-top:6px">Updated ${p.updated ?? "—"}</div>
+    <div style="color:#666;font-size:10px;margin-top:6px">Updated ${p.updated ?? "—"}</div>
   </div>`;
 }
 
@@ -1545,6 +2471,8 @@ function InfoPanel({
   forecastLoading,
   units,
   theme,
+  mobile,
+  mobileBottom,
   onClose,
 }: {
   data: PointData;
@@ -1552,6 +2480,8 @@ function InfoPanel({
   forecastLoading: boolean;
   units: Units;
   theme: Theme;
+  mobile?: boolean;
+  mobileBottom?: number;
   onClose: () => void;
 }) {
   const imp = units === "imperial";
@@ -1567,7 +2497,20 @@ function InfoPanel({
 
   return (
     <div
-      style={{
+      style={mobile ? {
+        position: "fixed",
+        bottom: mobileBottom,
+        left: 8,
+        right: 8,
+        background: theme.panel,
+        borderRadius: 12,
+        padding: "12px 16px",
+        fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        fontSize: 14,
+        color: theme.text,
+        boxShadow: "0 2px 16px rgba(0,0,0,0.28)",
+        zIndex: 999,
+      } : {
         position: "fixed",
         bottom: 36,
         left: "50%",
@@ -1584,6 +2527,16 @@ function InfoPanel({
         minWidth: 320,
       }}
     >
+      {/* Location name */}
+      {(data.locationName || data.loading) && (
+        <div style={{ fontSize: 12, color: theme.muted, marginBottom: 7, display: "flex", alignItems: "center", gap: 5 }}>
+          <span style={{ fontSize: 11 }}>📍</span>
+          <span style={{ fontStyle: data.loading ? "italic" : undefined }}>
+            {data.loading ? "Locating…" : data.locationName}
+          </span>
+        </div>
+      )}
+
       {/* Terrain row */}
       <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" }}>
         {data.loading ? (
@@ -1681,41 +2634,224 @@ function InfoPanel({
   );
 }
 
-// ── MeasureButton ──────────────────────────────────────────────────────────────
+// ── ToolboxPanel ───────────────────────────────────────────────────────────────
+// Sits at top-left below the hamburger menu. Wrench icon opens a fly-out panel
+// listing available tools. Add new tools here as the feature set grows.
 
-function MeasureButton({
-  active,
+function ToolboxPanel({
+  measureActive,
+  layerPanelCollapsed,
   theme,
-  onToggle,
+  onMeasureToggle,
 }: {
-  active: boolean;
+  measureActive: boolean;
+  layerPanelCollapsed: boolean;
   theme: Theme;
-  onToggle: () => void;
+  onMeasureToggle: () => void;
 }) {
+  const [open, setOpen] = useState(false);
+
+  function activateTool(toggle: () => void) {
+    toggle();
+    setOpen(false);
+  }
+
+  const hasActive = measureActive;
+  // Hugs the top row. Collapsed: right of the 36px hamburger (10+36+4=50).
+  // Expanded: right of the panel (box-sizing:border-box, so right edge = 10+210=220, +8 gap = 228).
+  const leftPos = layerPanelCollapsed ? 50 : 228;
+
   return (
-    <button
-      onClick={onToggle}
-      title={active ? "Exit slope measurement" : "Measure slope between two points"}
-      style={{
-        position: "fixed",
-        bottom: 36,
-        right: 10,
-        zIndex: 1000,
-        background: active ? theme.accent : theme.panel,
-        color: active ? "#fff" : theme.text,
-        border: `1.5px solid ${active ? theme.accent : theme.divider}`,
-        borderRadius: 6,
-        padding: "7px 12px",
-        fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: 12,
-        fontWeight: 600,
-        cursor: "pointer",
-        boxShadow: "0 2px 8px rgba(0,0,0,0.18)",
-        letterSpacing: "0.03em",
-      }}
-    >
-      Measure Slope
-    </button>
+    <div style={{ position: "fixed", top: 10, left: leftPos, zIndex: 1001, transition: "left 200ms ease" }}>
+      {/* Toolbox trigger button */}
+      <button
+        onClick={() => setOpen((o) => !o)}
+        title="Tools"
+        style={{
+          width: 36,
+          height: 36,
+          background: open ? theme.accent : hasActive ? "rgba(224,90,43,0.15)" : theme.panel,
+          color: open ? "#fff" : hasActive ? theme.accent : theme.text,
+          border: `1px solid ${open || hasActive ? theme.accent : "transparent"}`,
+          borderRadius: 8,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          boxShadow: "0 2px 12px rgba(0,0,0,0.18)",
+          padding: 0,
+        }}
+      >
+        {/* Wrench icon */}
+        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M10.5 1.5a4 4 0 0 0-3.78 5.27L2 11.5 4.5 14l4.73-4.72A4 4 0 1 0 10.5 1.5z"/>
+          <line x1="10.5" y1="1.5" x2="12.5" y2="3.5"/>
+          <line x1="8.5" y1="3.5" x2="10.5" y2="5.5"/>
+        </svg>
+      </button>
+
+      {/* Fly-out tool list */}
+      {open && (
+        <div
+          style={{
+            position: "absolute",
+            top: 0,
+            left: 44,
+            background: theme.panel,
+            borderRadius: 8,
+            padding: "6px",
+            boxShadow: "0 2px 12px rgba(0,0,0,0.25)",
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+            minWidth: 170,
+            fontFamily: "ui-sans-serif, system-ui, sans-serif",
+          }}
+        >
+          <div style={{ fontSize: 10, color: theme.muted, textTransform: "uppercase", letterSpacing: "0.07em", padding: "2px 6px 5px" }}>
+            Tools
+          </div>
+
+          {/* Measure Slope */}
+          <button
+            onClick={() => activateTool(onMeasureToggle)}
+            title={measureActive ? "Exit slope measurement" : "Measure slope between two points"}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 9,
+              background: measureActive ? "rgba(224,90,43,0.15)" : "transparent",
+              color: measureActive ? theme.accent : theme.text,
+              border: `1px solid ${measureActive ? theme.accent : "transparent"}`,
+              borderRadius: 6,
+              padding: "7px 10px",
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: 500,
+              textAlign: "left",
+              width: "100%",
+            }}
+          >
+            {/* Ruler icon */}
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="1" y="4.5" width="12" height="5" rx="1"/>
+              <line x1="4" y1="4.5" x2="4" y2="7"/>
+              <line x1="7" y1="4.5" x2="7" y2="6.2"/>
+              <line x1="10" y1="4.5" x2="10" y2="7"/>
+            </svg>
+            Measure Slope
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── ProfileChart ───────────────────────────────────────────────────────────────
+
+function ProfileChart({
+  samples,
+  summary,
+  units,
+  theme,
+}: {
+  samples: SlopeSample[];
+  summary: ProfileSummary;
+  units: Units;
+  theme: Theme;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+
+  const valid = samples.filter((s) => s.elevation_m != null);
+  if (valid.length < 2) return null;
+
+  const W = 400;
+  const H = 80;
+  const PL = 2, PR = 2, PT = 6, PB = 16;
+
+  const distMax = summary.distance_m;
+  const elevMin = Math.min(...valid.map((s) => s.elevation_m!));
+  const elevMax = Math.max(...valid.map((s) => s.elevation_m!));
+  const elevSpan = Math.max(elevMax - elevMin, 1);
+
+  const sx = (d: number) => PL + (d / distMax) * (W - PL - PR);
+  const sy = (e: number) => PT + (1 - (e - elevMin) / elevSpan) * (H - PT - PB);
+  const base = H - PB;
+
+  const segs: React.ReactNode[] = [];
+  for (let i = 0; i < samples.length - 1; i++) {
+    const a = samples[i], b = samples[i + 1];
+    if (a.elevation_m == null || b.elevation_m == null) continue;
+    segs.push(
+      <polygon
+        key={i}
+        points={`${sx(a.distance_m)},${sy(a.elevation_m)} ${sx(b.distance_m)},${sy(b.elevation_m)} ${sx(b.distance_m)},${base} ${sx(a.distance_m)},${base}`}
+        fill={slopeColor(a.slope_deg ?? 0)}
+        fillOpacity={0.55}
+      />,
+    );
+  }
+
+  const linePts = valid.map((s) => `${sx(s.distance_m)},${sy(s.elevation_m!)}`).join(" ");
+
+  const imp = units === "imperial";
+  const fmtElev = (e: number | null) =>
+    e == null ? "—" : imp ? `${Math.round(e * 3.28084).toLocaleString()} ft` : `${Math.round(e).toLocaleString()} m`;
+  const fmtDist = (d: number) =>
+    imp ? `${(d / 1609.344).toFixed(2)} mi` : `${(d / 1000).toFixed(2)} km`;
+
+  const hs = hover != null ? samples[hover] : null;
+
+  const onMouseMove = (e: React.MouseEvent<SVGSVGElement>) => {
+    const rect = e.currentTarget.getBoundingClientRect();
+    const xFrac = (e.clientX - rect.left) / rect.width;
+    const d = Math.max(0, Math.min(1, xFrac)) * distMax;
+    let best = 0, bestDist = Infinity;
+    samples.forEach((s, i) => {
+      const dd = Math.abs(s.distance_m - d);
+      if (dd < bestDist) { bestDist = dd; best = i; }
+    });
+    setHover(best);
+  };
+
+  return (
+    <div style={{ width: "100%" }}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        style={{ width: "100%", height: H, display: "block", cursor: "crosshair" }}
+        onMouseMove={onMouseMove}
+        onMouseLeave={() => setHover(null)}
+      >
+        {segs}
+        <polyline points={linePts} fill="none" stroke="rgba(255,255,255,0.8)" strokeWidth={1.5} />
+        {hs && hs.elevation_m != null && (
+          <>
+            <line x1={sx(hs.distance_m)} y1={PT} x2={sx(hs.distance_m)} y2={base}
+              stroke="white" strokeWidth={1} opacity={0.55} />
+            <circle cx={sx(hs.distance_m)} cy={sy(hs.elevation_m)} r={3} fill="white" />
+          </>
+        )}
+        <text x={PL + 2} y={PT + 8} fontSize={8} fill="rgba(255,255,255,0.4)">{fmtElev(elevMax)}</text>
+        <text x={PL + 2} y={base - 2} fontSize={8} fill="rgba(255,255,255,0.4)">{fmtElev(elevMin)}</text>
+        <text x={PL + 2} y={H - 2} fontSize={9} fill="rgba(255,255,255,0.45)">A</text>
+        <text x={W - PR - 2} y={H - 2} fontSize={9} fill="rgba(255,255,255,0.45)" textAnchor="end">B</text>
+      </svg>
+      <div style={{ fontSize: 10, color: theme.muted, minHeight: 14, paddingTop: 1 }}>
+        {hs ? (
+          <span style={{ display: "flex", gap: 10 }}>
+            <span>{fmtDist(hs.distance_m)}</span>
+            <span style={{ color: theme.text }}>{fmtElev(hs.elevation_m)}</span>
+            {hs.slope_deg != null && (
+              <span style={{ color: slopeColor(hs.slope_deg), fontWeight: 700 }}>
+                {hs.slope_deg.toFixed(1)}°
+              </span>
+            )}
+          </span>
+        ) : (
+          <span>hover for elevation · slope</span>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -1727,6 +2863,8 @@ function MeasurePanel({
   profile,
   units,
   theme,
+  mobile,
+  mobileBottom,
   onClose,
 }: {
   pts: [number, number][];
@@ -1734,14 +2872,13 @@ function MeasurePanel({
   profile: ProfileResponse | null;
   units: Units;
   theme: Theme;
+  mobile?: boolean;
+  mobileBottom?: number;
   onClose: () => void;
 }) {
   const imp = units === "imperial";
-  let content: React.ReactNode;
 
-  if (loading) {
-    content = <span style={{ color: theme.muted }}>Sampling terrain…</span>;
-  } else if (profile) {
+  const summaryRow = profile ? (() => {
     const s = profile.summary;
     const distStr = imp
       ? `${(s.distance_m / 1609.344).toFixed(2)} mi`
@@ -1753,12 +2890,11 @@ function MeasurePanel({
       ? imp ? `−${Math.round(s.elevation_loss_m * 3.28084)} ft` : `−${Math.round(s.elevation_loss_m)} m`
       : null;
     const avg = s.avg_slope_deg;
-    content = (
-      <>
-        <span style={{ color: theme.muted, fontSize: 11 }}>A→B</span>
+    return (
+      <div style={{ display: "flex", alignItems: "center", gap: 14, flexWrap: "wrap", paddingTop: 6 }}>
         <span><b>Dist</b> {distStr}</span>
         <span>
-          <b>Avg slope</b>{" "}
+          <b>Avg</b>{" "}
           <span style={{ color: avg != null ? slopeColor(avg) : theme.muted, fontWeight: 700 }}>
             {avg != null ? `${avg.toFixed(1)}°` : "—"}
           </span>
@@ -1766,50 +2902,77 @@ function MeasurePanel({
         <span><b>Max</b> {s.max_slope_deg != null ? `${s.max_slope_deg.toFixed(1)}°` : "—"}</span>
         {gainStr && <span style={{ color: "#1a9641" }}>{gainStr}</span>}
         {lossStr && <span style={{ color: theme.muted }}>{lossStr}</span>}
-      </>
+      </div>
     );
-  } else if (pts.length === 1) {
-    content = <span style={{ color: theme.muted }}>Click map to set end point (B)</span>;
-  } else {
-    content = <span style={{ color: theme.muted }}>Click map to set start point (A)</span>;
+  })() : null;
+
+  let statusLine: React.ReactNode = null;
+  if (loading) {
+    statusLine = <span style={{ color: theme.muted }}>Sampling terrain…</span>;
+  } else if (!profile) {
+    statusLine = (
+      <span style={{ color: theme.muted }}>
+        {pts.length === 1 ? "Click map to set end point (B)" : "Click map to set start point (A)"}
+      </span>
+    );
   }
 
+  const hasChart = !loading && profile != null;
+
+  const panelStyle: CSSProperties = mobile ? {
+    position: "fixed",
+    bottom: mobileBottom,
+    left: 8,
+    right: 8,
+    background: theme.panel,
+    borderRadius: 12,
+    padding: "12px 16px",
+    fontFamily: "ui-sans-serif, system-ui, sans-serif",
+    fontSize: 13,
+    color: theme.text,
+    boxShadow: "0 2px 16px rgba(0,0,0,0.28)",
+    zIndex: 999,
+  } : {
+    position: "fixed",
+    bottom: 36,
+    left: "50%",
+    transform: "translateX(-50%)",
+    background: theme.panel,
+    borderRadius: 8,
+    padding: hasChart ? "10px 14px 8px" : "9px 16px",
+    fontFamily: "ui-sans-serif, system-ui, sans-serif",
+    fontSize: 13,
+    color: theme.text,
+    boxShadow: "0 2px 10px rgba(0,0,0,0.22)",
+    zIndex: 1000,
+    width: hasChart ? 360 : undefined,
+    whiteSpace: hasChart ? undefined : "nowrap",
+  };
+
   return (
-    <div
-      style={{
-        position: "fixed",
-        bottom: 36,
-        left: "50%",
-        transform: "translateX(-50%)",
-        background: theme.panel,
-        borderRadius: 8,
-        padding: "9px 16px",
-        fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: 13,
-        color: theme.text,
-        boxShadow: "0 2px 10px rgba(0,0,0,0.22)",
-        display: "flex",
-        alignItems: "center",
-        gap: 16,
-        zIndex: 1000,
-        whiteSpace: "nowrap",
-      }}
-    >
-      {content}
-      <button
-        onClick={onClose}
-        style={{
-          background: "none",
-          border: "none",
-          cursor: "pointer",
-          color: theme.muted,
-          fontSize: 16,
-          lineHeight: 1,
-          padding: "0 0 0 4px",
-        }}
-      >
-        ×
-      </button>
+    <div style={panelStyle}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+        <span style={{ color: theme.muted, fontSize: 11 }}>A → B</span>
+        <button
+          onClick={onClose}
+          style={{
+            background: "none", border: "none", cursor: "pointer",
+            color: theme.muted, fontSize: 18, lineHeight: 1,
+            padding: 4, minWidth: 28, minHeight: 28,
+            display: "flex", alignItems: "center", justifyContent: "center",
+          }}
+        >×</button>
+      </div>
+      {hasChart && (
+        <ProfileChart
+          samples={profile!.samples}
+          summary={profile!.summary}
+          units={units}
+          theme={theme}
+        />
+      )}
+      {summaryRow}
+      {statusLine}
     </div>
   );
 }
@@ -1823,6 +2986,8 @@ function StravaActivityCard({
   onClose,
   units,
   theme,
+  mobile,
+  mobileBottom,
 }: {
   activities: ActivityCardProps[];
   index: number;
@@ -1830,6 +2995,8 @@ function StravaActivityCard({
   onClose: () => void;
   units: Units;
   theme: Theme;
+  mobile?: boolean;
+  mobileBottom?: number;
 }) {
   const act = activities[index];
   const descCache = useRef<Record<number, string | null>>({});
@@ -1879,7 +3046,19 @@ function StravaActivityCard({
 
   return (
     <div
-      style={{
+      style={mobile ? {
+        position: "fixed",
+        bottom: mobileBottom,
+        left: 8,
+        right: 8,
+        background: theme.panel,
+        borderRadius: 12,
+        boxShadow: "0 4px 24px rgba(0,0,0,0.28)",
+        overflow: "hidden",
+        fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        zIndex: 999,
+        color: theme.text,
+      } : {
         position: "fixed",
         bottom: 80,
         right: 10,

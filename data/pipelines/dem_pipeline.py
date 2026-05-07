@@ -52,6 +52,9 @@ TNM_API      = "https://tnmaccess.nationalmap.gov/api/v1/products"
 OUTPUT_CRS   = "EPSG:3857"
 MINIO_BUCKET = "dem-cogs"
 
+PRIORITY_STACK_RES_M      = 10.0   # baseline output resolution for priority-blend DEM
+HIRES_MAX_UNCOMPRESSED_GB = 500.0  # skip hires COG only if estimated raw size exceeds this
+
 # Per-resolution TNM dataset names and deduplication strategy.
 RESOLUTION_CONFIG = {
     "1/3": {
@@ -217,8 +220,70 @@ def query_tnm(bbox: tuple, resolution: str = "1/3") -> list[dict]:
         [{"title": it["title"], "url": it["downloadURL"]} for it in candidates],
         key=lambda x: x["title"],
     )
+
+    if resolution == "1/3":
+        result = _supplement_missing_13_tiles(bbox, result)
+
     logger.info("%d tiles to download", len(result))
     return result
+
+
+def _supplement_missing_13_tiles(bbox: tuple, tiles: list[dict]) -> list[dict]:
+    """Fill degree-cell gaps in TNM results by checking the USGS S3 current/ prefix.
+
+    TNM API pagination can silently drop tiles when pages time out.  We compute
+    every expected nNNwNNN cell for the bbox and verify each one is covered.
+    Missing cells are fetched directly from the S3 staging bucket.
+    """
+    import math, re
+
+    USGS_S3 = "https://prd-tnm.s3.amazonaws.com/StagedProducts/Elevation/13/TIFF"
+
+    w, s, e, n = bbox
+    # Cells needed: north edge ∈ [ceil(s)+0 … ceil(n)], west edge ∈ [ceil(|w|) … ceil(|e|)+1]
+    north_edges = range(math.floor(s) + 1, math.ceil(n) + 1)
+    west_edges  = range(math.floor(abs(e)), math.ceil(abs(w)) + 1)
+    expected_cells = {f"n{lat:02d}w{lon:03d}" for lat in north_edges for lon in west_edges}
+
+    found_cells: set[str] = set()
+    for t in tiles:
+        m = re.search(r"(n\d+w\d+)", t["title"])
+        if m:
+            found_cells.add(m.group(1))
+
+    missing = expected_cells - found_cells
+    if not missing:
+        return tiles
+
+    logger.warning("TNM result missing %d degree cell(s): %s — checking S3 current/ directly",
+                   len(missing), ", ".join(sorted(missing)))
+
+    extra: list[dict] = []
+    for cell in sorted(missing):
+        # Try current/ first (single canonical file, no date suffix)
+        for path_prefix in (f"{USGS_S3}/current/{cell}", f"{USGS_S3}/historical/{cell}"):
+            listing_url = (
+                f"https://prd-tnm.s3.amazonaws.com/"
+                f"?list-type=2&prefix=StagedProducts%2FElevation%2F13%2FTIFF%2F"
+                f"{path_prefix.split('/TIFF/')[-1].replace('/', '%2F')}%2F&max-keys=20"
+            )
+            try:
+                r = httpx.get(listing_url, timeout=20)
+                # [^<>]* prevents the regex from spanning across XML tags
+                tif_keys = re.findall(r"<Key>([^<>]*?\.tif)</Key>", r.text, re.IGNORECASE)
+                if tif_keys:
+                    # Pick the most recent (last alphabetically)
+                    key = sorted(tif_keys)[-1]
+                    url = f"https://prd-tnm.s3.amazonaws.com/{key}"
+                    fname = key.split("/")[-1]
+                    extra.append({"title": f"USGS 13 {cell} [S3-supplement]", "url": url,
+                                  "optional": True})
+                    logger.info("  supplemented %s → %s", cell, fname)
+                    break
+            except Exception as exc:
+                logger.debug("S3 supplement lookup failed for %s: %s", cell, exc)
+
+    return tiles + extra
 
 
 # ── download ───────────────────────────────────────────────────────────────────
@@ -303,11 +368,18 @@ def download_tiles(tiles: list[dict], dest: Path) -> list[Path]:
                     i, len(tiles), attempt + 1, MAX_RETRIES, exc, wait,
                 )
                 if attempt == MAX_RETRIES - 1:
+                    if tile.get("optional"):
+                        logger.warning("  [%d/%d] skipping optional tile %s (not available)",
+                                       i, len(tiles), fname)
+                        part.unlink(missing_ok=True)
+                        out = None  # sentinel: tile was skipped
+                        break
                     # Leave .part on disk for next run to resume
                     raise RuntimeError(f"Download failed after {MAX_RETRIES} attempts: {url}") from exc
                 time.sleep(wait)
 
-        paths.append(out)
+        if out is not None:
+            paths.append(out)
 
     return paths
 
@@ -452,6 +524,102 @@ def _mosaic_rasterio(paths: list[Path], out_path: Path, clip_bounds: tuple | Non
     gc.collect()
 
 
+# ── priority-stack helpers ─────────────────────────────────────────────────────
+
+def _build_vrt(paths: list[Path], vrt_path: Path,
+               clip_bounds: tuple | None = None) -> None:
+    """Build a GDAL VRT. Last-listed source wins on pixel overlap.
+
+    clip_bounds (W, S, E, N) in WGS84: passed as -te to gdalbuildvrt so only
+    tiles intersecting that extent are included.  Useful for hires sub-regions.
+
+    -allow_projection_difference is required for 1m lidar tiles which span the
+    UTM Zone 12N/13N boundary (at 108°W across Colorado). gdalwarp handles the
+    reprojection to EPSG:3857, so mixed-CRS input is fine here.
+    """
+    step(f"Building VRT from {len(paths)} file(s) → {vrt_path.name} ...")
+    cmd = ["gdalbuildvrt", "-r", "bilinear", "-allow_projection_difference"]
+    if clip_bounds:
+        w, s, e, n = clip_bounds
+        cmd += ["-te", str(w), str(s), str(e), str(n)]
+    cmd += [str(vrt_path)] + [str(p) for p in paths]
+    logger.info("  gdalbuildvrt ... [%d files]", len(paths))
+    subprocess.run(cmd, check=True)
+
+
+def _gdalwarp_vrt(
+    vrt_path: Path,
+    out_path: Path,
+    clip_bounds: tuple | None,
+    target_res_m: float | None = None,
+) -> None:
+    """Warp a VRT to a Cloud Optimized GeoTIFF in EPSG:3857."""
+    step(f"Warping {vrt_path.name} → {out_path.name} ...")
+    tmp = out_path.with_suffix(".tmp.tif")
+    cmd = [
+        "gdalwarp",
+        "-t_srs", OUTPUT_CRS,
+        "-r", "bilinear",
+        "-co", "COMPRESS=DEFLATE",
+        "-co", "TILED=YES",
+        "-co", "BIGTIFF=YES",
+        "-co", "BLOCKXSIZE=512",
+        "-co", "BLOCKYSIZE=512",
+        "-wm", "2048",
+        "-multi",
+        "-overwrite",
+    ]
+    if target_res_m is not None:
+        cmd += ["-tr", str(target_res_m), str(target_res_m)]
+    if clip_bounds:
+        w, s, e, n = clip_bounds
+        cmd += ["-te", str(w), str(s), str(e), str(n), "-te_srs", "EPSG:4326"]
+    cmd += [str(vrt_path), str(tmp)]
+    logger.info("  %s", " ".join(cmd))
+    subprocess.run(cmd, check=True)
+
+    step("Building overviews ...")
+    subprocess.run(["gdaladdo", "-r", "average", str(tmp),
+                    "2", "4", "8", "16", "32", "64"], check=True)
+
+    step(f"Finalizing COG → {out_path.name} ...")
+    rio_copy(str(tmp), str(out_path),
+             copy_src_overviews=True,
+             driver="GTiff", tiled=True,
+             blockxsize=512, blockysize=512,
+             compress="deflate", BIGTIFF="YES")
+    tmp.unlink(missing_ok=True)
+    logger.info("  → %s  (%.0f MB)", out_path.name, out_path.stat().st_size / 1e6)
+
+
+def _tiles_tight_bbox(paths: list[Path]) -> tuple[float, float, float, float]:
+    """Return WGS84 (W, S, E, N) union bounding box of all tile files."""
+    import math as _math
+    from rasterio.warp import transform_bounds as _tb
+    west = south = _math.inf
+    east = north = -_math.inf
+    for p in paths:
+        with rasterio.open(p) as ds:
+            b = ds.bounds
+            if ds.crs.to_epsg() != 4326:
+                b = _tb(ds.crs, "EPSG:4326", b.left, b.bottom, b.right, b.top)
+            west  = min(west,  b[0])
+            south = min(south, b[1])
+            east  = max(east,  b[2])
+            north = max(north, b[3])
+    return (west, south, east, north)
+
+
+def _estimate_raster_gb(west: float, south: float, east: float, north: float,
+                        res_m: float = 1.0) -> float:
+    """Rough estimate of uncompressed float32 raster size in GB for a WGS84 bbox."""
+    import math as _math
+    lat_c     = _math.radians((north + south) / 2)
+    width_m   = (east - west)  * _math.cos(lat_c) * 111_320
+    height_m  = (north - south) * 111_320
+    return max(width_m, 0) * max(height_m, 0) / (res_m ** 2) * 4 / 1e9
+
+
 # ── derivatives ────────────────────────────────────────────────────────────────
 
 def compute_derivatives_windowed(
@@ -464,6 +632,7 @@ def compute_derivatives_windowed(
     overlap: int = 32,
     azimuth: float = 315.0,
     altitude: float = 45.0,
+    suffix: str = "",
 ) -> tuple[Path, Path, Path]:
     """
     Compute hillshade, slope, and aspect in horizontal strips so peak RAM
@@ -471,12 +640,15 @@ def compute_derivatives_windowed(
 
     Each strip is padded with `overlap` rows above and below for accurate
     np.gradient values at boundaries.  Only interior rows are written.
-    """
-    step("Computing hillshade / slope / aspect (windowed) ...")
 
-    hs_path     = cog_dir / "hillshade.tif"
-    slope_path  = cog_dir / "slope.tif"
-    aspect_path = cog_dir / "aspect.tif"
+    suffix: appended before .tif in output filenames — use "_hires" for the
+    1m priority-stack outputs so they don't collide with the 10m baseline.
+    """
+    step(f"Computing hillshade / slope / aspect{' (hires)' if suffix else ''} (windowed) ...")
+
+    hs_path     = cog_dir / f"hillshade{suffix}.tif"
+    slope_path  = cog_dir / f"slope{suffix}.tif"
+    aspect_path = cog_dir / f"aspect{suffix}.tif"
 
     sun_zenith  = float(np.radians(90.0 - altitude))
     sun_azimuth = float(np.radians(360.0 - azimuth + 90.0))
@@ -677,6 +849,24 @@ def main() -> None:
     parser.add_argument("--strip-height", type=int, default=None,
                         help="Derivative strip height in rows "
                              "(default: 2048 for 10m, 512 for 1m)")
+    parser.add_argument("--use-gdalwarp", action="store_true",
+                        help="Force gdalbuildvrt + gdalwarp for mosaic (streaming, low RAM). "
+                             "Automatically set for --resolution 1m. Use for large 10m bboxes "
+                             "where in-memory merge would exceed available RAM.")
+    parser.add_argument("--priority-stack", action="store_true",
+                        help="Download both 10m (1/3 arc-second) and 1m lidar tiles. "
+                             "Blend into dem.tif at 10m using 1m data where available (1m wins). "
+                             "Also produces dem_hires.tif at native 1m if the estimated "
+                             "uncompressed size is under --hires-max-gb. Implies --use-gdalwarp.")
+    parser.add_argument("--hires-max-gb", type=float, default=HIRES_MAX_UNCOMPRESSED_GB,
+                        help=f"Skip hires COG if estimated uncompressed size exceeds this GB "
+                             f"(default: {HIRES_MAX_UNCOMPRESSED_GB}). Increase for smaller "
+                             "focused regions where 1m coverage is dense.")
+    parser.add_argument("--hires-bbox", default=None, metavar="W,S,E,N",
+                        help="Restrict the 1m hires COG to this sub-bbox (WGS84). "
+                             "Useful for limiting hires output to mountain terrain while "
+                             "keeping the full bbox for the 10m dem.tif baseline. "
+                             "Defaults to the same bbox as --bbox.")
     parser.add_argument("--test", action="store_true",
                         help="Smoke-test: small bbox near Silverton (~2 min)")
     args = parser.parse_args()
@@ -706,19 +896,38 @@ def main() -> None:
         except Exception:
             parser.error("--bbox must be W,S,E,N (four floats)")
 
+    # Hires bbox — defaults to full bbox when not specified
+    if args.hires_bbox:
+        try:
+            hparts = [float(x) for x in args.hires_bbox.split(",")]
+            assert len(hparts) == 4
+            hires_bbox = tuple(hparts)
+        except Exception:
+            parser.error("--hires-bbox must be W,S,E,N (four floats)")
+    else:
+        hires_bbox = bbox
+
     # Strip height defaults
     strip_height = args.strip_height or (512 if args.resolution == "1m" else 2048)
 
-    # 1m requires gdalwarp
-    use_gdalwarp = args.resolution == "1m"
+    # gdalwarp: mandatory for 1m, priority-stack, or large 10m bboxes
+    use_gdalwarp = args.resolution == "1m" or args.use_gdalwarp or args.priority_stack
     if use_gdalwarp and not check_gdalwarp():
         sys.exit(
-            "ERROR: gdalwarp and gdalbuildvrt are required for --resolution 1m.\n"
+            "ERROR: gdalwarp and gdalbuildvrt are required for "
+            "--use-gdalwarp / --resolution 1m / --priority-stack.\n"
             "Install with:  sudo apt-get install -y gdal-bin"
         )
 
-    # Disk space estimate: 1m needs ~150 GB, 10m needs ~5 GB
-    need_gb = 150.0 if args.resolution == "1m" else 5.0
+    # Disk space estimates (conservative)
+    if args.resolution == "1m":
+        need_gb = 150.0
+    elif args.priority_stack:
+        need_gb = 80.0   # 10m baseline + 1m tile downloads + hires COG + derivatives
+    elif use_gdalwarp:
+        need_gb = 30.0
+    else:
+        need_gb = 5.0
     check_disk_space(workdir, need_gb)
 
     # Credentials
@@ -736,32 +945,118 @@ def main() -> None:
 
     t_start = time.time()
 
-    # ── 1. query + download ───────────────────────────────────────────────────
-    dem_path = cog_dir / "dem.tif"
-    if dem_path.exists():
-        step("dem.tif already exists — skipping download and mosaic.")
-        tile_paths: list[Path] = []
+    dem_path       = cog_dir / "dem.tif"
+    dem_hires_path = cog_dir / "dem_hires.tif"
+    clip_bounds    = (bbox[0], bbox[1], bbox[2], bbox[3])
+
+    # ── 1 + 2: download + mosaic → dem.tif ───────────────────────────────────
+
+    if args.priority_stack:
+        # ── priority stack: 10m baseline blended with 1m where available ─────
+        raw_10m = raw_dir / "10m"
+        raw_1m  = raw_dir / "1m"
+        raw_10m.mkdir(exist_ok=True)
+        raw_1m.mkdir(exist_ok=True)
+
+        paths_10m: list[Path] = []
+        paths_1m:  list[Path] = []
+
+        if dem_path.exists():
+            step("dem.tif already exists — skipping download and priority-blend mosaic.")
+        else:
+            # Download 10m baseline
+            tiles_10m = query_tnm(bbox, resolution="1/3")
+            if not tiles_10m:
+                sys.exit("ERROR: TNM returned zero 10m tiles for this bbox.")
+            paths_10m = download_tiles(tiles_10m, raw_10m)
+
+            # Download 1m lidar (if any tiles exist for this bbox)
+            step("Querying 1m lidar tiles ...")
+            tiles_1m = query_tnm(bbox, resolution="1m")
+            if tiles_1m:
+                logger.info("  %d 1m tile(s) available — downloading ...", len(tiles_1m))
+                paths_1m = download_tiles(tiles_1m, raw_1m)
+            else:
+                logger.info("  No 1m lidar tiles found for this bbox — 10m-only baseline.")
+
+            # Priority VRT: 10m listed first, 1m listed last → 1m wins on overlap.
+            vrt = cog_dir / "priority.vrt"
+            _build_vrt(paths_10m + paths_1m, vrt)
+            _gdalwarp_vrt(vrt, dem_path, clip_bounds,
+                          target_res_m=PRIORITY_STACK_RES_M)
+            vrt.unlink(missing_ok=True)
+
+        # ── hires COG: 1m-only, clipped to actual tile coverage ───────────────
+        if not dem_hires_path.exists():
+            if not paths_1m:
+                # On a resumed run, discover already-downloaded 1m tiles.
+                paths_1m = sorted(raw_1m.glob("*.tif"))
+
+            if paths_1m:
+                # Clip the tight bbox to hires_bbox so eastern plains don't inflate estimate.
+                raw_tight = _tiles_tight_bbox(paths_1m)
+                tight = (
+                    max(raw_tight[0], hires_bbox[0]),
+                    max(raw_tight[1], hires_bbox[1]),
+                    min(raw_tight[2], hires_bbox[2]),
+                    min(raw_tight[3], hires_bbox[3]),
+                )
+                est_gb  = _estimate_raster_gb(*tight, res_m=1.0)
+                logger.info(
+                    "  1m hires bbox W=%.3f S=%.3f E=%.3f N=%.3f  "
+                    "estimated uncompressed %.1f GB",
+                    *tight, est_gb,
+                )
+                if est_gb > args.hires_max_gb:
+                    logger.warning(
+                        "  Skipping dem_hires.tif — estimated %.1f GB exceeds "
+                        "--hires-max-gb %.0f.  Use --hires-bbox W,S,E,N to restrict "
+                        "to a smaller mountain sub-region.",
+                        est_gb, args.hires_max_gb,
+                    )
+                else:
+                    vrt_h = cog_dir / "hires.vrt"
+                    # Pass hires_bbox so gdalbuildvrt only includes intersecting tiles.
+                    _build_vrt(paths_1m, vrt_h, clip_bounds=hires_bbox)
+                    _gdalwarp_vrt(vrt_h, dem_hires_path, tight)
+                    vrt_h.unlink(missing_ok=True)
+            else:
+                logger.info("  No 1m tiles found — skipping dem_hires.tif.")
+        else:
+            step("dem_hires.tif already exists — skipping hires mosaic.")
+
+        # Read dem.tif metadata after the priority stack block.
+        with rasterio.open(dem_path) as _ds:
+            dst_tf = _ds.transform
+            res_x  = abs(dst_tf.a)
+            res_y  = abs(dst_tf.e)
+            nodata = _ds.nodata
+
     else:
-        tiles = query_tnm(bbox, resolution=args.resolution)
-        if not tiles:
-            sys.exit(
-                f"ERROR: TNM returned zero tiles for bbox={bbox} resolution={args.resolution}.\n"
-                "Browse https://apps.nationalmap.gov/downloader/ to verify coverage."
-            )
-        tile_paths = download_tiles(tiles, raw_dir)
+        # ── standard single-resolution path (unchanged) ───────────────────────
+        if dem_path.exists():
+            step("dem.tif already exists — skipping download and mosaic.")
+            tile_paths: list[Path] = []
+        else:
+            tiles = query_tnm(bbox, resolution=args.resolution)
+            if not tiles:
+                sys.exit(
+                    f"ERROR: TNM returned zero tiles for bbox={bbox} "
+                    f"resolution={args.resolution}.\n"
+                    "Browse https://apps.nationalmap.gov/downloader/ to verify coverage."
+                )
+            tile_paths = download_tiles(tiles, raw_dir)
 
-    # ── 2. mosaic + reproject → dem.tif ──────────────────────────────────────
-    clip_bounds = (bbox[0], bbox[1], bbox[2], bbox[3])
-    _, base_profile, dst_tf = mosaic_and_reproject(
-        tile_paths, dem_path,
-        clip_bounds=clip_bounds,
-        use_gdalwarp=use_gdalwarp,
-    )
-    res_x  = abs(dst_tf.a)
-    res_y  = abs(dst_tf.e)
-    nodata = base_profile.get("nodata")
+        _, base_profile, dst_tf = mosaic_and_reproject(
+            tile_paths, dem_path,
+            clip_bounds=clip_bounds,
+            use_gdalwarp=use_gdalwarp,
+        )
+        res_x  = abs(dst_tf.a)
+        res_y  = abs(dst_tf.e)
+        nodata = base_profile.get("nodata")
 
-    # ── 3–5. hillshade / slope / aspect ──────────────────────────────────────
+    # ── 3–5. hillshade / slope / aspect (10m baseline) ────────────────────────
     hs_path     = cog_dir / "hillshade.tif"
     slope_path  = cog_dir / "slope.tif"
     aspect_path = cog_dir / "aspect.tif"
@@ -774,15 +1069,44 @@ def main() -> None:
             nodata=nodata, strip_height=strip_height,
         )
 
+    # ── 3b. hires derivatives (priority stack, when dem_hires.tif was produced) ─
+    hs_hires_path     = cog_dir / "hillshade_hires.tif"
+    slope_hires_path  = cog_dir / "slope_hires.tif"
+    aspect_hires_path = cog_dir / "aspect_hires.tif"
+
+    if dem_hires_path.exists():
+        if hs_hires_path.exists() and slope_hires_path.exists() and aspect_hires_path.exists():
+            step("Hires derivative COGs already exist — skipping computation.")
+        else:
+            with rasterio.open(dem_hires_path) as _ds:
+                hires_tf    = _ds.transform
+                hires_res_x = abs(hires_tf.a)
+                hires_res_y = abs(hires_tf.e)
+                hires_nodata = _ds.nodata
+            compute_derivatives_windowed(
+                dem_hires_path, cog_dir,
+                hires_res_x, hires_res_y,
+                nodata=hires_nodata, strip_height=512,
+                suffix="_hires",
+            )
+
     # ── 6. upload ─────────────────────────────────────────────────────────────
     prefix = args.region.rstrip("/")
+    cog_files: list[tuple[str, Path]] = [
+        (f"{prefix}/dem.tif",       dem_path),
+        (f"{prefix}/hillshade.tif", hs_path),
+        (f"{prefix}/slope.tif",     slope_path),
+        (f"{prefix}/aspect.tif",    aspect_path),
+    ]
+    if dem_hires_path.exists():
+        cog_files += [
+            (f"{prefix}/dem_hires.tif",       dem_hires_path),
+            (f"{prefix}/hillshade_hires.tif", hs_hires_path),
+            (f"{prefix}/slope_hires.tif",     slope_hires_path),
+            (f"{prefix}/aspect_hires.tif",    aspect_hires_path),
+        ]
     upload_cogs(
-        [
-            (f"{prefix}/dem.tif",       dem_path),
-            (f"{prefix}/hillshade.tif", hs_path),
-            (f"{prefix}/slope.tif",     slope_path),
-            (f"{prefix}/aspect.tif",    aspect_path),
-        ],
+        cog_files,
         endpoint=minio_ep,
         access_key=minio_user,
         secret_key=minio_pass,
@@ -792,15 +1116,23 @@ def main() -> None:
     elapsed = _fmt_duration(time.time() - t_start)
     step(f"Pipeline complete.  Total time: {elapsed}")
 
-    base     = f"http://localhost:9000/{MINIO_BUCKET}/{prefix}"
-    titiler  = "http://localhost:8001"
+    base    = f"http://localhost:9000/{MINIO_BUCKET}/{prefix}"
+    titiler = "http://localhost:8001"
+    hires_lines = ""
+    if dem_hires_path.exists():
+        hires_lines = (
+            f"\n    Hillshade (hires): {titiler}/cog/viewer?url={base}/hillshade_hires.tif"
+            f"\n    Slope (hires):     {titiler}/cog/preview.png?url={base}/slope_hires.tif"
+            f"&colormap_name=rdylgn_r&rescale=0,60&nodata=-9999"
+            f"\n    DEM hires info:    {titiler}/cog/info?url={base}/dem_hires.tif"
+        )
     print(f"""
   Visual checks (open in browser — use VM LAN IP if remote):
 
     Hillshade:  {titiler}/cog/viewer?url={base}/hillshade.tif
     Slope:      {titiler}/cog/preview.png?url={base}/slope.tif&colormap_name=rdylgn_r&rescale=0,60&nodata=-9999
     Aspect:     {titiler}/cog/preview.png?url={base}/aspect.tif&colormap_name=hsv&rescale=0,360&nodata=-9999
-    DEM info:   {titiler}/cog/info?url={base}/dem.tif
+    DEM info:   {titiler}/cog/info?url={base}/dem.tif{hires_lines}
 
   Log file:  {workdir / "pipeline.log"}
   Raw tiles: {raw_dir}

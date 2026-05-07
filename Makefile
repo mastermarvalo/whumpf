@@ -22,6 +22,7 @@ help:  ## show this help
 
 .PHONY: up
 up:  ## build + start the full stack in the background
+	@docker ps -aq --filter "name=whumpf-" | xargs -r docker rm -f 2>/dev/null; true
 	$(COMPOSE) up -d --build
 
 .PHONY: up-fg
@@ -80,12 +81,15 @@ health:  ## curl the readiness endpoint — quick "is everything wired up" check
 
 # --- DEM pipeline -----------------------------------------------------------
 
-DEM_WORKDIR ?= $(CURDIR)/data/dem-work
-DEM_BBOX    ?= -109.06,37.0,-104.5,41.0
+DEM_WORKDIR  ?= /data/dem-work
+DEM_BBOX     ?= -109.06,37.0,-102.05,41.0
+DEM_HIRES_BBOX ?= -109.06,37.0,-105.5,41.0
+DEM_FLAGS    ?= --priority-stack
+DEM_HIRES_MAX_GB ?= 700
 
 .PHONY: dem-pipeline
-dem-pipeline:  ## run the DEM pipeline; override with DEM_BBOX= and DEM_WORKDIR=
-	python data/pipelines/dem_pipeline.py --workdir $(DEM_WORKDIR) --region colorado --bbox="$(DEM_BBOX)"
+dem-pipeline:  ## run the DEM pipeline; override with DEM_BBOX=, DEM_HIRES_BBOX=, DEM_WORKDIR=, DEM_FLAGS=
+	python data/pipelines/dem_pipeline.py --workdir $(DEM_WORKDIR) --region colorado --bbox="$(DEM_BBOX)" --hires-bbox="$(DEM_HIRES_BBOX)" --hires-max-gb=$(DEM_HIRES_MAX_GB) $(DEM_FLAGS)
 
 .PHONY: dem-pipeline-test
 dem-pipeline-test:  ## quick smoke-test (0.5°×0.5° bbox near Silverton, ~2 min)
