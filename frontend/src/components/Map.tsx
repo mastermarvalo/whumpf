@@ -96,6 +96,13 @@ const RASTER_STYLES: Record<"topo" | "satellite" | "hybrid", maplibregl.StyleSpe
   hybrid:    hybridStyle(),
 };
 
+// Source and layer IDs owned by each raster basemap — used for in-place swaps.
+const RASTER_BASEMAP_IDS: Record<"topo" | "satellite" | "hybrid", { sources: string[]; layers: string[] }> = {
+  topo:      { sources: ["basemap"],    layers: ["basemap"] },
+  satellite: { sources: ["basemap"],    layers: ["basemap"] },
+  hybrid:    { sources: ["sat", "ref"], layers: ["basemap-sat", "basemap-ref"] },
+};
+
 function getMapStyle(basemap: BasemapId, dark: boolean): string | maplibregl.StyleSpecification {
   if (basemap === "streets") return VECTOR_STYLES[dark ? "dark" : "light"];
   return RASTER_STYLES[basemap];
@@ -108,6 +115,11 @@ function cogS3(path: string) {
 function cogTiles(cogPath: string, extra: Record<string, string> = {}): string[] {
   const params = new URLSearchParams({ url: cogS3(cogPath), ...extra });
   return [`${TITILER_URL}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?${params}`];
+}
+
+function getContourUrl(interval: number | null): string {
+  const base = `${API_URL}/tiles/contours/{z}/{x}/{y}?region=${REGION}`;
+  return interval != null ? `${base}&interval=${interval}` : base;
 }
 
 
@@ -133,6 +145,8 @@ interface ActiveLayer {
   sourceMinzoom?: number;
   // Extra MapLibre raster paint properties merged in at layer creation (e.g. saturation, resampling).
   blendPaint?: { "raster-saturation"?: number; "raster-resampling"?: "linear" | "nearest" };
+  // 1m hires tile URLs — if set, a companion `${id}-hires` layer is added at minzoom 13.
+  hiresTiles?: string[];
 }
 
 interface UpcomingLayer {
@@ -254,20 +268,25 @@ interface LayerGroup {
   color: string;
   active: ActiveLayer[];
   upcoming: UpcomingLayer[];
+  reorderable?: boolean;
 }
 
 // ── layer definitions ──────────────────────────────────────────────────────────
+
+const TERRAIN_LAYER_IDS = ["hillshade", "slope", "aspect", "contours"];
 
 const LAYER_GROUPS: LayerGroup[] = [
   {
     id: "terrain",
     label: "Terrain",
     color: "#a07850",
+    reorderable: true,
     active: [
       {
         id: "hillshade",
         label: "Hillshade",
         tiles: cogTiles(`${REGION}/hillshade.tif`),
+        hiresTiles: cogTiles(`${REGION}/hillshade_hires.tif`),
         opacity: 0.7,
         defaultVisible: true,
       },
@@ -277,6 +296,7 @@ const LAYER_GROUPS: LayerGroup[] = [
         // Served via API proxy which applies the CalTopo V1 colormap server-side.
         // Backend adds buffer=2 so TiTiler has neighbour context at tile edges.
         tiles: [`${API_URL}/tiles/slope/{z}/{x}/{y}?region=${REGION}`],
+        hiresTiles: [`${API_URL}/tiles/slope/{z}/{x}/{y}?region=${REGION}&hires=true`],
         opacity: 0.75,
         defaultVisible: false,
         blendPaint: { "raster-saturation": -0.3 },
@@ -298,6 +318,13 @@ const LAYER_GROUPS: LayerGroup[] = [
           buffer: "2",
           tilesize: "512",
         }),
+        hiresTiles: cogTiles(`${REGION}/aspect_hires.tif`, {
+          colormap_name: "hsv",
+          rescale: "0,360",
+          nodata: "-9999",
+          buffer: "2",
+          tilesize: "512",
+        }),
         opacity: 0.7,
         defaultVisible: false,
         blendPaint: { "raster-saturation": -0.4 },
@@ -310,12 +337,11 @@ const LAYER_GROUPS: LayerGroup[] = [
       {
         id: "contours",
         label: "Contour lines",
-        // Transparent PNG tiles rendered server-side from the DEM COG.
-        // 40m minor / 200m major intervals — drawn on top of slope/aspect.
         tiles: [`${API_URL}/tiles/contours/{z}/{x}/{y}?region=${REGION}`],
         opacity: 1.0,
         defaultVisible: false,
         noSlider: true,
+        sourceMinzoom: 9,
       },
     ],
     upcoming: [],
@@ -974,6 +1000,7 @@ function addOverlayLayers(
   map: maplibregl.Map,
   visible: Record<string, boolean>,
   opacity: Record<string, number>,
+  tileOverrides?: Record<string, string[]>,
 ) {
   // On vector basemaps, insert overlays before the first symbol layer so labels stay on top.
   // On hybrid, insert before basemap-ref (the transparent road/label overlay) for the same reason.
@@ -981,12 +1008,13 @@ function addOverlayLayers(
   const beforeId: string | undefined =
     map.getLayer("basemap-ref")
       ? "basemap-ref"
-      : map.getStyle().layers.find((l) => l.type === "symbol")?.id;
+      : map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
   for (const layer of OVERLAY_LAYERS) {
     if (layer.kind === "geojson") continue; // managed separately
+    const tiles = tileOverrides?.[layer.id] ?? layer.tiles;
     map.addSource(layer.id, {
       type: "raster",
-      tiles: layer.tiles,
+      tiles,
       tileSize: 256,
       bounds: COLORADO_MTN_BOUNDS,
       minzoom: layer.sourceMinzoom ?? 6,
@@ -1008,6 +1036,34 @@ function addOverlayLayers(
       },
       beforeId,
     );
+    if (layer.hiresTiles) {
+      const hiresId = `${layer.id}-hires`;
+      map.addSource(hiresId, {
+        type: "raster",
+        tiles: layer.hiresTiles,
+        tileSize: 256,
+        bounds: COLORADO_MTN_BOUNDS,
+        minzoom: 13,
+        maxzoom: 16,
+        attribution: "USGS 3DEP",
+      });
+      map.addLayer(
+        {
+          id: hiresId,
+          type: "raster",
+          source: hiresId,
+          minzoom: 13,
+          paint: {
+            "raster-opacity": opacity[layer.id] ?? layer.opacity,
+            "raster-fade-duration": 400,
+            "raster-resampling": "linear",
+            ...(layer.blendPaint ?? {}),
+          },
+          layout: { visibility: visible[layer.id] ? "visible" : "none" },
+        },
+        beforeId,
+      );
+    }
   }
 }
 
@@ -1151,18 +1207,23 @@ function addObsLayers(map: maplibregl.Map) {
   map.addSource("caic-obs", { type: "geojson", data: { type: "FeatureCollection", features: [] } });
   map.addLayer({
     id: "caic-obs-circles",
-    type: "circle",
+    type: "symbol",
     source: "caic-obs",
+    layout: {
+      "text-field": "▲",
+      "text-size": 18,
+      "text-allow-overlap": true,
+      "text-ignore-placement": true,
+      "text-anchor": "center",
+    },
     paint: {
-      "circle-color": ["match", ["get", "obs_type"],
+      "text-color": ["match", ["get", "obs_type"],
         "caught", OBS_COLORS.caught,
         "avy",    OBS_COLORS.avy,
         OBS_COLORS.field,
       ],
-      "circle-radius": 7,
-      "circle-stroke-width": 1.5,
-      "circle-stroke-color": "#fff",
-      "circle-opacity": 0.9,
+      "text-halo-color": "rgba(255,255,255,0.9)",
+      "text-halo-width": 1.5,
     },
   });
 }
@@ -1239,6 +1300,56 @@ function applyStravaHighlight(map: maplibregl.Map | null, selectedId: number | n
   }
 }
 
+function applyTerrainOrder(map: maplibregl.Map, order: string[]) {
+  const beforeId: string | undefined =
+    map.getLayer("basemap-ref")
+      ? "basemap-ref"
+      : map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
+  if (!beforeId) return;
+  // Build the stack bottom-to-top: order[0] at bottom, order[last] just below symbols.
+  // Iterate reversed so each layer is slotted into place before the one above it.
+  // Hires companion (${id}-hires) sits immediately above its standard layer.
+  let nextAbove: string | undefined = beforeId;
+  for (const id of [...order].reverse()) {
+    const hiresId = `${id}-hires`;
+    if (map.getLayer(hiresId)) {
+      map.moveLayer(hiresId, nextAbove);
+      nextAbove = hiresId;
+    }
+    if (map.getLayer(id)) {
+      map.moveLayer(id, nextAbove);
+      nextAbove = id;
+    }
+  }
+}
+
+// Swap only the basemap source/layers for raster-to-raster transitions without touching overlays.
+function swapRasterBasemap(
+  map: maplibregl.Map,
+  from: "topo" | "satellite" | "hybrid",
+  to: "topo" | "satellite" | "hybrid",
+) {
+  if (from === to) return;
+  const fromIds = RASTER_BASEMAP_IDS[from];
+  // Capture the first overlay layer ID before removing anything so we can insert below it.
+  const firstOverlayId = map.getStyle().layers.find(
+    (l) => !fromIds.layers.includes(l.id),
+  )?.id;
+  for (const id of fromIds.layers) {
+    if (map.getLayer(id)) map.removeLayer(id);
+  }
+  for (const id of fromIds.sources) {
+    if (map.getSource(id)) map.removeSource(id);
+  }
+  const newStyle = RASTER_STYLES[to];
+  for (const [id, spec] of Object.entries(newStyle.sources)) {
+    map.addSource(id, spec as maplibregl.SourceSpecification);
+  }
+  for (const layer of newStyle.layers) {
+    map.addLayer(layer as maplibregl.LayerSpecification, firstOverlayId);
+  }
+}
+
 // ── Map component ──────────────────────────────────────────────────────────────
 
 export function Map({
@@ -1258,13 +1369,31 @@ export function Map({
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
 
   const [dark, setDark] = useState(true);
-  const [basemap, setBasemap] = useState<BasemapId>("streets");
-  const [visible, setVisible] = useState<Record<string, boolean>>(
-    () => Object.fromEntries(OVERLAY_LAYERS.map((l) => [l.id, l.defaultVisible])),
-  );
-  const [opacity, setOpacity] = useState<Record<string, number>>(
-    () => Object.fromEntries(OVERLAY_LAYERS.map((l) => [l.id, l.opacity])),
-  );
+  const [basemap, setBasemap] = useState<BasemapId>(() => {
+    try {
+      const s = localStorage.getItem("whumpf:basemap");
+      if (s === "streets" || s === "topo" || s === "satellite" || s === "hybrid") return s;
+    } catch { /* ignore */ }
+    return "streets";
+  });
+  const [loadingLayers, setLoadingLayers] = useState<Set<string>>(new Set());
+  // Ref so the map idle handler (set up once) can always reach the current setter.
+  const setLoadingLayersRef = useRef(setLoadingLayers);
+  setLoadingLayersRef.current = setLoadingLayers;
+  const [visible, setVisible] = useState<Record<string, boolean>>(() => {
+    const defaults = Object.fromEntries(OVERLAY_LAYERS.map((l) => [l.id, l.defaultVisible]));
+    try {
+      const stored = localStorage.getItem("whumpf:layer-visible");
+      return stored ? { ...defaults, ...JSON.parse(stored) } : defaults;
+    } catch { return defaults; }
+  });
+  const [opacity, setOpacity] = useState<Record<string, number>>(() => {
+    const defaults = Object.fromEntries(OVERLAY_LAYERS.map((l) => [l.id, l.opacity]));
+    try {
+      const stored = localStorage.getItem("whumpf:layer-opacity");
+      return stored ? { ...defaults, ...JSON.parse(stored) } : defaults;
+    } catch { return defaults; }
+  });
   const [point, setPoint] = useState<PointData | null>(null);
   const [measureMode, setMeasureMode] = useState(false);
   const [measurePts, setMeasurePts] = useState<[number, number][]>([]);
@@ -1286,13 +1415,31 @@ export function Map({
   const selectedStravaIdRef = useRef<number | null>(null);
   const [stravaCard, setStravaCard] = useState<{ activities: ActivityCardProps[]; index: number } | null>(null);
 
+  const [contourInterval, setContourInterval] = useState<number | null>(null);
+  const contourIntervalRef = useRef<number | null>(null);
+  const [terrainOrder, setTerrainOrder] = useState<string[]>(() => {
+    try {
+      const stored = localStorage.getItem("whumpf:terrain-order");
+      if (stored) {
+        const parsed = JSON.parse(stored) as string[];
+        if (TERRAIN_LAYER_IDS.every((id) => parsed.includes(id))) return parsed;
+      }
+    } catch { /* ignore */ }
+    return [...TERRAIN_LAYER_IDS];
+  });
+  const terrainOrderRef = useRef(terrainOrder);
+
   // Refs so style-load callbacks can read current state without stale closures.
   const visibleRef = useRef(visible);
   const opacityRef = useRef(opacity);
   useEffect(() => { visibleRef.current = visible; }, [visible]);
   useEffect(() => { opacityRef.current = opacity; }, [opacity]);
+  useEffect(() => { contourIntervalRef.current = contourInterval; }, [contourInterval]);
+  useEffect(() => { terrainOrderRef.current = terrainOrder; }, [terrainOrder]);
 
   const snotelDataRef = useRef<object | null>(null);
+  const prevBasemapRef = useRef<BasemapId>(basemap);
+  const basemapDarkMounted = useRef(false);
   const measureModeRef = useRef(false);
   const measurePtsRef = useRef<[number, number][]>([]);
   const measureMarkersRef = useRef<maplibregl.Marker[]>([]);
@@ -1304,7 +1451,7 @@ export function Map({
 
     const map = new maplibregl.Map({
       container: containerRef.current,
-      style: getMapStyle("streets", true),
+      style: getMapStyle(basemap, dark),
       center: INITIAL_CENTER,
       zoom: INITIAL_ZOOM,
       maxBounds: CO_MAX_BOUNDS,
@@ -1315,7 +1462,10 @@ export function Map({
     map.addControl(new maplibregl.ScaleControl({ unit: "imperial" }), "bottom-left");
 
     map.on("load", () => {
-      addOverlayLayers(map, visibleRef.current, opacityRef.current);
+      addOverlayLayers(map, visibleRef.current, opacityRef.current, {
+        contours: [getContourUrl(contourIntervalRef.current)],
+      });
+      applyTerrainOrder(map, terrainOrderRef.current);
       addColoradoMask(map); // sits above raster overlays, below vector data
       addMeasureLayers(map);
       addSnotelLayers(map);
@@ -1493,17 +1643,42 @@ export function Map({
       setForecastLoading(false);
     });
 
+    // Clear all loading spinners once the map is fully idle (all tiles rendered).
+    map.on("idle", () => {
+      setLoadingLayersRef.current(prev => prev.size === 0 ? prev : new Set());
+    });
+
     mapRef.current = map;
     return () => { map.remove(); mapRef.current = null; };
   }, []);
 
-  // Switch basemap style when basemap or dark mode changes; re-add overlay layers after.
+  // Switch basemap on change. Raster→raster swaps only the basemap source/layer in place so
+  // overlays are completely undisturbed. Any transition involving the vector streets style
+  // still needs a full setStyle (different sprite/glyph/source structure) followed by a
+  // re-add of all overlays from refs. Dark mode only affects the streets vector style;
+  // toggling it while on a raster basemap is a no-op at the style level.
   useEffect(() => {
+    // Skip initial mount — map.on("load") in the init effect handles first overlay setup.
+    if (!basemapDarkMounted.current) { basemapDarkMounted.current = true; return; }
     const map = mapRef.current;
     if (!map) return;
+
+    const prev = prevBasemapRef.current;
+    prevBasemapRef.current = basemap;
+
+    if (prev !== "streets" && basemap !== "streets") {
+      // Raster → raster: swap only the basemap; overlays stay untouched.
+      swapRasterBasemap(map, prev as "topo" | "satellite" | "hybrid", basemap as "topo" | "satellite" | "hybrid");
+      return;
+    }
+
+    // Streets ↔ raster or dark mode change on streets: full style swap.
     map.setStyle(getMapStyle(basemap, dark));
     map.once("style.load", () => {
-      addOverlayLayers(map, visibleRef.current, opacityRef.current);
+      addOverlayLayers(map, visibleRef.current, opacityRef.current, {
+        contours: [getContourUrl(contourIntervalRef.current)],
+      });
+      applyTerrainOrder(map, terrainOrderRef.current);
       addColoradoMask(map);
       addMeasureLayers(map);
       updateMeasureSource(map, measurePtsRef.current);
@@ -1532,6 +1707,8 @@ export function Map({
     for (const [id, isVis] of Object.entries(visible)) {
       if (map.getLayer(id))
         map.setLayoutProperty(id, "visibility", isVis ? "visible" : "none");
+      if (map.getLayer(`${id}-hires`))
+        map.setLayoutProperty(`${id}-hires`, "visibility", isVis ? "visible" : "none");
     }
   }, [visible]);
 
@@ -1541,6 +1718,7 @@ export function Map({
     if (!map) return;
     for (const [id, op] of Object.entries(opacity)) {
       if (map.getLayer(id)) map.setPaintProperty(id, "raster-opacity", op);
+      if (map.getLayer(`${id}-hires`)) map.setPaintProperty(`${id}-hires`, "raster-opacity", op);
     }
   }, [opacity]);
 
@@ -1587,12 +1765,10 @@ export function Map({
   }, [measurePts]);
 
   // Fetch SNOTEL data the first time the layer is enabled.
+  const snotelVisible = visible["snotel"];
   useEffect(() => {
     const map = mapRef.current;
-    if (!visible["snotel"]) {
-      setSnotelVisibility(map, false);
-      return;
-    }
+    if (!snotelVisible) { setSnotelVisibility(map, false); return; }
     setSnotelVisibility(map, true);
     if (snotelLoaded) return;
     apiFetch(`${API_URL}/snowpack/stations`)
@@ -1604,15 +1780,13 @@ export function Map({
         setSnotelLoaded(true);
       })
       .catch((err) => console.warn("SNOTEL fetch failed", err));
-  }, [visible, snotelLoaded]);
+  }, [snotelVisible, snotelLoaded]);
 
   // Fetch CAIC danger zones the first time the layer is enabled.
+  const caicVisible = visible["caic-danger"];
   useEffect(() => {
     const map = mapRef.current;
-    if (!visible["caic-danger"]) {
-      setCaicVisibility(map, false);
-      return;
-    }
+    if (!caicVisible) { setCaicVisibility(map, false); return; }
     setCaicVisibility(map, true);
     if (caicLoaded) return;
     fetch(`${API_URL}/avalanche/forecast`)
@@ -1624,15 +1798,13 @@ export function Map({
         setCaicLoaded(true);
       })
       .catch((err) => console.warn("CAIC fetch failed", err));
-  }, [visible, caicLoaded]);
+  }, [caicVisible, caicLoaded]);
 
   // Fetch CAIC field observations the first time the layer is enabled.
+  const obsVisible = visible["caic-obs"];
   useEffect(() => {
     const map = mapRef.current;
-    if (!visible["caic-obs"]) {
-      setObsVisibility(map, false);
-      return;
-    }
+    if (!obsVisible) { setObsVisibility(map, false); return; }
     setObsVisibility(map, true);
     if (obsLoaded) return;
     fetch(`${API_URL}/avalanche/observations`)
@@ -1644,7 +1816,7 @@ export function Map({
         setObsLoaded(true);
       })
       .catch((err) => console.warn("Obs fetch failed", err));
-  }, [visible, obsLoaded]);
+  }, [obsVisible, obsLoaded]);
 
   // Highlight selected Strava route; dim all others.
   useEffect(() => {
@@ -1679,14 +1851,63 @@ export function Map({
 
   const theme = dark ? THEMES.dark : THEMES.light;
 
-  // Auto-enable hillshade at a sensible opacity when switching to a raster basemap.
+  // Persist layer selections and basemap to localStorage.
   useEffect(() => {
-    if (basemap !== "streets") {
-      setVisible(v => ({ ...v, hillshade: true }));
-      const op = basemap === "satellite" ? 0.4 : basemap === "hybrid" ? 0.35 : 0.45;
-      setOpacity(o => ({ ...o, hillshade: op }));
-    }
+    try { localStorage.setItem("whumpf:basemap", basemap); } catch { /* quota */ }
   }, [basemap]);
+  useEffect(() => {
+    try { localStorage.setItem("whumpf:layer-visible", JSON.stringify(visible)); } catch { /* quota */ }
+  }, [visible]);
+  useEffect(() => {
+    try { localStorage.setItem("whumpf:layer-opacity", JSON.stringify(opacity)); } catch { /* quota */ }
+  }, [opacity]);
+  useEffect(() => {
+    try { localStorage.setItem("whumpf:terrain-order", JSON.stringify(terrainOrder)); } catch { /* quota */ }
+  }, [terrainOrder]);
+
+  // When the contour interval changes, swap the MapLibre source+layer with the new tile URL.
+  // Raster sources don't support in-place tile URL updates, so we remove and re-add.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.getLayer("contours")) return;
+    const url = getContourUrl(contourInterval);
+    const isVis = visibleRef.current["contours"] ?? false;
+    const op = opacityRef.current["contours"] ?? 1.0;
+    const beforeId: string | undefined =
+      map.getLayer("basemap-ref")
+        ? "basemap-ref"
+        : map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
+    map.removeLayer("contours");
+    map.removeSource("contours");
+    map.addSource("contours", {
+      type: "raster",
+      tiles: [url],
+      tileSize: 256,
+      bounds: COLORADO_MTN_BOUNDS,
+      minzoom: 6,
+      maxzoom: 16,
+      attribution: "USGS 3DEP",
+    });
+    map.addLayer({
+      id: "contours",
+      type: "raster",
+      source: "contours",
+      paint: { "raster-opacity": op, "raster-fade-duration": 400 },
+      layout: { visibility: isVis ? "visible" : "none" },
+    }, beforeId);
+    // Re-apply terrain order since we removed and re-added the contours layer.
+    applyTerrainOrder(map, terrainOrderRef.current);
+  }, [contourInterval]);
+
+  // Reorder terrain layers in MapLibre whenever the sidebar order changes.
+  // Guard with isStyleLoaded(): on initial mount the effect fires before the async style fetch
+  // completes, at which point getStyle() returns null and applyTerrainOrder would throw.
+  // The correct initial order is applied by applyTerrainOrder inside map.on("load").
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    applyTerrainOrder(map, terrainOrder);
+  }, [terrainOrder]);
 
   useEffect(() => {
     const map = mapRef.current;
@@ -1713,7 +1934,10 @@ export function Map({
     basemap,
     units,
     theme,
-    onToggle: (id: string) => setVisible((v) => ({ ...v, [id]: !v[id] })),
+    onToggle: (id: string) => {
+      if (!visible[id]) setLoadingLayers(prev => new Set([...prev, id]));
+      setVisible(v => ({ ...v, [id]: !v[id] }));
+    },
     onOpacity: (id: string, val: number) => setOpacity((o) => ({ ...o, [id]: val })),
     onDarkToggle: () => setDark(d => !d),
     onBasemapChange: setBasemap,
@@ -1733,6 +1957,11 @@ export function Map({
     },
     collapsed: layerPanelCollapsed,
     onCollapsedChange: setLayerPanelCollapsed,
+    loadingLayers,
+    layerOrder: { terrain: terrainOrder },
+    onLayerReorder: (_groupId: string, newOrder: string[]) => setTerrainOrder(newOrder),
+    contourInterval,
+    onContourInterval: setContourInterval,
   };
 
   // On mobile, bottom-floating panels sit above the nav bar.
@@ -1867,6 +2096,11 @@ function LayerPanel({
   onStravaDisconnect,
   collapsed: collapsedProp,
   onCollapsedChange,
+  loadingLayers,
+  layerOrder,
+  onLayerReorder,
+  contourInterval,
+  onContourInterval,
 }: {
   groups: LayerGroup[];
   visible: Record<string, boolean>;
@@ -1889,9 +2123,19 @@ function LayerPanel({
   onStravaDisconnect: () => void;
   collapsed?: boolean;
   onCollapsedChange?: (c: boolean) => void;
+  loadingLayers?: Set<string>;
+  layerOrder?: Record<string, string[]>;
+  onLayerReorder?: (groupId: string, newOrder: string[]) => void;
+  contourInterval?: number | null;
+  onContourInterval?: (v: number | null) => void;
 }) {
   const collapsed = mobile ? false : (collapsedProp ?? false);
   const setCollapsed = (c: boolean) => onCollapsedChange?.(c);
+
+  const [dragId, setDragId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  const toggleGroup = (id: string) => setCollapsedGroups((prev) => ({ ...prev, [id]: !prev[id] }));
 
   const btnBase: CSSProperties = {
     position: "fixed",
@@ -1955,7 +2199,7 @@ function LayerPanel({
         zIndex: 1000,
         width: 210,
         boxSizing: "border-box",
-        maxHeight: "calc(100vh - 20px)",
+        bottom: 10,
         overflowY: "auto",
         userSelect: "none",
       }}
@@ -2061,18 +2305,23 @@ function LayerPanel({
       </div>
 
       {/* Groups */}
-      {groups.map((group, gi) => (
+      {groups.map((group, gi) => {
+        const groupOpen = !collapsedGroups[group.id];
+        return (
         <div key={group.id} style={{ marginTop: gi === 0 ? 0 : 14 }}>
           {/* Divider + header */}
           {gi > 0 && (
             <div style={{ borderTop: `1px solid ${theme.divider}`, marginBottom: 10 }} />
           )}
           <div
+            onClick={() => toggleGroup(group.id)}
             style={{
               display: "flex",
               alignItems: "center",
               gap: 6,
-              marginBottom: 7,
+              marginBottom: groupOpen ? 7 : 0,
+              cursor: "pointer",
+              userSelect: "none",
             }}
           >
             <span
@@ -2091,81 +2340,185 @@ function LayerPanel({
                 letterSpacing: "0.07em",
                 color: theme.text,
                 textTransform: "uppercase",
+                flex: 1,
               }}
             >
               {group.label}
             </span>
+            <span style={{
+              color: theme.muted,
+              fontSize: 12,
+              lineHeight: 1,
+              transform: groupOpen ? "rotate(90deg)" : "rotate(0deg)",
+              transition: "transform 150ms ease",
+              display: "inline-block",
+            }}>›</span>
           </div>
 
+          {/* Active + upcoming layers — collapsible */}
+          <div style={{
+            overflow: "hidden",
+            maxHeight: groupOpen ? "2000px" : "0px",
+            transition: "max-height 200ms ease",
+          }}>
+
           {/* Active layers */}
-          {group.active.map((layer) => (
-            <div key={layer.id} style={{ marginBottom: mobile ? 12 : 8 }}>
-              <label
-                style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", marginBottom: 3, minHeight: mobile ? 36 : undefined }}
+          {(group.reorderable && layerOrder?.[group.id]
+            ? [...group.active].sort((a, b) => {
+                const ord = layerOrder[group.id];
+                return ord.indexOf(a.id) - ord.indexOf(b.id);
+              })
+            : group.active
+          ).map((layer) => {
+            const isReorderable = group.reorderable && !mobile;
+            return (
+              <div
+                key={layer.id}
+                onDragOver={isReorderable ? (e) => { e.preventDefault(); setDragOverId(layer.id); } : undefined}
+                onDrop={isReorderable ? () => {
+                  if (dragId && dragOverId && dragId !== dragOverId && layerOrder?.[group.id]) {
+                    const newOrder = [...layerOrder[group.id]];
+                    const from = newOrder.indexOf(dragId);
+                    const to = newOrder.indexOf(dragOverId);
+                    if (from !== -1 && to !== -1) {
+                      newOrder.splice(from, 1);
+                      newOrder.splice(to, 0, dragId);
+                      onLayerReorder?.(group.id, newOrder);
+                    }
+                  }
+                  setDragId(null);
+                  setDragOverId(null);
+                } : undefined}
+                onDragEnd={isReorderable ? () => { setDragId(null); setDragOverId(null); } : undefined}
+                style={{
+                  marginBottom: mobile ? 12 : 8,
+                  opacity: dragId === layer.id ? 0.4 : 1,
+                  borderTop: dragOverId === layer.id && dragId !== layer.id
+                    ? `2px solid ${theme.accent}` : undefined,
+                  transition: "opacity 0.1s",
+                }}
               >
-                <input
-                  type="checkbox"
-                  checked={visible[layer.id] ?? false}
-                  onChange={() => onToggle(layer.id)}
-                  style={{ accentColor: group.color, cursor: "pointer", width: mobile ? 18 : undefined, height: mobile ? 18 : undefined }}
-                />
-                <span>{layer.label}</span>
-              </label>
-              {!layer.noSlider && (
-                <div style={{
-                  overflow: "hidden",
-                  maxHeight: visible[layer.id] ? "28px" : "0px",
-                  opacity: visible[layer.id] ? 1 : 0,
-                  transition: "max-height 200ms ease, opacity 200ms ease",
-                }}>
-                  <input
-                    type="range"
-                    min={0}
-                    max={1}
-                    step={0.05}
-                    value={opacity[layer.id] ?? layer.opacity}
-                    onChange={(e) => onOpacity(layer.id, parseFloat(e.target.value))}
-                    style={{ width: "100%", accentColor: group.color, margin: 0, display: "block" }}
-                  />
-                </div>
-              )}
-              {layer.legend && visible[layer.id] && (
-                <div style={{ marginTop: 4 }}>
-                  {layer.legend.swatches ? (
-                    <div style={{ display: "flex", gap: 3 }}>
-                      {layer.legend.swatches.map((sw) => (
-                        <div key={sw.label} style={{ flex: 1, textAlign: "center" }}>
-                          <div style={{
-                            height: 7, borderRadius: 2,
-                            background: sw.color,
-                            border: sw.color === "#000000" ? "1px solid #555" : undefined,
-                          }} />
-                          <div style={{ fontSize: 9, color: theme.muted, marginTop: 2, lineHeight: 1.2 }}>
-                            {sw.label}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  ) : (
-                    <>
-                      <div style={{ height: 7, borderRadius: 3, background: layer.legend.gradient }} />
-                      <div
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          fontSize: 10,
-                          color: theme.muted,
-                          marginTop: 2,
-                        }}
-                      >
-                        {layer.legend.stops?.map((s, i) => <span key={i}>{s}</span>)}
-                      </div>
-                    </>
+                <label
+                  style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer", marginBottom: 3, minHeight: mobile ? 36 : undefined }}
+                >
+                  {isReorderable && (
+                    <span
+                      draggable
+                      onDragStart={() => setDragId(layer.id)}
+                      title="Drag to reorder"
+                      style={{ color: theme.muted, fontSize: 13, cursor: "grab", flexShrink: 0, lineHeight: 1, userSelect: "none" }}
+                    >⠿</span>
                   )}
-                </div>
-              )}
-            </div>
-          ))}
+                  <input
+                    type="checkbox"
+                    checked={visible[layer.id] ?? false}
+                    onChange={() => onToggle(layer.id)}
+                    style={{ accentColor: group.color, cursor: "pointer", width: mobile ? 18 : undefined, height: mobile ? 18 : undefined }}
+                  />
+                  <span style={{ display: "flex", alignItems: "center", gap: 6, flex: 1 }}>
+                    {layer.label}
+                    {loadingLayers?.has(layer.id) && (
+                      <span style={{
+                        display: "inline-block",
+                        width: 9,
+                        height: 9,
+                        borderRadius: "50%",
+                        border: `1.5px solid ${group.color}44`,
+                        borderTopColor: group.color,
+                        animation: "whumpf-spin 0.65s linear infinite",
+                        flexShrink: 0,
+                      }} />
+                    )}
+                  </span>
+                </label>
+                {!layer.noSlider && (
+                  <div style={{
+                    overflow: "hidden",
+                    maxHeight: visible[layer.id] ? "28px" : "0px",
+                    opacity: visible[layer.id] ? 1 : 0,
+                    transition: "max-height 200ms ease, opacity 200ms ease",
+                  }}>
+                    <input
+                      type="range"
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      value={opacity[layer.id] ?? layer.opacity}
+                      onChange={(e) => onOpacity(layer.id, parseFloat(e.target.value))}
+                      style={{ width: "100%", accentColor: group.color, margin: 0, display: "block" }}
+                    />
+                  </div>
+                )}
+                {layer.id === "contours" && visible[layer.id] && (
+                  <div style={{ display: "flex", gap: 3, flexWrap: "wrap", marginTop: 4 }}>
+                    {([null, 10, 20, 40, 100, 200] as (number | null)[]).map((v) => {
+                      const active = (contourInterval ?? null) === v;
+                      const label = v === null
+                        ? "Auto"
+                        : units === "imperial"
+                        ? `${Math.round(v * 3.28084)}ft`
+                        : `${v}m`;
+                      return (
+                        <button
+                          key={String(v)}
+                          onClick={() => onContourInterval?.(v)}
+                          style={{
+                            padding: "2px 6px",
+                            borderRadius: 3,
+                            border: `1px solid ${active ? group.color : theme.divider}`,
+                            background: active ? group.color : "transparent",
+                            color: active ? "#fff" : theme.muted,
+                            fontSize: 10,
+                            fontWeight: active ? 700 : 400,
+                            cursor: "pointer",
+                            fontFamily: "ui-sans-serif, system-ui, sans-serif",
+                            lineHeight: 1.4,
+                          }}
+                        >
+                          {label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {layer.legend && visible[layer.id] && (
+                  <div style={{ marginTop: 4 }}>
+                    {layer.legend.swatches ? (
+                      <div style={{ display: "flex", gap: 3 }}>
+                        {layer.legend.swatches.map((sw) => (
+                          <div key={sw.label} style={{ flex: 1, textAlign: "center" }}>
+                            <div style={{
+                              height: 7, borderRadius: 2,
+                              background: sw.color,
+                              border: sw.color === "#000000" ? "1px solid #555" : undefined,
+                            }} />
+                            <div style={{ fontSize: 9, color: theme.muted, marginTop: 2, lineHeight: 1.2 }}>
+                              {sw.label}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ height: 7, borderRadius: 3, background: layer.legend.gradient }} />
+                        <div
+                          style={{
+                            display: "flex",
+                            justifyContent: "space-between",
+                            fontSize: 10,
+                            color: theme.muted,
+                            marginTop: 2,
+                          }}
+                        >
+                          {layer.legend.stops?.map((s, i) => <span key={i}>{s}</span>)}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })}
 
           {/* Upcoming layers */}
           {group.upcoming.map((layer) => (
@@ -2206,19 +2559,32 @@ function LayerPanel({
               </span>
             </div>
           ))}
+
+          </div>{/* end collapsible */}
         </div>
-      ))}
+        );
+      })}
 
       {/* Strava section */}
       <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${theme.divider}` }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 8 }}>
+        <div
+          onClick={() => toggleGroup("strava")}
+          style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: collapsedGroups["strava"] ? 0 : 8, cursor: "pointer", userSelect: "none" }}
+        >
           <svg width="12" height="12" viewBox="0 0 24 24" fill="#fc4c02" style={{ flexShrink: 0 }}>
             <path d="M15.387 17.944l-2.089-4.116h-3.065L15.387 24l5.15-10.172h-3.066m-7.008-5.599l2.836 5.598h4.172L10.463 0l-7 13.828h4.169" />
           </svg>
-          <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", color: theme.muted, textTransform: "uppercase" }}>
+          <span style={{ fontSize: 11, fontWeight: 600, letterSpacing: "0.06em", color: theme.muted, textTransform: "uppercase", flex: 1 }}>
             Strava
           </span>
+          <span style={{
+            color: theme.muted, fontSize: 12, lineHeight: 1,
+            transform: collapsedGroups["strava"] ? "rotate(0deg)" : "rotate(90deg)",
+            transition: "transform 150ms ease",
+            display: "inline-block",
+          }}>›</span>
         </div>
+        <div style={{ overflow: "hidden", maxHeight: collapsedGroups["strava"] ? "0px" : "200px", transition: "max-height 200ms ease" }}>
         {stravaStatus.connected ? (
           <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
             <label style={{ display: "flex", alignItems: "center", gap: 7, cursor: "pointer" }}>
@@ -2269,6 +2635,7 @@ function LayerPanel({
             Connect Strava
           </button>
         )}
+        </div>{/* end strava collapsible */}
       </div>
 
       {/* Sign out */}

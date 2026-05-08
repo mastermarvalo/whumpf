@@ -5,16 +5,16 @@ from __future__ import annotations
 
 import asyncio
 import io
-import json
 import logging
 import math
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 
 import httpx
 import numpy as np
 import rasterio
 from contourpy import contour_generator
-from fastapi import APIRouter, HTTPException, Response
+from fastapi import APIRouter, HTTPException, Query, Response
 from PIL import Image, ImageDraw
 from pyproj import Transformer
 from rasterio.crs import CRS
@@ -29,7 +29,39 @@ logger = logging.getLogger("whumpf.tiles")
 _BUCKET = "dem-cogs"
 
 # Thread pool for blocking rasterio / PIL work — keeps asyncio event loop free.
-_POOL = ThreadPoolExecutor(max_workers=3)
+_POOL = ThreadPoolExecutor(max_workers=6)
+
+# Persistent HTTP client — reuses connections to TiTiler instead of opening a new
+# TCP connection on every slope tile request.
+_HTTP = httpx.AsyncClient(
+    timeout=15.0,
+    limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+)
+
+# ── in-memory LRU tile caches ──────────────────────────────────────────────────
+# Both caches live in the asyncio event loop so no locking is needed.
+# Average PNG sizes: slope ~25 KB, contour ~15 KB.
+
+_SLOPE_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
+_CONTOUR_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
+_SLOPE_CACHE_MAX   = 512   # ~13 MB ceiling
+_CONTOUR_CACHE_MAX = 1024  # ~15 MB ceiling
+
+
+def _cache_get(store: "OrderedDict[tuple, bytes]", key: tuple) -> bytes | None:
+    if key not in store:
+        return None
+    store.move_to_end(key)
+    return store[key]
+
+
+def _cache_put(store: "OrderedDict[tuple, bytes]", key: tuple, val: bytes, limit: int) -> None:
+    if key in store:
+        store.move_to_end(key)
+    else:
+        store[key] = val
+        if len(store) > limit:
+            store.popitem(last=False)
 
 # ── coordinate helpers ─────────────────────────────────────────────────────────
 
@@ -55,40 +87,9 @@ def _s3(path: str) -> str:
     return f"s3://{_BUCKET}/{path}"
 
 
-def _lerp_rgba(a: list[int], b: list[int], t: float) -> list[int]:
-    return [round(a[k] + (b[k] - a[k]) * t) for k in range(4)]
-
-
-def _build_slope_colormap() -> dict[str, list[int]]:
-    """CalTopo V1 slope-angle colormap (rescale=0,60 → pixel 0-255).
-
-    Stops:   0° (p=0)   → transparent
-            15° (p=64)  → green  #1a9641
-            27° (p=115) → yellow #ffeb00
-            40° (p=170) → red    #d7191c
-            60° (p=255) → blue   #2b7bb9
-    """
-    stops: list[tuple[int, list[int]]] = [
-        (0,   [0,   0,   0,   0]),
-        (64,  [26,  150, 65,  255]),
-        (115, [255, 235, 0,   255]),
-        (170, [215, 25,  28,  255]),
-        (255, [43,  123, 185, 255]),
-    ]
-    cmap: dict[str, list[int]] = {}
-    for i in range(256):
-        lo, hi = stops[0], stops[-1]
-        for j in range(len(stops) - 1):
-            if stops[j][0] <= i <= stops[j + 1][0]:
-                lo, hi = stops[j], stops[j + 1]
-                break
-        span = hi[0] - lo[0]
-        t = (i - lo[0]) / span if span else 0.0
-        cmap[str(i)] = _lerp_rgba(lo[1], hi[1], t)
-    return cmap
-
-
-_SLOPE_CMAP = json.dumps(_build_slope_colormap())
+# CalTopo V1 slope colormap is pre-built as data/colormaps/caltopo_slope.npy and
+# registered with TiTiler via COLORMAP_DIRECTORY. Reference it by name to avoid
+# embedding ~2 KB of JSON in every tile request URL.
 
 
 @router.get("/slope/{z}/{x}/{y}")
@@ -104,23 +105,28 @@ async def slope_tile(
     acts as bilinear anti-aliasing, reducing the blocky DEM cell appearance.
     """
     cog_name = "slope_hires.tif" if hires else "slope.tif"
+
+    cache_key = (z, x, y, region, hires)
+    if cached := _cache_get(_SLOPE_CACHE, cache_key):
+        return Response(content=cached, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
     settings = get_settings()
-    async with httpx.AsyncClient(timeout=15) as client:
-        try:
-            resp = await client.get(
-                f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png",
-                params={
-                    "url": _s3(f"{region}/{cog_name}"),
-                    "rescale": "0,60",
-                    "nodata": "-9999",
-                    "colormap": _SLOPE_CMAP,
-                    "buffer": 2,
-                    "tilesize": 512,
-                },
-            )
-        except httpx.RequestError as exc:
-            logger.error("TiTiler unreachable: %s", exc)
-            raise HTTPException(502, "tile server unreachable") from exc
+    try:
+        resp = await _HTTP.get(
+            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png",
+            params={
+                "url": _s3(f"{region}/{cog_name}"),
+                "rescale": "0,60",
+                "nodata": "-9999",
+                "colormap_name": "caltopo_slope",
+                "buffer": 2,
+                "tilesize": 512,
+            },
+        )
+    except httpx.RequestError as exc:
+        logger.error("TiTiler unreachable: %s", exc)
+        raise HTTPException(502, "tile server unreachable") from exc
 
     if resp.status_code == 404:
         return Response(status_code=204)
@@ -128,6 +134,7 @@ async def slope_tile(
         logger.warning("TiTiler returned %d for slope tile %d/%d/%d", resp.status_code, z, x, y)
         raise HTTPException(502, f"TiTiler returned {resp.status_code}")
 
+    _cache_put(_SLOPE_CACHE, cache_key, resp.content, _SLOPE_CACHE_MAX)
     return Response(
         content=resp.content,
         media_type="image/png",
@@ -178,10 +185,18 @@ def _build_dem_url(settings, region: str, hires: bool = False) -> str:
 
 
 def _render_contours(
-    dem_url: str, xmin: float, ymin: float, xmax: float, ymax: float, z: int
+    dem_url: str, xmin: float, ymin: float, xmax: float, ymax: float, z: int,
+    interval_m: float | None = None,
 ) -> bytes | None:
-    """Blocking: read DEM window, generate zoom-adaptive contours, return PNG bytes."""
-    minor_m, major_m = _contour_intervals(z)
+    """Blocking: read DEM window, generate contours, return PNG bytes.
+
+    interval_m overrides the zoom-adaptive interval when set (minor = interval_m,
+    major = interval_m * 5).
+    """
+    if interval_m is not None:
+        minor_m, major_m = interval_m, interval_m * 5.0
+    else:
+        minor_m, major_m = _contour_intervals(z)
 
     data = np.full((_RENDER_PX, _RENDER_PX), -9999.0, dtype=np.float32)
     dst_transform = from_bounds(xmin, ymin, xmax, ymax, _RENDER_PX, _RENDER_PX)
@@ -252,18 +267,23 @@ def _render_contours(
 def _render_contours_with_fallback(
     dem_url: str, fallback_url: str | None,
     xmin: float, ymin: float, xmax: float, ymax: float, z: int,
+    interval_m: float | None = None,
 ) -> bytes | None:
     """Try dem_url; if rasterio fails to open it, retry with fallback_url."""
     try:
-        return _render_contours(dem_url, xmin, ymin, xmax, ymax, z)
+        return _render_contours(dem_url, xmin, ymin, xmax, ymax, z, interval_m)
     except Exception:
         if fallback_url:
-            return _render_contours(fallback_url, xmin, ymin, xmax, ymax, z)
+            return _render_contours(fallback_url, xmin, ymin, xmax, ymax, z, interval_m)
         return None
 
 
 @router.get("/contours/{z}/{x}/{y}")
-async def contour_tile(z: int, x: int, y: int, region: str = "colorado") -> Response:
+async def contour_tile(
+    z: int, x: int, y: int,
+    region: str = "colorado",
+    interval: float | None = Query(None, description="Contour interval in metres (None = zoom-adaptive)"),
+) -> Response:
     """Render zoom-adaptive DEM contour lines as a transparent PNG tile.
 
     z<11: 100m major only  |  z11-13: 40m/200m  |  z>=14: 12m/60m (CalTopo quality)
@@ -271,6 +291,11 @@ async def contour_tile(z: int, x: int, y: int, region: str = "colorado") -> Resp
     At z>=13, prefers dem_hires.tif (1m) over dem.tif (10m) when hires data
     exists for the region. Falls back to dem.tif transparently if hires is absent.
     """
+    cache_key = (z, x, y, region, interval)
+    if cached := _cache_get(_CONTOUR_CACHE, cache_key):
+        return Response(content=cached, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
     settings = get_settings()
     xmin, ymin, xmax, ymax = _tile_mercator_bounds(z, x, y)
 
@@ -278,7 +303,6 @@ async def contour_tile(z: int, x: int, y: int, region: str = "colorado") -> Resp
     hires_url = _build_dem_url(settings, region, hires=True) if z >= 13 else None
 
     if hires_url:
-        # Prefer hires; _render_contours_with_fallback retries with base on open failure.
         dem_url      = hires_url
         fallback_url = base_url
     else:
@@ -288,11 +312,12 @@ async def contour_tile(z: int, x: int, y: int, region: str = "colorado") -> Resp
     loop = asyncio.get_event_loop()
     png = await loop.run_in_executor(
         _POOL, _render_contours_with_fallback,
-        dem_url, fallback_url, xmin, ymin, xmax, ymax, z,
+        dem_url, fallback_url, xmin, ymin, xmax, ymax, z, interval,
     )
     if png is None:
         return Response(status_code=204)
 
+    _cache_put(_CONTOUR_CACHE, cache_key, png, _CONTOUR_CACHE_MAX)
     return Response(
         content=png,
         media_type="image/png",

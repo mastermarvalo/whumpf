@@ -49,3 +49,7 @@ body,
 .maplibregl-ctrl-attrib {
   font-size: 11px;
 }
+
+@keyframes whumpf-spin {
+  to { transform: rotate(360deg); }
+}
