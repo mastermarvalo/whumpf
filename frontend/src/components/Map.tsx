@@ -275,6 +275,9 @@ interface LayerGroup {
 
 const TERRAIN_LAYER_IDS = ["hillshade", "slope", "aspect", "contours"];
 
+// Layers that switch to 1m DEM data at zoom >= 13.
+const HIRES_LAYER_IDS = ["hillshade", "slope", "aspect", "contours"];
+
 const LAYER_GROUPS: LayerGroup[] = [
   {
     id: "terrain",
@@ -1407,6 +1410,7 @@ export function Map({
   const [obsLoaded, setObsLoaded] = useState(false);
   const obsDataRef = useRef<object | null>(null);
   const [boundsLocked, setBoundsLocked] = useState(true);
+  const [aboveHiresZoom, setAboveHiresZoom] = useState(INITIAL_ZOOM >= 13);
   const [layerPanelCollapsed, setLayerPanelCollapsed] = useState(false);
   const caicDataRef = useRef<object | null>(null);
   const [stravaVisible, setStravaVisible] = useState(true);
@@ -1648,6 +1652,9 @@ export function Map({
       setLoadingLayersRef.current(prev => prev.size === 0 ? prev : new Set());
     });
 
+    // Track whether we're at hires zoom — only re-renders when crossing z13.
+    map.on("zoom", () => setAboveHiresZoom(map.getZoom() >= 13));
+
     mapRef.current = map;
     return () => { map.remove(); mapRef.current = null; };
   }, []);
@@ -1771,15 +1778,23 @@ export function Map({
     if (!snotelVisible) { setSnotelVisibility(map, false); return; }
     setSnotelVisibility(map, true);
     if (snotelLoaded) return;
-    apiFetch(`${API_URL}/snowpack/stations`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((geojson) => {
-        if (!geojson) return;
-        snotelDataRef.current = geojson;
-        setSnotelData(mapRef.current, geojson);
-        setSnotelLoaded(true);
-      })
-      .catch((err) => console.warn("SNOTEL fetch failed", err));
+    let cancelled = false;
+    const load = (attempt: number) =>
+      apiFetch(`${API_URL}/snowpack/stations`)
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+        .then((geojson) => {
+          if (cancelled) return;
+          snotelDataRef.current = geojson;
+          setSnotelData(mapRef.current, geojson);
+          setSnotelLoaded(true);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          console.warn("SNOTEL fetch failed", err);
+          if (attempt === 0) setTimeout(() => load(1), 4000);
+        });
+    load(0);
+    return () => { cancelled = true; };
   }, [snotelVisible, snotelLoaded]);
 
   // Fetch CAIC danger zones the first time the layer is enabled.
@@ -1789,15 +1804,23 @@ export function Map({
     if (!caicVisible) { setCaicVisibility(map, false); return; }
     setCaicVisibility(map, true);
     if (caicLoaded) return;
-    fetch(`${API_URL}/avalanche/forecast`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((geojson) => {
-        if (!geojson) return;
-        caicDataRef.current = geojson;
-        setCaicData(mapRef.current, geojson);
-        setCaicLoaded(true);
-      })
-      .catch((err) => console.warn("CAIC fetch failed", err));
+    let cancelled = false;
+    const load = (attempt: number) =>
+      fetch(`${API_URL}/avalanche/forecast`)
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+        .then((geojson) => {
+          if (cancelled) return;
+          caicDataRef.current = geojson;
+          setCaicData(mapRef.current, geojson);
+          setCaicLoaded(true);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          console.warn("CAIC fetch failed", err);
+          if (attempt === 0) setTimeout(() => load(1), 4000);
+        });
+    load(0);
+    return () => { cancelled = true; };
   }, [caicVisible, caicLoaded]);
 
   // Fetch CAIC field observations the first time the layer is enabled.
@@ -1807,15 +1830,23 @@ export function Map({
     if (!obsVisible) { setObsVisibility(map, false); return; }
     setObsVisibility(map, true);
     if (obsLoaded) return;
-    fetch(`${API_URL}/avalanche/observations`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((geojson) => {
-        if (!geojson) return;
-        obsDataRef.current = geojson;
-        setObsData(mapRef.current, geojson);
-        setObsLoaded(true);
-      })
-      .catch((err) => console.warn("Obs fetch failed", err));
+    let cancelled = false;
+    const load = (attempt: number) =>
+      fetch(`${API_URL}/avalanche/observations`)
+        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
+        .then((geojson) => {
+          if (cancelled) return;
+          obsDataRef.current = geojson;
+          setObsData(mapRef.current, geojson);
+          setObsLoaded(true);
+        })
+        .catch((err) => {
+          if (cancelled) return;
+          console.warn("Obs fetch failed", err);
+          if (attempt === 0) setTimeout(() => load(1), 4000);
+        });
+    load(0);
+    return () => { cancelled = true; };
   }, [obsVisible, obsLoaded]);
 
   // Highlight selected Strava route; dim all others.
@@ -2039,6 +2070,36 @@ export function Map({
           mobile={isMobile}
           mobileBottom={mobileBottom}
         />
+      )}
+
+      {/* Resolution pill — appears bottom-left when a terrain layer is using 1m data */}
+      {aboveHiresZoom && HIRES_LAYER_IDS.some((id) => visible[id]) && (
+        <div
+          title="Viewing 1m high-resolution terrain data"
+          style={{
+            position: "fixed",
+            bottom: isMobile ? mobileBottom + 4 : 28,
+            left: 80,
+            zIndex: 900,
+            display: "flex",
+            alignItems: "center",
+            gap: 4,
+            padding: "3px 8px",
+            borderRadius: 10,
+            border: `1px solid ${theme.accent}`,
+            background: theme.panel,
+            color: theme.accent,
+            fontSize: 10,
+            fontWeight: 700,
+            letterSpacing: "0.07em",
+            fontFamily: "ui-sans-serif, system-ui, sans-serif",
+            userSelect: "none",
+            boxShadow: "0 1px 4px rgba(0,0,0,0.2)",
+            pointerEvents: "none",
+          }}
+        >
+          1m
+        </div>
       )}
 
       {/* Region lock toggle — bottom-right, above MapLibre attribution */}

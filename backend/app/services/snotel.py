@@ -18,9 +18,17 @@ logger = logging.getLogger("whumpf.snotel")
 # ── provider config — swap these to change the data source ────────────────────
 AWDB_BASE = "https://wcc.sc.egov.usda.gov/awdbRestApi/services/v1"
 _BATCH_SIZE = 40   # triplets per AWDB request (URL length limit)
-_CACHE_TTL_H = 6   # SNOTEL updates daily; cache aggressively
+_CACHE_TTL = timedelta(hours=6)
 
-_cache: tuple[dict, datetime] | None = None
+_HTTP = httpx.AsyncClient(
+    headers={"User-Agent": "whumpf/0.1 (backcountry-terrain-app)"},
+    follow_redirects=True,
+    timeout=60.0,
+    limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+)
+
+_cache: tuple[dict, datetime] | None = None  # (data, fetched_at)
+_lock = asyncio.Lock()
 
 
 # ── color coding (% of normal) ─────────────────────────────────────────────────
@@ -42,8 +50,8 @@ def _pct_color(pct: float | None) -> str:
 
 # ── AWDB fetch helpers ─────────────────────────────────────────────────────────
 
-async def _fetch_stations(client: httpx.AsyncClient) -> list[dict]:
-    r = await client.get(
+async def _fetch_stations() -> list[dict]:
+    r = await _HTTP.get(
         f"{AWDB_BASE}/stations",
         params={
             "maxResults": 1000,
@@ -51,18 +59,15 @@ async def _fetch_stations(client: httpx.AsyncClient) -> list[dict]:
             "stateCode": "CO",
             "networkCodes": "SNTL",
         },
-        timeout=30,
     )
     r.raise_for_status()
     # AWDB ignores stateCode/networkCodes params — filter client-side
     return [s for s in r.json() if s.get("stateCode") == "CO" and s.get("networkCode") == "SNTL"]
 
 
-async def _fetch_data_batch(
-    client: httpx.AsyncClient, triplets: list[str], today: str, begin: str
-) -> list[dict]:
+async def _fetch_data_batch(triplets: list[str], today: str, begin: str) -> list[dict]:
     """Fetch current values + median normals in one request using centralTendencyType=MEDIAN."""
-    r = await client.get(
+    r = await _HTTP.get(
         f"{AWDB_BASE}/data",
         params={
             "stationTriplets": ",".join(triplets),
@@ -72,7 +77,6 @@ async def _fetch_data_batch(
             "beginDate": begin,
             "endDate": today,
         },
-        timeout=60,
     )
     r.raise_for_status()
     return r.json()
@@ -89,7 +93,6 @@ def _extract_latest(station_data: list[dict], element_cd: str) -> tuple[float | 
         vals = item.get("values") or []
         if not vals:
             continue
-        # Take the last non-null value (most recent date)
         value: float | None = None
         median: float | None = None
         for entry in reversed(vals):
@@ -117,32 +120,22 @@ def _build_data_index(results: list[dict]) -> dict[str, list[dict]]:
     return {r["stationTriplet"]: r.get("data") or [] for r in results}
 
 
-# ── public interface ───────────────────────────────────────────────────────────
+# ── fetch + cache internals ───────────────────────────────────────────────────
 
-async def fetch_stations_geojson() -> dict[str, Any]:
-    """Return a GeoJSON FeatureCollection of all active Colorado SNOTEL stations."""
+async def _do_fetch() -> dict:
+    """Execute the full AWDB fetch and update the module cache."""
     global _cache
-
-    now = datetime.utcnow()
-    if _cache and now < _cache[1]:
-        return _cache[0]
-
     today = date.today().isoformat()
-    begin = (date.today() - timedelta(days=7)).isoformat()  # 7-day window ensures we get the latest reading
+    begin = (date.today() - timedelta(days=7)).isoformat()
 
-    async with httpx.AsyncClient(
-        headers={"User-Agent": "whumpf/0.1 (backcountry-terrain-app)"},
-        follow_redirects=True,
-    ) as client:
-        stations = await _fetch_stations(client)
-        triplets = [s["stationTriplet"] for s in stations]
+    stations = await _fetch_stations()
+    triplets = [s["stationTriplet"] for s in stations]
+    batches = [triplets[i : i + _BATCH_SIZE] for i in range(0, len(triplets), _BATCH_SIZE)]
 
-        batches = [triplets[i: i + _BATCH_SIZE] for i in range(0, len(triplets), _BATCH_SIZE)]
-
-        data_batches = await asyncio.gather(
-            *[_fetch_data_batch(client, b, today, begin) for b in batches],
-            return_exceptions=True,
-        )
+    data_batches = await asyncio.gather(
+        *[_fetch_data_batch(b, today, begin) for b in batches],
+        return_exceptions=True,
+    )
 
     data_results: list[dict] = []
     for batch in data_batches:
@@ -158,9 +151,9 @@ async def fetch_stations_geojson() -> dict[str, Any]:
         triplet = s["stationTriplet"]
         d = data_idx.get(triplet, [])
 
-        swe, swe_median   = _extract_latest(d, "WTEQ")
-        depth, _          = _extract_latest(d, "SNWD")
-        temp, _           = _extract_latest(d, "TOBS")
+        swe, swe_median = _extract_latest(d, "WTEQ")
+        depth, _        = _extract_latest(d, "SNWD")
+        temp, _         = _extract_latest(d, "TOBS")
 
         pct = round(swe / swe_median * 100, 1) if (swe is not None and swe_median and swe_median > 0) else None
 
@@ -182,6 +175,48 @@ async def fetch_stations_geojson() -> dict[str, Any]:
         })
 
     geojson: dict[str, Any] = {"type": "FeatureCollection", "features": features}
-    _cache = (geojson, now + timedelta(hours=_CACHE_TTL_H))
-    logger.info("SNOTEL: %d stations loaded, cached %dh", len(features), _CACHE_TTL_H)
+    _cache = (geojson, datetime.utcnow())
+    logger.info("SNOTEL: %d stations loaded, cached %dh", len(features), int(_CACHE_TTL.total_seconds() / 3600))
     return geojson
+
+
+async def _bg_refresh() -> None:
+    """Background refresh — no-op if a fetch is already running."""
+    if _lock.locked():
+        return
+    async with _lock:
+        # Re-check inside the lock: another task may have just refreshed.
+        if _cache is not None:
+            _, fetched_at = _cache
+            if datetime.utcnow() - fetched_at < _CACHE_TTL:
+                return
+        try:
+            await _do_fetch()
+        except Exception as exc:
+            logger.warning("SNOTEL background refresh failed: %s", exc)
+
+
+# ── public interface ───────────────────────────────────────────────────────────
+
+async def fetch_stations_geojson() -> dict[str, Any]:
+    """Return a GeoJSON FeatureCollection of all active Colorado SNOTEL stations.
+
+    Returns immediately from cache when available (even if stale — a background
+    refresh is triggered automatically). Only blocks on the very first call when
+    there is no cached data yet.
+    """
+    global _cache
+
+    if _cache is not None:
+        data, fetched_at = _cache
+        if datetime.utcnow() - fetched_at < _CACHE_TTL:
+            return data
+        # Stale: serve immediately and refresh in background.
+        asyncio.ensure_future(_bg_refresh())
+        return data
+
+    # No data yet — cold start, must wait for first fetch.
+    async with _lock:
+        if _cache is not None:   # another coroutine just finished while we waited
+            return _cache[0]
+        return await _do_fetch()

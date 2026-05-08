@@ -1,4 +1,4 @@
-"""CAIC avalanche forecast proxy with 1-hour in-process cache."""
+"""CAIC avalanche forecast and observations — stale-while-revalidate caching."""
 
 from __future__ import annotations
 
@@ -13,77 +13,121 @@ from fastapi import APIRouter, HTTPException, Query
 router = APIRouter(prefix="/avalanche", tags=["avalanche"])
 logger = logging.getLogger("whumpf.avalanche")
 
-_CACHE_TTL = timedelta(hours=1)
-_OBS_CACHE_TTL = timedelta(minutes=30)
+_FORECAST_TTL = timedelta(hours=1)
+_OBS_TTL      = timedelta(minutes=30)
+_AVID_TTL     = timedelta(hours=1)
 
 _MAPLAYER_URL = "https://api.avalanche.org/v2/public/products/map-layer"
-_AVID_URL = "https://avalanche.state.co.us/api-proxy/avid"
-_OBS_URL = "https://api.avalanche.state.co.us/api/v2/observation_reports"
+_AVID_URL     = "https://avalanche.state.co.us/api-proxy/avid"
+_OBS_URL      = "https://api.avalanche.state.co.us/api/v2/observation_reports"
+
+_HTTP = httpx.AsyncClient(
+    timeout=15.0,
+    limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+)
+
+# ── per-endpoint cache + lock ─────────────────────────────────────────────────
 
 _forecast_cache: tuple[dict, datetime] | None = None
-_avid_cache: tuple[tuple[list, dict], datetime] | None = None
+_forecast_lock  = asyncio.Lock()
+
 _obs_cache: tuple[dict, datetime] | None = None
+_obs_lock  = asyncio.Lock()
+
+_avid_cache: tuple[tuple[list, dict], datetime] | None = None
+_avid_lock  = asyncio.Lock()
 
 
 # ── map-layer forecast (polygon fill layer) ────────────────────────────────────
 
-@router.get("/forecast")
-async def caic_forecast() -> dict:
-    """CAIC danger-zone GeoJSON cached 1 hour — used for the polygon fill layer."""
+async def _do_fetch_forecast() -> dict:
     global _forecast_cache
-    if _forecast_cache is not None:
-        data, fetched_at = _forecast_cache
-        if datetime.utcnow() - fetched_at < _CACHE_TTL:
-            return data
-
     try:
-        async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(_MAPLAYER_URL, params={"type": "forecast", "center_id": "CAIC"})
-    except httpx.RequestError as exc:
-        logger.error("avalanche.org unreachable: %s", exc)
-        raise HTTPException(502, "avalanche.org unreachable") from exc
-
-    if resp.status_code != 200:
-        raise HTTPException(502, f"avalanche.org returned {resp.status_code}")
-
+        resp = await _HTTP.get(_MAPLAYER_URL, params={"type": "forecast", "center_id": "CAIC"})
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"avalanche.org error: {exc}") from exc
     raw = resp.json()
-    # center_id param is ignored server-side — filter to CAIC zones only.
     features = [f for f in raw.get("features", []) if f.get("properties", {}).get("center_id") == "CAIC"]
     data = {**raw, "features": features}
     _forecast_cache = (data, datetime.utcnow())
+    logger.info("CAIC forecast cached (%d zones)", len(features))
     return data
+
+
+async def _bg_refresh_forecast() -> None:
+    if _forecast_lock.locked():
+        return
+    async with _forecast_lock:
+        if _forecast_cache is not None:
+            _, fetched_at = _forecast_cache
+            if datetime.utcnow() - fetched_at < _FORECAST_TTL:
+                return
+        try:
+            await _do_fetch_forecast()
+        except Exception as exc:
+            logger.warning("CAIC forecast background refresh failed: %s", exc)
+
+
+async def get_forecast() -> dict:
+    """SWR: return cached data instantly; refresh in background when stale."""
+    global _forecast_cache
+    if _forecast_cache is not None:
+        data, fetched_at = _forecast_cache
+        if datetime.utcnow() - fetched_at < _FORECAST_TTL:
+            return data
+        asyncio.ensure_future(_bg_refresh_forecast())
+        return data
+    async with _forecast_lock:
+        if _forecast_cache is not None:
+            return _forecast_cache[0]
+        return await _do_fetch_forecast()
+
+
+@router.get("/forecast")
+async def caic_forecast() -> dict:
+    """CAIC danger-zone GeoJSON — cached 1 hour, stale-while-revalidate."""
+    try:
+        return await get_forecast()
+    except Exception as exc:
+        logger.error("CAIC forecast fetch failed: %s", exc)
+        raise HTTPException(502, "avalanche.org unavailable") from exc
 
 
 # ── AVID detail (danger rose + problems) ──────────────────────────────────────
 
-async def _fetch_avid() -> tuple[list, dict]:
-    """Fetch and cache AVID products + areas GeoJSON (1h TTL)."""
+async def _do_fetch_avid() -> tuple[list, dict]:
     global _avid_cache
-    if _avid_cache is not None:
-        result, fetched_at = _avid_cache
-        if datetime.utcnow() - fetched_at < _CACHE_TTL:
-            return result
-
     try:
-        async with httpx.AsyncClient(timeout=12) as client:
-            products_resp, areas_resp = await asyncio.gather(
-                client.get(_AVID_URL, params={"_api_proxy_uri": "/products/all?includeExpired=true"}),
-                client.get(_AVID_URL, params={
-                    "_api_proxy_uri": "/products/all/area?productType=avalancheforecast&includeExpired=true"
-                }),
-            )
-    except httpx.RequestError as exc:
-        logger.error("AVID unreachable: %s", exc)
-        raise HTTPException(502, "AVID unreachable") from exc
-
-    if products_resp.status_code != 200 or areas_resp.status_code != 200:
-        raise HTTPException(502, "AVID returned non-200")
-
+        products_resp, areas_resp = await asyncio.gather(
+            _HTTP.get(_AVID_URL, params={"_api_proxy_uri": "/products/all?includeExpired=true"}),
+            _HTTP.get(_AVID_URL, params={
+                "_api_proxy_uri": "/products/all/area?productType=avalancheforecast&includeExpired=true"
+            }),
+        )
+        products_resp.raise_for_status()
+        areas_resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"AVID error: {exc}") from exc
     products = [p for p in products_resp.json() if p.get("type") == "avalancheforecast"]
     areas = areas_resp.json()
     result = (products, areas)
     _avid_cache = (result, datetime.utcnow())
     return result
+
+
+async def _fetch_avid() -> tuple[list, dict]:
+    global _avid_cache
+    if _avid_cache is not None:
+        result, fetched_at = _avid_cache
+        if datetime.utcnow() - fetched_at < _AVID_TTL:
+            return result
+    async with _avid_lock:
+        if _avid_cache is not None:
+            result, fetched_at = _avid_cache
+            if datetime.utcnow() - fetched_at < _AVID_TTL:
+                return result
+        return await _do_fetch_avid()
 
 
 # ── point-in-polygon (ray casting) ────────────────────────────────────────────
@@ -92,7 +136,7 @@ def _ray_cross(lat: float, lng: float, ring: list) -> bool:
     inside = False
     j = len(ring) - 1
     for i in range(len(ring)):
-        xi, yi = ring[i][0], ring[i][1]   # lng, lat
+        xi, yi = ring[i][0], ring[i][1]
         xj, yj = ring[j][0], ring[j][1]
         if ((yi > lat) != (yj > lat)) and (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi):
             inside = not inside
@@ -166,7 +210,6 @@ def _build_zone_detail(product: dict) -> dict:
     problems_raw = product.get("avalancheProblems", {}).get("days", [[]])[0]
     issue_dt = product.get("issueDateTime", "")
     valid_date = issue_dt[:10] if issue_dt else ""
-
     return {
         "forecaster": product.get("forecaster", ""),
         "valid_date": valid_date,
@@ -186,9 +229,12 @@ async def caic_zone_detail(
     lng: float = Query(..., description="Clicked longitude"),
 ) -> dict:
     """Full danger rose + avalanche problems for the CAIC zone at (lat, lng)."""
-    products, areas = await _fetch_avid()
+    try:
+        products, areas = await _fetch_avid()
+    except Exception as exc:
+        logger.error("AVID fetch failed: %s", exc)
+        raise HTTPException(502, "AVID unavailable") from exc
 
-    # Build area_id → geometry + centroid lookup
     area_map: dict[str, dict] = {}
     for feat in areas.get("features", []):
         aid = feat["properties"].get("id")
@@ -198,27 +244,22 @@ async def caic_zone_detail(
                 "centroid": feat["properties"].get("centroid", [0, 0]),
             }
 
-    # Try point-in-polygon first
     for product in products:
         aid = product.get("areaId")
         if aid and aid in area_map:
             if _in_multipolygon(lat, lng, area_map[aid]["geometry"]):
                 return _build_zone_detail(product)
 
-    # Fallback: nearest centroid (handles clicks near zone boundaries)
-    best_product = None
-    best_dist = float("inf")
+    best_product, best_dist = None, float("inf")
     for product in products:
         aid = product.get("areaId")
         if aid and aid in area_map:
             d = _centroid_dist(lat, lng, area_map[aid]["centroid"])
             if d < best_dist:
-                best_dist = d
-                best_product = product
+                best_dist, best_product = d, product
 
     if best_product is None:
         raise HTTPException(404, "No CAIC zone found")
-
     return _build_zone_detail(best_product)
 
 
@@ -266,33 +307,60 @@ def _build_obs_feature(r: dict) -> dict | None:
     }
 
 
-@router.get("/observations")
-async def caic_observations() -> dict:
-    """CAIC field observations as GeoJSON — last 7 days, 30-min cache."""
+async def _do_fetch_obs() -> dict:
     global _obs_cache
-    if _obs_cache is not None:
-        data, fetched_at = _obs_cache
-        if datetime.utcnow() - fetched_at < _OBS_CACHE_TTL:
-            return data
-
     since = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
-    params = {
-        "r[observed_at_gteq]": since,
-        "r[sorts][]": "observed_at desc",
-        "per": "500",
-    }
     try:
-        async with httpx.AsyncClient(timeout=15) as client:
-            resp = await client.get(_OBS_URL, params=params)
-    except httpx.RequestError as exc:
-        logger.error("CAIC observations unreachable: %s", exc)
-        raise HTTPException(502, "CAIC observations unreachable") from exc
-
-    if resp.status_code != 200:
-        raise HTTPException(502, f"CAIC observations returned {resp.status_code}")
-
+        resp = await _HTTP.get(_OBS_URL, params={
+            "r[observed_at_gteq]": since,
+            "r[sorts][]": "observed_at desc",
+            "per": "500",
+        })
+        resp.raise_for_status()
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"CAIC observations error: {exc}") from exc
     records = resp.json()
     features = [f for r in records if (f := _build_obs_feature(r)) is not None]
     data = {"type": "FeatureCollection", "features": features}
     _obs_cache = (data, datetime.utcnow())
+    logger.info("CAIC observations cached (%d features)", len(features))
     return data
+
+
+async def _bg_refresh_obs() -> None:
+    if _obs_lock.locked():
+        return
+    async with _obs_lock:
+        if _obs_cache is not None:
+            _, fetched_at = _obs_cache
+            if datetime.utcnow() - fetched_at < _OBS_TTL:
+                return
+        try:
+            await _do_fetch_obs()
+        except Exception as exc:
+            logger.warning("CAIC observations background refresh failed: %s", exc)
+
+
+async def get_observations() -> dict:
+    """SWR: return cached data instantly; refresh in background when stale."""
+    global _obs_cache
+    if _obs_cache is not None:
+        data, fetched_at = _obs_cache
+        if datetime.utcnow() - fetched_at < _OBS_TTL:
+            return data
+        asyncio.ensure_future(_bg_refresh_obs())
+        return data
+    async with _obs_lock:
+        if _obs_cache is not None:
+            return _obs_cache[0]
+        return await _do_fetch_obs()
+
+
+@router.get("/observations")
+async def caic_observations() -> dict:
+    """CAIC field observations as GeoJSON — last 7 days, 30-min SWR cache."""
+    try:
+        return await get_observations()
+    except Exception as exc:
+        logger.error("CAIC observations fetch failed: %s", exc)
+        raise HTTPException(502, "CAIC observations unavailable") from exc

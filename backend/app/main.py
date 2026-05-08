@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
@@ -14,6 +15,8 @@ from app.config import get_settings
 from app.db import get_engine
 from app.models import Base
 from app.routers import auth, avalanche, health, snowpack, strava, terrain, tiles
+from app.routers.avalanche import get_forecast, get_observations
+from app.services.snotel import fetch_stations_geojson
 
 logger = logging.getLogger("whumpf")
 logging.basicConfig(
@@ -22,10 +25,26 @@ logging.basicConfig(
 )
 
 
+async def _prewarm() -> None:
+    results = await asyncio.gather(
+        fetch_stations_geojson(),
+        get_forecast(),
+        get_observations(),
+        return_exceptions=True,
+    )
+    names = ["SNOTEL", "CAIC forecast", "CAIC obs"]
+    for name, result in zip(names, results):
+        if isinstance(result, Exception):
+            logger.warning("Pre-warm %s failed: %s", name, result)
+        else:
+            logger.info("Pre-warm %s OK", name)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     Base.metadata.create_all(get_engine())
     logger.info("Database tables ensured.")
+    asyncio.ensure_future(_prewarm())
     yield
 
 
