@@ -275,8 +275,8 @@ interface LayerGroup {
 
 const TERRAIN_LAYER_IDS = ["hillshade", "slope", "aspect", "contours"];
 
-// Layers that switch to 1m DEM data at zoom >= 13.
-const HIRES_LAYER_IDS = ["hillshade", "slope", "aspect", "contours"];
+// Layers that use 1m DEM data at zoom >= 13 (either via hiresTiles companion or server-side).
+const HIRES_LAYER_IDS = TERRAIN_LAYER_IDS;
 
 const LAYER_GROUPS: LayerGroup[] = [
   {
@@ -1014,6 +1014,7 @@ function addOverlayLayers(
       : map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
   for (const layer of OVERLAY_LAYERS) {
     if (layer.kind === "geojson") continue; // managed separately
+    if (map.getSource(layer.id)) continue;  // already present (e.g. double style.load)
     const tiles = tileOverrides?.[layer.id] ?? layer.tiles;
     map.addSource(layer.id, {
       type: "raster",
@@ -1021,7 +1022,9 @@ function addOverlayLayers(
       tileSize: 256,
       bounds: COLORADO_MTN_BOUNDS,
       minzoom: layer.sourceMinzoom ?? 6,
-      maxzoom: 16,
+      // Cap at z12 when a hires companion takes over at z13 — MapLibre overzooms the z12
+      // tile instead of requesting new z13+ tiles from the base (10m) source.
+      maxzoom: layer.hiresTiles ? 12 : 16,
       attribution: "USGS 3DEP",
     });
     map.addLayer(
@@ -1041,31 +1044,33 @@ function addOverlayLayers(
     );
     if (layer.hiresTiles) {
       const hiresId = `${layer.id}-hires`;
-      map.addSource(hiresId, {
-        type: "raster",
-        tiles: layer.hiresTiles,
-        tileSize: 256,
-        bounds: COLORADO_MTN_BOUNDS,
-        minzoom: 13,
-        maxzoom: 16,
-        attribution: "USGS 3DEP",
-      });
-      map.addLayer(
-        {
-          id: hiresId,
+      if (!map.getSource(hiresId)) {
+        map.addSource(hiresId, {
           type: "raster",
-          source: hiresId,
+          tiles: layer.hiresTiles,
+          tileSize: 256,
+          bounds: COLORADO_MTN_BOUNDS,
           minzoom: 13,
-          paint: {
-            "raster-opacity": opacity[layer.id] ?? layer.opacity,
-            "raster-fade-duration": 400,
-            "raster-resampling": "linear",
-            ...(layer.blendPaint ?? {}),
+          maxzoom: 16,
+          attribution: "USGS 3DEP",
+        });
+        map.addLayer(
+          {
+            id: hiresId,
+            type: "raster",
+            source: hiresId,
+            minzoom: 13,
+            paint: {
+              "raster-opacity": opacity[layer.id] ?? layer.opacity,
+              "raster-fade-duration": 400,
+              "raster-resampling": "linear",
+              ...(layer.blendPaint ?? {}),
+            },
+            layout: { visibility: visible[layer.id] ? "visible" : "none" },
           },
-          layout: { visibility: visible[layer.id] ? "visible" : "none" },
-        },
-        beforeId,
-      );
+          beforeId,
+        );
+      }
     }
   }
 }
@@ -1277,6 +1282,7 @@ function buildObsPopupHtml(p: Record<string, unknown>): string {
 }
 
 function addColoradoMask(map: maplibregl.Map) {
+  if (map.getSource("co-mask")) return;
   map.addSource("co-mask", { type: "geojson", data: CO_MASK_GEOJSON as any });
   map.addLayer({ id: "co-mask-fill", type: "fill", source: "co-mask",
     paint: { "fill-color": "#000000", "fill-opacity": 1 },
@@ -1443,6 +1449,9 @@ export function Map({
 
   const snotelDataRef = useRef<object | null>(null);
   const prevBasemapRef = useRef<BasemapId>(basemap);
+  // Tracks the most-recently *requested* basemap so the permanent style.load handler
+  // can update prevBasemapRef to the correct value even after rapid switches.
+  const basemapRef = useRef<BasemapId>(basemap);
   const basemapDarkMounted = useRef(false);
   const measureModeRef = useRef(false);
   const measurePtsRef = useRef<[number, number][]>([]);
@@ -1465,14 +1474,18 @@ export function Map({
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
     map.addControl(new maplibregl.ScaleControl({ unit: "imperial" }), "bottom-left");
 
-    map.on("load", () => {
+    // Single permanent handler for both initial load and every subsequent setStyle call.
+    // All addXxx helpers are idempotent (guard on getSource), so re-firing is safe.
+    map.on("style.load", () => {
       addOverlayLayers(map, visibleRef.current, opacityRef.current, {
         contours: [getContourUrl(contourIntervalRef.current)],
       });
       applyTerrainOrder(map, terrainOrderRef.current);
-      addColoradoMask(map); // sits above raster overlays, below vector data
+      addColoradoMask(map);
       addMeasureLayers(map);
+      updateMeasureSource(map, measurePtsRef.current);
       addSnotelLayers(map);
+      if (snotelDataRef.current) setSnotelData(map, snotelDataRef.current);
       setSnotelVisibility(map, visibleRef.current["snotel"] ?? false);
       addCaicLayers(map);
       if (caicDataRef.current) setCaicData(map, caicDataRef.current);
@@ -1483,6 +1496,8 @@ export function Map({
       addStravaLayers(map);
       if (stravaDataRef.current) setStravaData(map, stravaDataRef.current);
       applyStravaHighlight(map, selectedStravaIdRef.current);
+      // Sync prevBasemapRef to whichever basemap was last requested.
+      prevBasemapRef.current = basemapRef.current;
     });
 
     // CAIC danger zone popup — fetch full danger rose + problems from AVID.
@@ -1628,13 +1643,19 @@ export function Map({
         .setLngLat([lng, lat])
         .addTo(map);
 
-      const pick = (name: string) =>
-        fetch(
-          `${TITILER_URL}/cog/point/${lng},${lat}?url=${encodeURIComponent(cogS3(`${REGION}/${name}.tif`))}`,
-        )
-          .then((r) => (r.ok ? r.json() : null))
-          .then((d) => d?.values?.[0] as number | undefined)
-          .catch(() => undefined);
+      const zoom = map.getZoom();
+      const pick = async (name: string): Promise<number | undefined> => {
+        const doFetch = (fname: string) =>
+          fetch(`${TITILER_URL}/cog/point/${lng},${lat}?url=${encodeURIComponent(cogS3(`${REGION}/${fname}`))}`)
+            .then((r) => (r.ok ? r.json() : null))
+            .then((d) => d?.values?.[0] as number | undefined)
+            .catch(() => undefined);
+        if (zoom >= 13) {
+          const v = await doFetch(`${name}_hires.tif`);
+          if (v != null) return v;
+        }
+        return doFetch(`${name}.tif`);
+      };
 
       const [[elevation, slope, aspect], spotData, locationName] = await Promise.all([
         Promise.all([pick("dem"), pick("slope"), pick("aspect")]),
@@ -1661,47 +1682,27 @@ export function Map({
 
   // Switch basemap on change. Raster→raster swaps only the basemap source/layer in place so
   // overlays are completely undisturbed. Any transition involving the vector streets style
-  // still needs a full setStyle (different sprite/glyph/source structure) followed by a
-  // re-add of all overlays from refs. Dark mode only affects the streets vector style;
-  // toggling it while on a raster basemap is a no-op at the style level.
+  // needs a full setStyle; the permanent style.load handler in the init effect re-adds all
+  // overlays from refs automatically. Dark mode only affects the streets vector style.
   useEffect(() => {
-    // Skip initial mount — map.on("load") in the init effect handles first overlay setup.
+    // Skip initial mount — the permanent style.load handler fires for the initial load.
     if (!basemapDarkMounted.current) { basemapDarkMounted.current = true; return; }
     const map = mapRef.current;
     if (!map) return;
 
+    basemapRef.current = basemap;
     const prev = prevBasemapRef.current;
-    prevBasemapRef.current = basemap;
 
-    if (prev !== "streets" && basemap !== "streets") {
-      // Raster → raster: swap only the basemap; overlays stay untouched.
+    if (prev !== "streets" && basemap !== "streets" && map.isStyleLoaded()) {
+      // Raster → raster with the current style fully loaded: swap only the basemap.
+      // Guard on isStyleLoaded() so we don't call swapRasterBasemap mid-setStyle.
       swapRasterBasemap(map, prev as "topo" | "satellite" | "hybrid", basemap as "topo" | "satellite" | "hybrid");
+      prevBasemapRef.current = basemap;
       return;
     }
 
-    // Streets ↔ raster or dark mode change on streets: full style swap.
+    // Full style swap — the permanent style.load handler re-adds all overlays.
     map.setStyle(getMapStyle(basemap, dark));
-    map.once("style.load", () => {
-      addOverlayLayers(map, visibleRef.current, opacityRef.current, {
-        contours: [getContourUrl(contourIntervalRef.current)],
-      });
-      applyTerrainOrder(map, terrainOrderRef.current);
-      addColoradoMask(map);
-      addMeasureLayers(map);
-      updateMeasureSource(map, measurePtsRef.current);
-      addSnotelLayers(map);
-      if (snotelDataRef.current) setSnotelData(map, snotelDataRef.current);
-      setSnotelVisibility(map, visibleRef.current["snotel"] ?? false);
-      addCaicLayers(map);
-      if (caicDataRef.current) setCaicData(map, caicDataRef.current);
-      setCaicVisibility(map, visibleRef.current["caic-danger"] ?? false);
-      addObsLayers(map);
-      if (obsDataRef.current) setObsData(map, obsDataRef.current);
-      setObsVisibility(map, visibleRef.current["caic-obs"] ?? false);
-      addStravaLayers(map);
-      if (stravaDataRef.current) setStravaData(map, stravaDataRef.current);
-      applyStravaHighlight(map, selectedStravaIdRef.current);
-    });
   }, [basemap, dark]);
 
   // Sync visibility state → MapLibre.
@@ -1790,8 +1791,8 @@ export function Map({
         })
         .catch((err) => {
           if (cancelled) return;
-          console.warn("SNOTEL fetch failed", err);
-          if (attempt === 0) setTimeout(() => load(1), 4000);
+          console.warn(`SNOTEL fetch failed (attempt ${attempt + 1}):`, err);
+          if (attempt < 4) setTimeout(() => load(attempt + 1), Math.min(2000 * 2 ** attempt, 20000));
         });
     load(0);
     return () => { cancelled = true; };
@@ -1816,8 +1817,8 @@ export function Map({
         })
         .catch((err) => {
           if (cancelled) return;
-          console.warn("CAIC fetch failed", err);
-          if (attempt === 0) setTimeout(() => load(1), 4000);
+          console.warn(`CAIC fetch failed (attempt ${attempt + 1}):`, err);
+          if (attempt < 4) setTimeout(() => load(attempt + 1), Math.min(2000 * 2 ** attempt, 20000));
         });
     load(0);
     return () => { cancelled = true; };
@@ -1842,8 +1843,8 @@ export function Map({
         })
         .catch((err) => {
           if (cancelled) return;
-          console.warn("Obs fetch failed", err);
-          if (attempt === 0) setTimeout(() => load(1), 4000);
+          console.warn(`Obs fetch failed (attempt ${attempt + 1}):`, err);
+          if (attempt < 4) setTimeout(() => load(attempt + 1), Math.min(2000 * 2 ** attempt, 20000));
         });
     load(0);
     return () => { cancelled = true; };
@@ -1915,7 +1916,7 @@ export function Map({
       tiles: [url],
       tileSize: 256,
       bounds: COLORADO_MTN_BOUNDS,
-      minzoom: 6,
+      minzoom: 9,  // matches LAYER_GROUPS sourceMinzoom for contours
       maxzoom: 16,
       attribution: "USGS 3DEP",
     });
@@ -1933,7 +1934,7 @@ export function Map({
   // Reorder terrain layers in MapLibre whenever the sidebar order changes.
   // Guard with isStyleLoaded(): on initial mount the effect fires before the async style fetch
   // completes, at which point getStyle() returns null and applyTerrainOrder would throw.
-  // The correct initial order is applied by applyTerrainOrder inside map.on("load").
+  // The correct initial order is applied by applyTerrainOrder inside the style.load handler.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;

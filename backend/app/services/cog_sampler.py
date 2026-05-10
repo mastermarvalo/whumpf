@@ -54,16 +54,27 @@ def sample_profile(
     )
 
     with rasterio.Env(**env_vars):
-        with rasterio.open(f"/vsicurl/{base}/slope.tif") as ds:
-            nd = ds.nodata
-            raw_slope = [float(v[0]) for v in ds.sample(coords)]
+        # Prefer 1m hires files; fall back to 10m if hires isn't available for the region.
+        try:
+            with rasterio.open(f"/vsicurl/{base}/slope_hires.tif") as ds:
+                nd = ds.nodata
+                raw_slope = [float(v[0]) for v in ds.sample(coords)]
+        except Exception:
+            with rasterio.open(f"/vsicurl/{base}/slope.tif") as ds:
+                nd = ds.nodata
+                raw_slope = [float(v[0]) for v in ds.sample(coords)]
         slopes: list[float | None] = [
             None if (nd is not None and v == nd) else v for v in raw_slope
         ]
 
-        with rasterio.open(f"/vsicurl/{base}/dem.tif") as ds:
-            nd = ds.nodata
-            raw_dem = [float(v[0]) for v in ds.sample(coords)]
+        try:
+            with rasterio.open(f"/vsicurl/{base}/dem_hires.tif") as ds:
+                nd = ds.nodata
+                raw_dem = [float(v[0]) for v in ds.sample(coords)]
+        except Exception:
+            with rasterio.open(f"/vsicurl/{base}/dem.tif") as ds:
+                nd = ds.nodata
+                raw_dem = [float(v[0]) for v in ds.sample(coords)]
         elevs: list[float | None] = [
             None if (nd is not None and v == nd) else v for v in raw_dem
         ]
