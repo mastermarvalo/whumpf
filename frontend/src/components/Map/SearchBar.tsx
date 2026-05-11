@@ -101,7 +101,7 @@ export function SearchBar({
         position: "fixed",
         top: 10,
         ...(mobile
-          ? { left: 10, right: 10 }
+          ? { left: 10, right: 50 }
           : { left: "55%", transform: "translateX(-50%)", width: 380 }),
         zIndex: Z.TOP_PANEL,
         display: "flex",
