@@ -178,18 +178,32 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------
-  # frontend — Vite on :5173
+  # frontend — Vite dev server OR nginx serving a built bundle, depending on
+  # FRONTEND_TARGET (defaults to "prod" — minified, no HMR, no source maps).
+  # Set FRONTEND_TARGET=dev in .env for HMR during local iteration.
+  # Either way the upstream listens on :5173.
   # ---------------------------------------------------------------------------
   frontend:
     build:
       context: ./frontend
       dockerfile: Dockerfile
-    image: whumpf-frontend:dev
+      target: ${FRONTEND_TARGET:-prod}
+      # Vite bakes VITE_* env vars into the bundle at build time, so they
+      # need to be passed here, not as runtime environment.
+      args:
+        VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
+        VITE_MARTIN_URL: ${VITE_MARTIN_URL:-http://localhost:3000}
+        VITE_TITILER_URL: ${VITE_TITILER_URL:-http://localhost:8001}
+    image: whumpf-frontend:${FRONTEND_TARGET:-prod}
     container_name: whumpf-frontend
     network_mode: host
     restart: unless-stopped
+    # Volume mount is only useful for the dev target's HMR. nginx in prod
+    # serves from /usr/share/nginx/html (built into the image) and ignores it.
     volumes:
       - ./frontend/src:/app/src
+    # Runtime VITE_* env vars are kept for the dev target (Vite reads them
+    # live). The prod nginx image just ignores them.
     environment:
       VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
       VITE_MARTIN_URL: ${VITE_MARTIN_URL:-http://localhost:3000}
