@@ -34,6 +34,13 @@ export default defineConfig(({ mode }) => {
           // The main JS chunk is ~1.3MB; bump the precache limit so we don't
           // fail the build. (Code-splitting later would let us drop this.)
           maximumFileSizeToCacheInBytes: 5 * 1024 * 1024,
+          // Apply SW updates on the very next reload. Without these, a new
+          // SW just queues behind the old one until every tab is closed,
+          // which silently strands users on the previous bundle. The page
+          // is shareable enough that "force close all tabs" isn't realistic
+          // recovery for a stale deploy.
+          skipWaiting: true,
+          clientsClaim: true,
           // Runtime caching: cache-first for tiles so users keep working when
           // they head into spotty backcountry coverage. Each tier is bounded
           // by max entries (LRU) so storage doesn't grow unbounded.

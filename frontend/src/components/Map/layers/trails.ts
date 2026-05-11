@@ -22,7 +22,12 @@ export const TRAILS_LAYER_IDS = [
   "trails-place",
 ] as const;
 
-const OFM_TILES = ["https://tiles.openfreemap.org/planet/{z}/{x}/{y}.pbf"];
+// TileJSON URL form rather than explicit tiles[]. OpenFreeMap rebuilds
+// the planet under a versioned path (e.g. /planet/20260506_001001_pt/…)
+// and only exposes the current version via this TileJSON document; the
+// unversioned /planet/{z}/{x}/{y}.pbf path returns empty tiles. MapLibre
+// fetches the TileJSON on source load and uses whatever path it points at.
+const OFM_TILEJSON = "https://tiles.openfreemap.org/planet";
 
 export function addTrailsLayers(
   map: maplibregl.Map,
@@ -32,9 +37,7 @@ export function addTrailsLayers(
   if (map.getSource(SOURCE_ID)) return;
   map.addSource(SOURCE_ID, {
     type: "vector",
-    tiles: OFM_TILES,
-    minzoom: 0,
-    maxzoom: 14,
+    url: OFM_TILEJSON,
     attribution: "© OpenStreetMap, OpenFreeMap",
   });
 
