@@ -25,11 +25,13 @@ RUN uv sync --frozen --no-install-project 2>/dev/null || uv sync --no-install-pr
 
 # Copy application code.
 COPY app ./app
+COPY entrypoint.sh ./entrypoint.sh
+RUN chmod +x ./entrypoint.sh
 
 # Install the project itself (picks up app/ as a package).
 RUN uv sync 2>/dev/null || true
 
 EXPOSE 8000
 
-# uvicorn in dev mode — switch to gunicorn+uvicorn workers for prod.
-CMD ["uv", "run", "uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# entrypoint.sh picks --reload only when WHUMPF_ENV != prod.
+CMD ["./entrypoint.sh"]

@@ -37,6 +37,9 @@ class Settings(BaseSettings):
 
     # --- Database ------------------------------------------------------------
     database_url: str
+    db_pool_size: int = 5
+    db_max_overflow: int = 10
+    db_pool_recycle_s: int = 1800
 
     # --- Auth ----------------------------------------------------------------
     jwt_secret: str

@@ -13,6 +13,8 @@ from typing import Any
 
 import httpx
 
+from app.http_retry import call_with_resilience
+
 logger = logging.getLogger("whumpf.snotel")
 
 # ── provider config — swap these to change the data source ────────────────────
@@ -51,35 +53,41 @@ def _pct_color(pct: float | None) -> str:
 # ── AWDB fetch helpers ─────────────────────────────────────────────────────────
 
 async def _fetch_stations() -> list[dict]:
-    r = await _HTTP.get(
-        f"{AWDB_BASE}/stations",
-        params={
-            "maxResults": 1000,
-            "activeOnly": True,
-            "stateCode": "CO",
-            "networkCodes": "SNTL",
-        },
-    )
-    r.raise_for_status()
-    # AWDB ignores stateCode/networkCodes params — filter client-side
-    return [s for s in r.json() if s.get("stateCode") == "CO" and s.get("networkCode") == "SNTL"]
+    async def _do() -> list[dict]:
+        r = await _HTTP.get(
+            f"{AWDB_BASE}/stations",
+            params={
+                "maxResults": 1000,
+                "activeOnly": True,
+                "stateCode": "CO",
+                "networkCodes": "SNTL",
+            },
+        )
+        r.raise_for_status()
+        # AWDB ignores stateCode/networkCodes params — filter client-side
+        return [s for s in r.json() if s.get("stateCode") == "CO" and s.get("networkCode") == "SNTL"]
+
+    return await call_with_resilience("awdb", _do)
 
 
 async def _fetch_data_batch(triplets: list[str], today: str, begin: str) -> list[dict]:
     """Fetch current values + median normals in one request using centralTendencyType=MEDIAN."""
-    r = await _HTTP.get(
-        f"{AWDB_BASE}/data",
-        params={
-            "stationTriplets": ",".join(triplets),
-            "elements": "WTEQ,SNWD,TOBS",
-            "duration": "DAILY",
-            "centralTendencyType": "MEDIAN",
-            "beginDate": begin,
-            "endDate": today,
-        },
-    )
-    r.raise_for_status()
-    return r.json()
+    async def _do() -> list[dict]:
+        r = await _HTTP.get(
+            f"{AWDB_BASE}/data",
+            params={
+                "stationTriplets": ",".join(triplets),
+                "elements": "WTEQ,SNWD,TOBS",
+                "duration": "DAILY",
+                "centralTendencyType": "MEDIAN",
+                "beginDate": begin,
+                "endDate": today,
+            },
+        )
+        r.raise_for_status()
+        return r.json()
+
+    return await call_with_resilience("awdb", _do)
 
 
 # ── response parsing ───────────────────────────────────────────────────────────

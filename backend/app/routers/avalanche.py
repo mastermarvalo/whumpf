@@ -10,6 +10,8 @@ from datetime import datetime, timedelta
 import httpx
 from fastapi import APIRouter, HTTPException, Query
 
+from app.http_retry import call_with_resilience
+
 router = APIRouter(prefix="/avalanche", tags=["avalanche"])
 logger = logging.getLogger("whumpf.avalanche")
 
@@ -42,9 +44,14 @@ _avid_lock  = asyncio.Lock()
 
 async def _do_fetch_forecast() -> dict:
     global _forecast_cache
+
+    async def _do() -> httpx.Response:
+        r = await _HTTP.get(_MAPLAYER_URL, params={"type": "forecast", "center_id": "CAIC"})
+        r.raise_for_status()
+        return r
+
     try:
-        resp = await _HTTP.get(_MAPLAYER_URL, params={"type": "forecast", "center_id": "CAIC"})
-        resp.raise_for_status()
+        resp = await call_with_resilience("caic-forecast", _do)
     except httpx.HTTPError as exc:
         raise RuntimeError(f"avalanche.org error: {exc}") from exc
     raw = resp.json()
@@ -98,7 +105,8 @@ async def caic_forecast() -> dict:
 
 async def _do_fetch_avid() -> tuple[list, dict]:
     global _avid_cache
-    try:
+
+    async def _do() -> tuple[httpx.Response, httpx.Response]:
         products_resp, areas_resp = await asyncio.gather(
             _HTTP.get(_AVID_URL, params={"_api_proxy_uri": "/products/all?includeExpired=true"}),
             _HTTP.get(_AVID_URL, params={
@@ -107,6 +115,10 @@ async def _do_fetch_avid() -> tuple[list, dict]:
         )
         products_resp.raise_for_status()
         areas_resp.raise_for_status()
+        return products_resp, areas_resp
+
+    try:
+        products_resp, areas_resp = await call_with_resilience("caic-avid", _do)
     except httpx.HTTPError as exc:
         raise RuntimeError(f"AVID error: {exc}") from exc
     products = [p for p in products_resp.json() if p.get("type") == "avalancheforecast"]
@@ -310,13 +322,18 @@ def _build_obs_feature(r: dict) -> dict | None:
 async def _do_fetch_obs() -> dict:
     global _obs_cache
     since = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
-    try:
-        resp = await _HTTP.get(_OBS_URL, params={
+
+    async def _do() -> httpx.Response:
+        r = await _HTTP.get(_OBS_URL, params={
             "r[observed_at_gteq]": since,
             "r[sorts][]": "observed_at desc",
             "per": "500",
         })
-        resp.raise_for_status()
+        r.raise_for_status()
+        return r
+
+    try:
+        resp = await call_with_resilience("caic-obs", _do)
     except httpx.HTTPError as exc:
         raise RuntimeError(f"CAIC observations error: {exc}") from exc
     records = resp.json()

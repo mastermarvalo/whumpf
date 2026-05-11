@@ -22,6 +22,7 @@ from rasterio.transform import from_bounds
 from rasterio.warp import Resampling, reproject
 
 from app.config import get_settings, validate_region
+from app.http_retry import CircuitOpenError, call_with_resilience
 
 # Web-mercator tile coordinates are bounded by z (we serve at most z16) and
 # 0 <= x,y < 2**z. Validating up-front avoids upstream rasterio reads for
@@ -120,8 +121,9 @@ async def slope_tile(
                         headers={"Cache-Control": "public, max-age=86400"})
 
     settings = get_settings()
-    try:
-        resp = await _HTTP.get(
+
+    async def _do() -> httpx.Response:
+        r = await _HTTP.get(
             f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png",
             params={
                 "url": _s3(f"{region}/{cog_name}"),
@@ -132,15 +134,28 @@ async def slope_tile(
                 "tilesize": 512,
             },
         )
+        # 404 is "tile outside COG extent" — a normal empty-tile response.
+        # Don't raise so retry/breaker treat it as success.
+        if r.status_code != 404:
+            r.raise_for_status()
+        return r
+
+    try:
+        resp = await call_with_resilience("titiler", _do)
+    except CircuitOpenError:
+        raise HTTPException(503, "tile server temporarily unavailable")
     except httpx.RequestError as exc:
         logger.error("TiTiler unreachable: %s", exc)
         raise HTTPException(502, "tile server unreachable") from exc
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "TiTiler returned %d for slope tile %d/%d/%d",
+            exc.response.status_code, z, x, y,
+        )
+        raise HTTPException(502, f"TiTiler returned {exc.response.status_code}") from exc
 
     if resp.status_code == 404:
         return Response(status_code=204)
-    if resp.status_code != 200:
-        logger.warning("TiTiler returned %d for slope tile %d/%d/%d", resp.status_code, z, x, y)
-        raise HTTPException(502, f"TiTiler returned {resp.status_code}")
 
     _cache_put(_SLOPE_CACHE, cache_key, resp.content, _SLOPE_CACHE_MAX)
     return Response(

@@ -10,6 +10,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.config import get_settings
+from app.http_retry import call_with_resilience
 from app.models.strava import StravaConnection
 
 logger = logging.getLogger("whumpf.strava")
@@ -18,6 +19,13 @@ STRAVA_AUTH_URL = "https://www.strava.com/oauth/authorize"
 STRAVA_TOKEN_URL = "https://www.strava.com/oauth/token"
 STRAVA_API_BASE = "https://www.strava.com/api/v3"
 SCOPE = "activity:read_all"
+
+# Persistent client — connection pooling across all Strava calls. Was previously
+# a fresh httpx.AsyncClient() per call which paid a TLS handshake every time.
+_HTTP = httpx.AsyncClient(
+    timeout=15.0,
+    limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+)
 
 # Sport types and their display colors for GeoJSON properties
 SPORT_COLORS: dict[str, str] = {
@@ -52,8 +60,9 @@ def get_authorize_url(state: str) -> str:
 
 async def exchange_code(code: str) -> dict:
     s = get_settings()
-    async with httpx.AsyncClient() as client:
-        r = await client.post(
+
+    async def _do() -> dict:
+        r = await _HTTP.post(
             STRAVA_TOKEN_URL,
             data={
                 "client_id": s.strava_client_id,
@@ -66,6 +75,8 @@ async def exchange_code(code: str) -> dict:
         r.raise_for_status()
         return r.json()
 
+    return await call_with_resilience("strava", _do)
+
 
 async def refresh_token(conn: StravaConnection, session: Session) -> str:
     """Refresh and persist a new access token if the current one is expired."""
@@ -73,8 +84,9 @@ async def refresh_token(conn: StravaConnection, session: Session) -> str:
         return conn.access_token
 
     s = get_settings()
-    async with httpx.AsyncClient() as client:
-        r = await client.post(
+
+    async def _do() -> dict:
+        r = await _HTTP.post(
             STRAVA_TOKEN_URL,
             data={
                 "client_id": s.strava_client_id,
@@ -85,7 +97,9 @@ async def refresh_token(conn: StravaConnection, session: Session) -> str:
             timeout=15,
         )
         r.raise_for_status()
-        data = r.json()
+        return r.json()
+
+    data = await call_with_resilience("strava", _do)
 
     conn.access_token = data["access_token"]
     conn.refresh_token = data["refresh_token"]
@@ -96,8 +110,8 @@ async def refresh_token(conn: StravaConnection, session: Session) -> str:
 
 
 async def fetch_activities(access_token: str, per_page: int = 100) -> list[dict]:
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
+    async def _do() -> list[dict]:
+        r = await _HTTP.get(
             f"{STRAVA_API_BASE}/athlete/activities",
             headers={"Authorization": f"Bearer {access_token}"},
             params={"per_page": per_page, "page": 1},
@@ -105,6 +119,8 @@ async def fetch_activities(access_token: str, per_page: int = 100) -> list[dict]
         )
         r.raise_for_status()
         return r.json()
+
+    return await call_with_resilience("strava", _do)
 
 
 def _decode_polyline(encoded: str) -> list[list[float]]:
@@ -162,11 +178,13 @@ def activities_to_geojson(activities: list[dict]) -> dict:
 
 
 async def fetch_activity_detail(access_token: str, activity_id: int) -> dict:
-    async with httpx.AsyncClient() as client:
-        r = await client.get(
+    async def _do() -> dict:
+        r = await _HTTP.get(
             f"{STRAVA_API_BASE}/activities/{activity_id}",
             headers={"Authorization": f"Bearer {access_token}"},
             timeout=15,
         )
         r.raise_for_status()
         return r.json()
+
+    return await call_with_resilience("strava", _do)
