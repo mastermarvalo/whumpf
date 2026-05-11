@@ -9,19 +9,20 @@ import { cogTiles } from "./basemaps";
 const _NWS = "https://mapservices.weather.noaa.gov/raster/rest/services";
 // ArcGIS MapServer/export and ImageServer/exportImage share these params
 const _AGS = "bboxSR=3857&imageSR=3857&size=256,256&f=image&format=png32&transparent=true";
-// NDFD_temp layers: 0=TempF_24Hr 9=Temp_03Hr(+3hr, closest to current with data) 41=AptTempF_24Hr
+// NWS GeoServer WMS base — same provider as radar, supports &TIME=ISO8601 for time scrubbing.
+const _WMS = "https://opengeo.ncep.noaa.gov/geoserver";
+const _WMS_COMMON = "SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&FORMAT=image/png&TRANSPARENT=TRUE&WIDTH=256&HEIGHT=256&SRS=EPSG:3857&BBOX={bbox-epsg-3857}&STYLES=";
 // NOHRSC_Snow_Analysis layers: 0=Snow Depth 4=Snow Water Equivalent
 const WEATHER_SOURCES = {
-  // NDFD +3hr temperature — layer 0 (0hr) is always empty; 9 (3hr) is the earliest available
-  tempCurrent:   `${_NWS}/NDFD/NDFD_temp/MapServer/export?bbox={bbox-epsg-3857}&${_AGS}&layers=show:9`,
-  // NDFD 24-hr temperature forecast
-  tempForecast:  `${_NWS}/NDFD/NDFD_temp/MapServer/export?bbox={bbox-epsg-3857}&${_AGS}&layers=show:0`,
-  // MRMS composite reflectivity — current precipitation radar
-  precipRadar:   `https://opengeo.ncep.noaa.gov/geoserver/conus/conus_cref_qcd/ows?service=WMS&version=1.1.1&request=GetMap&layers=conus_cref_qcd&format=image/png&transparent=true&width=256&height=256&srs=EPSG:3857&bbox={bbox-epsg-3857}&styles=`,
-  // MRMS QPE — hourly precipitation accumulation
-  precipAccum:   `${_NWS}/obs/mrms_qpe/ImageServer/exportImage?bbox={bbox-epsg-3857}&${_AGS}`,
+  // NDFD temperature via NWS WMS — supports &TIME=ISO8601 for past/forecast scrubbing.
+  // Without TIME, returns latest available hour (≈current conditions).
+  tempNdfd:    `${_WMS}/conus/conus_tmp_2m/ows?${_WMS_COMMON}&LAYERS=conus_tmp_2m`,
+  // MRMS composite reflectivity — current precipitation radar; supports &TIME= for past frames.
+  precipRadar: `${_WMS}/conus/conus_cref_qcd/ows?${_WMS_COMMON}&LAYERS=conus_cref_qcd`,
+  // MRMS QPE — hourly precipitation accumulation (no time scrub; analysis-only ArcGIS service)
+  precipAccum: `${_NWS}/obs/mrms_qpe/ImageServer/exportImage?bbox={bbox-epsg-3857}&${_AGS}`,
   // NOHRSC analyzed snow depth
-  snowDepth:     `${_NWS}/snow/NOHRSC_Snow_Analysis/MapServer/export?bbox={bbox-epsg-3857}&${_AGS}&layers=show:0`,
+  snowDepth:   `${_NWS}/snow/NOHRSC_Snow_Analysis/MapServer/export?bbox={bbox-epsg-3857}&${_AGS}&layers=show:0`,
 };
 
 // ── layer definitions ──────────────────────────────────────────────────────────
@@ -214,23 +215,12 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
       active: [
         {
           id: "temp-current",
-          label: "Temp (+3hr, NDFD)",
-          tiles: [WEATHER_SOURCES.tempCurrent],
+          label: "Temperature (NDFD)",
+          tiles: [WEATHER_SOURCES.tempNdfd],
           opacity: 0.75,
           defaultVisible: false,
           noSlider: true,
-          legend: {
-            gradient: "linear-gradient(to right, #00d0d0, #20e080, #80e020, #c0e000, #e0e000)",
-            stops: ["0°F", "32°F", "50°F", "70°F", "90°F"],
-          },
-        },
-        {
-          id: "temp-forecast",
-          label: "Temp (24hr fcst)",
-          tiles: [WEATHER_SOURCES.tempForecast],
-          opacity: 0.75,
-          defaultVisible: false,
-          noSlider: true,
+          timeEnabled: true,
           legend: {
             gradient: "linear-gradient(to right, #00d0d0, #20e080, #80e020, #c0e000, #e0e000)",
             stops: ["0°F", "32°F", "50°F", "70°F", "90°F"],
@@ -238,11 +228,12 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
         },
         {
           id: "precip-radar",
-          label: "Precip radar (now)",
+          label: "Precip radar",
           tiles: [WEATHER_SOURCES.precipRadar],
           opacity: 0.8,
           defaultVisible: false,
           noSlider: true,
+          timeEnabled: true,
           legend: {
             gradient: "linear-gradient(to right, #00cc00, #ffff00, #ff6600, #cc0000, #cc00cc)",
             stops: ["15 dBZ", "30", "45", "55", "65+"],

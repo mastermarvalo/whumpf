@@ -206,6 +206,62 @@ async def _bg_refresh() -> None:
 
 # ── public interface ───────────────────────────────────────────────────────────
 
+async def fetch_station_history(triplet: str, days: int = 30) -> list[dict]:
+    """Return daily SWE + snow depth for one station, sorted oldest → newest."""
+    today = date.today().isoformat()
+    begin = (date.today() - timedelta(days=days)).isoformat()
+
+    results = await _fetch_data_batch([triplet], today, begin)
+    if not results:
+        return []
+
+    station_data = results[0].get("data") or []
+    dates: dict[str, dict] = {}
+
+    for item in station_data:
+        elem = item.get("stationElement") or {}
+        code = elem.get("elementCode")
+        if code not in ("WTEQ", "SNWD"):
+            continue
+        for entry in (item.get("values") or []):
+            d = entry.get("date")
+            if not d:
+                continue
+            if d not in dates:
+                dates[d] = {"date": d}
+            try:
+                v = float(entry["value"]) if entry.get("value") is not None else None
+                if v == -9999.0:
+                    v = None
+            except (TypeError, ValueError):
+                v = None
+            try:
+                med = float(entry["median"]) if entry.get("median") is not None else None
+                if med == -9999.0:
+                    med = None
+            except (TypeError, ValueError):
+                med = None
+            if code == "WTEQ":
+                dates[d]["swe_in"] = v
+                dates[d]["swe_med"] = med
+            elif code == "SNWD":
+                dates[d]["depth_in"] = v
+
+    rows = []
+    for d in sorted(dates.keys()):
+        row = dates[d]
+        swe = row.get("swe_in")
+        med = row.get("swe_med")
+        pct = round(swe / med * 100, 1) if (swe is not None and med and med > 0) else None
+        rows.append({
+            "date": d,
+            "swe_in": swe,
+            "depth_in": row.get("depth_in"),
+            "swe_pct_normal": pct,
+        })
+    return rows
+
+
 async def fetch_stations_geojson() -> dict[str, Any]:
     """Return a GeoJSON FeatureCollection of all active Colorado SNOTEL stations.
 

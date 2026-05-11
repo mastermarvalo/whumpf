@@ -49,6 +49,10 @@ export interface ActiveLayer {
   blendPaint?: { "raster-saturation"?: number; "raster-resampling"?: "linear" | "nearest" };
   // 1m hires tile URLs — if set, a companion `${id}-hires` layer is added at minzoom 13.
   hiresTiles?: string[];
+  // When true, Map.tsx will inject &TIME=ISO8601 into this layer's tile URL as the
+  // time slider moves. The base tiles[] URL must end with a param string the TIME
+  // can be appended to (e.g. "...&STYLES=" → "...&STYLES=&TIME=...").
+  timeEnabled?: boolean;
 }
 
 export interface UpcomingLayer {

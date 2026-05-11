@@ -100,6 +100,19 @@ export default defineConfig(({ mode }) => {
                 cacheableResponse: { statuses: [0, 200] },
               },
             },
+            {
+              // NWS GeoServer WMS (radar + NDFD temperature). Short TTL since
+              // weather data updates every few minutes; NetworkFirst so the user
+              // gets fresh tiles when online but falls back to cache offline.
+              urlPattern: /^https:\/\/opengeo\.ncep\.noaa\.gov\//,
+              handler: "NetworkFirst",
+              options: {
+                cacheName: "nws-wms",
+                networkTimeoutSeconds: 8,
+                expiration: { maxEntries: 400, maxAgeSeconds: 3600 },
+                cacheableResponse: { statuses: [0, 200] },
+              },
+            },
           ],
         },
       }),

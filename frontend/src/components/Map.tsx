@@ -37,8 +37,10 @@ import {
 import {
   addSnotelLayers,
   buildSnotelPopupHtml,
+  buildSnotelSparklineSvg,
   setSnotelData,
   setSnotelVisibility,
+  type SnotelHistoryRow,
 } from "./Map/layers/snotel";
 import {
   addStravaLayers,
@@ -74,6 +76,7 @@ import {
   updateMeasureSource,
 } from "./Map/layers/measure";
 
+import { TimeSlider, NOW_STEP, stepToDate } from "./Map/TimeSlider";
 import { LayerPanel } from "./Map/LayerPanel";
 import { InfoPanel } from "./Map/InfoPanel";
 import { MeasurePanel } from "./Map/MeasurePanel";
@@ -174,6 +177,8 @@ export function Map({
   const obsDataRef = useRef<object | null>(null);
   const [aboveHiresZoom, setAboveHiresZoom] = useState(region.default_zoom >= 13);
   const [layerPanelCollapsed, setLayerPanelCollapsed] = useState(false);
+  const [mapTimeStep, setMapTimeStep] = useState(NOW_STEP);
+  const mapTimeStepRef = useRef(NOW_STEP);
   const caicDataRef = useRef<object | null>(null);
   const [stravaVisible, setStravaVisible] = useState(true);
   const [stravaLoaded, setStravaLoaded] = useState(false);
@@ -215,6 +220,7 @@ export function Map({
   useEffect(() => { visibleRef.current = visible; }, [visible]);
   useEffect(() => { opacityRef.current = opacity; }, [opacity]);
   useEffect(() => { terrainOrderRef.current = terrainOrder; }, [terrainOrder]);
+  useEffect(() => { mapTimeStepRef.current = mapTimeStep; }, [mapTimeStep]);
 
   const snotelDataRef = useRef<object | null>(null);
   const prevBasemapRef = useRef<BasemapId>(basemap);
@@ -307,10 +313,23 @@ export function Map({
       const stored = snotelDataRef.current as SnotelFC | null;
       const refProps = stored?.features.find((f) => String(f.properties.id) === triplet)?.properties;
       const p = refProps ?? (feat.properties as Record<string, unknown>);
-      new maplibregl.Popup({ closeButton: true, maxWidth: "260px" })
+      const chartId = `snotel-chart-${triplet.replace(/[^a-z0-9]/gi, "-")}`;
+      const popup = new maplibregl.Popup({ closeButton: true, maxWidth: "240px" })
         .setLngLat(lngLat)
-        .setHTML(buildSnotelPopupHtml(p, unitsRef.current))
+        .setHTML(buildSnotelPopupHtml(p, unitsRef.current, chartId))
         .addTo(map);
+      // Async: fetch 30-day history and inject sparkline into the placeholder div.
+      apiFetch(`${API_URL}/snowpack/stations/history?triplet=${encodeURIComponent(triplet)}&days=30`)
+        .then((r) => r.json() as Promise<SnotelHistoryRow[]>)
+        .then((rows) => {
+          if (!popup.isOpen()) return;
+          const el = document.getElementById(chartId);
+          if (el) el.outerHTML = buildSnotelSparklineSvg(rows);
+        })
+        .catch(() => {
+          const el = document.getElementById(chartId);
+          if (el) el.textContent = "";
+        });
     };
 
     for (const layerId of ["snotel-circles", "snotel-names", "snotel-labels"] as const) {
@@ -675,6 +694,11 @@ export function Map({
 
   const theme = dark ? THEMES.dark : THEMES.light;
 
+  // Show the time slider when any weather layer is toggled on.
+  const anyWeatherVisible = layerGroups
+    .find((g) => g.id === "weather")
+    ?.active.some((l) => visible[l.id]) ?? false;
+
   // Persist layer selections and basemap to localStorage, debounced.
   // Without the debounce, dragging the opacity slider triggered ~30 writes/sec.
   useEffect(() => {
@@ -764,6 +788,24 @@ export function Map({
     }, { name: "?", diff: Infinity }).name;
     showToast(`Wind from ${cardinal} (${Math.round(fromDeg)}°) — loaded on ${loadedAspects.join(", ")}.`, "success");
   }
+
+  // When the time slider moves, update tile URLs on time-enabled weather layers.
+  // setTiles() replaces tile URLs in-place without removing/re-adding the source,
+  // so MapLibre can crossfade the new tiles in. At NOW_STEP, revert to base URLs.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.isStyleLoaded()) return;
+    const mapTime = mapTimeStep === NOW_STEP ? null : stepToDate(mapTimeStep);
+    for (const layer of overlayLayers) {
+      if (!layer.timeEnabled) continue;
+      const src = map.getSource(layer.id) as maplibregl.RasterTileSource | undefined;
+      if (!src) continue;
+      const tiles = mapTime === null
+        ? layer.tiles
+        : layer.tiles.map((t) => `${t}&TIME=${mapTime.toISOString().slice(0, 19)}Z`);
+      src.setTiles(tiles);
+    }
+  }, [mapTimeStep, overlayLayers]);
 
   // Reorder terrain layers in MapLibre whenever the sidebar order changes.
   // Guard with isStyleLoaded(): on initial mount the effect fires before the async style fetch
@@ -949,6 +991,18 @@ export function Map({
           theme={theme}
           mobile={isMobile}
           mobileBottom={mobileBottom}
+        />
+      )}
+
+      {/* Time slider — shown when any weather layer is active */}
+      {anyWeatherVisible && (
+        <TimeSlider
+          step={mapTimeStep}
+          onChange={setMapTimeStep}
+          theme={theme}
+          mobile={isMobile}
+          mobileBottom={mobileBottom}
+          layerPanelCollapsed={layerPanelCollapsed}
         />
       )}
 
