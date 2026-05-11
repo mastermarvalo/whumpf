@@ -55,16 +55,30 @@ def sample_profile(
     )
 
     def _sample_one(name: str) -> list[float | None]:
-        """Open a COG (preferring hires), sample at every coord, mask nodata."""
-        for variant in (f"{name}_hires", name):
+        """Sample a COG along coords. Prefer hires per-point, fall back to the
+        base 10m COG where hires is nodata.
+
+        Hires coverage is a strict subset of the region bbox (currently the
+        western half of Colorado — Front Range, Colorado Springs, plains are
+        outside). A point can be inside hires extent for some COGs and outside
+        for others, so we always sample both and merge per-point.
+        """
+        hires_vals: list[float | None] = [None] * n
+        base_vals: list[float | None] = [None] * n
+        for suffix, target in (("_hires", hires_vals), ("", base_vals)):
             try:
-                with rasterio.open(f"/vsicurl/{base}/{variant}.tif") as ds:
+                with rasterio.open(f"/vsicurl/{base}/{name}{suffix}.tif") as ds:
                     nd = ds.nodata
                     raw = [float(v[0]) for v in ds.sample(coords)]
-                return [None if (nd is not None and v == nd) else v for v in raw]
+                for i, v in enumerate(raw):
+                    target[i] = None if (nd is not None and v == nd) else v
             except Exception:
-                continue
-        return [None] * n
+                # Variant doesn't exist / read failed → leave target all-None.
+                pass
+        return [
+            hires_vals[i] if hires_vals[i] is not None else base_vals[i]
+            for i in range(n)
+        ]
 
     with rasterio.Env(**env_vars):
         slopes  = _sample_one("slope")
