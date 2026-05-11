@@ -3,6 +3,7 @@ import type { CSSProperties } from "react";
 import type { Theme } from "./theme";
 import type { TerrainFilterSettings } from "./layers/basemaps";
 import { Z } from "./zIndex";
+import { useDraggable } from "./useDraggable";
 
 // ── dual-thumb range slider ────────────────────────────────────────────────────
 // Two stacked <input type="range"> with a custom track drawn behind them.
@@ -265,6 +266,7 @@ const ALL_ASPECTS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 
 export function SlopeFilterPanel({ filter, onChange, onApplyWindPreset, onClose, theme, mobile, mobileBottom }: Props) {
   const [windMode, setWindMode] = useState(false);
+  const { panelRef, handleProps, panelEventProps, dragStyle } = useDraggable(mobile);
   const panelStyle: CSSProperties = mobile ? {
     position: "fixed",
     bottom: mobileBottom,
@@ -298,7 +300,14 @@ export function SlopeFilterPanel({ filter, onChange, onApplyWindPreset, onClose,
   return (
     <>
       <style>{DUAL_RANGE_CSS}</style>
-      <div role="dialog" aria-label="Slope filter" style={panelStyle}>
+      <div ref={panelRef} role="dialog" aria-label="Slope filter" style={{ ...panelStyle, ...dragStyle }} {...panelEventProps}>
+
+        {/* Drag grip (desktop only) */}
+        {!mobile && (
+          <div {...handleProps} style={{ ...handleProps.style, display: "flex", justifyContent: "center", padding: "0 0 8px" }}>
+            <div style={{ width: 32, height: 3, borderRadius: 2, background: theme.divider, opacity: 0.6 }} />
+          </div>
+        )}
 
         {/* ── Header ── */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
@@ -317,41 +326,13 @@ export function SlopeFilterPanel({ filter, onChange, onApplyWindPreset, onClose,
 
         {/* ── Description ── */}
         <p style={{ margin: "0 0 10px", fontSize: 11, color: theme.muted, lineHeight: 1.5 }}>
-          Highlights terrain matching your slope angle and aspect. Tap compass wedges or buttons to select aspects; drag or type to set the degree range.
+          Highlights terrain by slope angle and aspect. Tap compass wedges to select aspects; drag or type to set the degree range.
         </p>
 
-        {/* ── Compass + aspects ── */}
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 10 }}>
+        {/* ── Compass + aspect toggle ── */}
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
           <CompassRose selected={filter.aspects} onChange={setAspects} theme={theme} />
           <div style={{ flex: 1 }}>
-            <div style={{ fontSize: 10, color: theme.muted, marginBottom: 4 }}>Aspects</div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 3 }}>
-              {ALL_ASPECTS.map((a) => {
-                const active = filter.aspects.includes(a);
-                return (
-                  <button
-                    key={a}
-                    onClick={() => {
-                      const next = active
-                        ? filter.aspects.filter((x) => x !== a)
-                        : [...filter.aspects, a];
-                      setAspects(next);
-                    }}
-                    style={{
-                      width: 28, padding: "3px 0",
-                      borderRadius: 4,
-                      border: `1px solid ${active ? "#a07850" : theme.divider}`,
-                      background: active ? "#a07850" : "transparent",
-                      color: active ? "#fff" : theme.muted,
-                      fontSize: 10, fontWeight: active ? 700 : 400,
-                      cursor: "pointer", fontFamily: "inherit",
-                    }}
-                  >{a}</button>
-                );
-              })}
-            </div>
-
-            {/* ── Aspect mode toggle ── */}
             <AspectToggle
               windMode={windMode}
               onSelectAll={() => setAspects([...ALL_ASPECTS])}

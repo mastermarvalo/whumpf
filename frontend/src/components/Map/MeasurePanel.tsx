@@ -4,6 +4,7 @@ import type { Theme } from "./theme";
 import { slopeColor } from "./utils";
 import { ProfileChart } from "./ProfileChart";
 import { Z } from "./zIndex";
+import { useDraggable } from "./useDraggable";
 
 // Cardinal-order so the aspect-distribution row reads N → NW (compass-clockwise).
 const ASPECT_ORDER = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
@@ -162,6 +163,9 @@ export function MeasurePanel({
   mobileBottom?: number;
   onClose: () => void;
 }) {
+  const isMobile = mobile ?? false;
+  const { panelRef, handleProps, panelEventProps, dragStyle } = useDraggable(isMobile);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -244,7 +248,13 @@ export function MeasurePanel({
   };
 
   return (
-    <div role="dialog" aria-label="Slope profile" style={panelStyle}>
+    <div ref={panelRef} role="dialog" aria-label="Slope profile" style={{ ...panelStyle, ...dragStyle }} {...panelEventProps}>
+      {/* Drag grip (desktop only) */}
+      {!isMobile && (
+        <div {...handleProps} style={{ ...handleProps.style, display: "flex", justifyContent: "center", padding: "0 0 6px" }}>
+          <div style={{ width: 32, height: 3, borderRadius: 2, background: theme.divider, opacity: 0.6 }} />
+        </div>
+      )}
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <span style={{ color: theme.muted, fontSize: 11 }}>A → B</span>
         <button

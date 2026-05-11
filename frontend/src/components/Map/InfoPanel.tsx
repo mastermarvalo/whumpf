@@ -3,6 +3,7 @@ import type { ForecastPeriod, PointData, Units } from "./types";
 import type { Theme } from "./theme";
 import { aspectCompass } from "./utils";
 import { Z } from "./zIndex";
+import { useDraggable } from "./useDraggable";
 
 export function InfoPanel({
   data,
@@ -23,6 +24,9 @@ export function InfoPanel({
   mobileBottom?: number;
   onClose: () => void;
 }) {
+  const isMobile = mobile ?? false;
+  const { panelRef, handleProps, panelEventProps, dragStyle } = useDraggable(isMobile);
+
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
@@ -42,40 +46,51 @@ export function InfoPanel({
       : `${elevM.toFixed(0)} m`
     : "—";
 
+  const baseStyle = isMobile ? {
+    position: "fixed" as const,
+    bottom: mobileBottom,
+    left: 8,
+    right: 8,
+    background: theme.panel,
+    borderRadius: 12,
+    padding: "12px 16px",
+    fontFamily: "ui-sans-serif, system-ui, sans-serif",
+    fontSize: 14,
+    color: theme.text,
+    boxShadow: "0 2px 16px rgba(0,0,0,0.28)",
+    zIndex: Z.FLOATING_PANEL,
+  } : {
+    position: "fixed" as const,
+    bottom: 36,
+    left: "50%",
+    transform: "translateX(-50%)",
+    background: theme.panel,
+    borderRadius: 8,
+    padding: "6px 16px 10px",
+    fontFamily: "ui-sans-serif, system-ui, sans-serif",
+    fontSize: 13,
+    color: theme.text,
+    boxShadow: "0 2px 12px rgba(0,0,0,0.24)",
+    zIndex: Z.FLOATING_PANEL,
+    maxWidth: "calc(100vw - 40px)",
+    minWidth: 320,
+  };
+
   return (
     <div
+      ref={panelRef}
       role="dialog"
       aria-label="Point info"
-      style={mobile ? {
-        position: "fixed",
-        bottom: mobileBottom,
-        left: 8,
-        right: 8,
-        background: theme.panel,
-        borderRadius: 12,
-        padding: "12px 16px",
-        fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: 14,
-        color: theme.text,
-        boxShadow: "0 2px 16px rgba(0,0,0,0.28)",
-        zIndex: Z.FLOATING_PANEL,
-      } : {
-        position: "fixed",
-        bottom: 36,
-        left: "50%",
-        transform: "translateX(-50%)",
-        background: theme.panel,
-        borderRadius: 8,
-        padding: "10px 16px",
-        fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        fontSize: 13,
-        color: theme.text,
-        boxShadow: "0 2px 12px rgba(0,0,0,0.24)",
-        zIndex: Z.FLOATING_PANEL,
-        maxWidth: "calc(100vw - 40px)",
-        minWidth: 320,
-      }}
+      style={{ ...baseStyle, ...dragStyle }}
+      {...panelEventProps}
     >
+      {/* Drag grip (desktop only) */}
+      {!isMobile && (
+        <div {...handleProps} style={{ ...handleProps.style, display: "flex", justifyContent: "center", padding: "2px 0 7px", margin: "0 -16px" }}>
+          <div style={{ width: 32, height: 3, borderRadius: 2, background: theme.divider, opacity: 0.6 }} />
+        </div>
+      )}
+
       {/* Location name */}
       {(data.locationName || data.loading) && (
         <div style={{ fontSize: 12, color: theme.muted, marginBottom: 7, display: "flex", alignItems: "center", gap: 5 }}>
@@ -167,7 +182,6 @@ export function InfoPanel({
               const tempStr = imp
                 ? `${tempVal}°F`
                 : `${((tempVal - 32) * 5 / 9).toFixed(0)}°C`;
-              // NWS wind is always mph strings like "15 mph" or "10 to 20 mph"
               const windStr = imp
                 ? p.windSpeed
                 : p.windSpeed.replace(/\d+/g, (n) => String(Math.round(Number(n) * 1.60934))).replace("mph", "km/h");

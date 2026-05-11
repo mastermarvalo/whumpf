@@ -4,6 +4,7 @@ import { API_URL } from "./constants";
 import type { ActivityCardProps, Units } from "./types";
 import type { Theme } from "./theme";
 import { Z } from "./zIndex";
+import { useDraggable } from "./useDraggable";
 
 export function StravaActivityCard({
   activities,
@@ -24,6 +25,9 @@ export function StravaActivityCard({
   mobile?: boolean;
   mobileBottom?: number;
 }) {
+  const isMobile = mobile ?? false;
+  const { panelRef, handleProps, panelEventProps, dragStyle } = useDraggable(isMobile);
+
   const act = activities[index];
   const descCache = useRef<Record<number, string | null>>({});
   const [description, setDescription] = useState<string | null | "loading">("loading");
@@ -78,36 +82,45 @@ export function StravaActivityCard({
 
   const sportLabel = act.sport_type.replace(/([A-Z])/g, " $1").trim();
 
+  const baseCardStyle = isMobile ? {
+    position: "fixed" as const,
+    bottom: mobileBottom,
+    left: 8,
+    right: 8,
+    background: theme.panel,
+    borderRadius: 12,
+    boxShadow: "0 4px 24px rgba(0,0,0,0.28)",
+    fontFamily: "ui-sans-serif, system-ui, sans-serif",
+    zIndex: Z.FLOATING_PANEL,
+    color: theme.text,
+    overflow: "hidden" as const,
+  } : {
+    position: "fixed" as const,
+    bottom: 80,
+    right: 10,
+    width: 300,
+    background: theme.panel,
+    borderRadius: 10,
+    boxShadow: "0 4px 24px rgba(0,0,0,0.28)",
+    fontFamily: "ui-sans-serif, system-ui, sans-serif",
+    zIndex: Z.FLOATING_PANEL,
+    color: theme.text,
+  };
+
   return (
     <div
+      ref={panelRef}
       role="dialog"
       aria-label={`Strava activity ${act.name}`}
-      style={mobile ? {
-        position: "fixed",
-        bottom: mobileBottom,
-        left: 8,
-        right: 8,
-        background: theme.panel,
-        borderRadius: 12,
-        boxShadow: "0 4px 24px rgba(0,0,0,0.28)",
-        overflow: "hidden",
-        fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        zIndex: Z.FLOATING_PANEL,
-        color: theme.text,
-      } : {
-        position: "fixed",
-        bottom: 80,
-        right: 10,
-        width: 300,
-        background: theme.panel,
-        borderRadius: 10,
-        boxShadow: "0 4px 24px rgba(0,0,0,0.28)",
-        overflow: "hidden",
-        fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        zIndex: Z.FLOATING_PANEL,
-        color: theme.text,
-      }}
+      style={{ ...baseCardStyle, ...dragStyle }}
+      {...panelEventProps}
     >
+      {/* Drag grip (desktop only) — above photo */}
+      {!isMobile && (
+        <div {...handleProps} style={{ ...handleProps.style, display: "flex", justifyContent: "center", padding: "6px 0 4px", background: theme.panel }}>
+          <div style={{ width: 32, height: 3, borderRadius: 2, background: theme.divider, opacity: 0.6 }} />
+        </div>
+      )}
       {act.photo_url && (
         <img
           src={act.photo_url}
