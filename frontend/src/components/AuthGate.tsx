@@ -10,6 +10,10 @@ export function AuthGate({ onAuth }: { onAuth: () => void }) {
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  const [forgotOpen, setForgotOpen] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState("");
+  const [forgotSent, setForgotSent] = useState(false);
+  const [forgotLoading, setForgotLoading] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -46,6 +50,27 @@ export function AuthGate({ onAuth }: { onAuth: () => void }) {
       setError("Could not reach the server");
     } finally {
       setLoading(false);
+    }
+  }
+
+  async function submitForgot(e: React.FormEvent) {
+    e.preventDefault();
+    setForgotLoading(true);
+    try {
+      await fetch(`${API_URL}/auth/password-reset/request`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email: forgotEmail }),
+      });
+      // Backend returns 204 either way — don't leak whether the address exists.
+      setForgotSent(true);
+    } catch {
+      // even if the network failed, show the same generic message —
+      // a real user would either succeed or have a network problem they
+      // can debug, and we still don't reveal account existence here.
+      setForgotSent(true);
+    } finally {
+      setForgotLoading(false);
     }
   }
 
@@ -109,78 +134,146 @@ export function AuthGate({ onAuth }: { onAuth: () => void }) {
           </div>
         </div>
 
-        {/* Tab switcher */}
-        <div
-          style={{
-            display: "flex",
-            background: "rgba(255,255,255,0.05)",
-            borderRadius: 7,
-            padding: 3,
-            marginBottom: 20,
-          }}
-        >
-          {(["login", "register"] as Tab[]).map((t) => (
-            <button
-              key={t}
-              onClick={() => { setTab(t); setError(null); }}
-              style={{
-                flex: 1,
-                padding: "7px 0",
-                border: "none",
-                borderRadius: 5,
-                background: tab === t ? "rgba(255,255,255,0.1)" : "transparent",
-                color: tab === t ? "#e8e8e8" : "#666",
-                fontFamily: "ui-sans-serif, system-ui, sans-serif",
-                fontSize: 13,
-                fontWeight: tab === t ? 600 : 400,
-                cursor: "pointer",
-                transition: "all 0.15s",
-              }}
-            >
-              {t === "login" ? "Sign in" : "Create account"}
-            </button>
-          ))}
-        </div>
-
-        <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-          <input
-            type="email"
-            placeholder="Email"
-            value={email}
-            onChange={(e) => setEmail(e.target.value)}
-            required
-            autoComplete="email"
-            style={inputStyle}
-          />
-          <input
-            type="password"
-            placeholder={tab === "register" ? "Password (8+ characters)" : "Password"}
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-            required
-            autoComplete={tab === "login" ? "current-password" : "new-password"}
-            style={inputStyle}
-          />
-
-          {error && (
+        {forgotOpen ? (
+          forgotSent ? (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <div style={{ color: "#e8e8e8", fontSize: 13, lineHeight: 1.5 }}>
+                If an account exists for <b>{forgotEmail}</b>, a password reset
+                link has been sent. Check your inbox.
+              </div>
+              <button
+                type="button"
+                onClick={() => { setForgotOpen(false); setForgotSent(false); setForgotEmail(""); }}
+                style={btnStyle}
+              >
+                Back to sign in
+              </button>
+            </div>
+          ) : (
+            <form onSubmit={submitForgot} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <div style={{ color: "#aaa", fontSize: 13, marginBottom: 4 }}>
+                Enter your account email — we'll send a reset link.
+              </div>
+              <input
+                type="email"
+                placeholder="Email"
+                value={forgotEmail}
+                onChange={(e) => setForgotEmail(e.target.value)}
+                required
+                autoComplete="email"
+                autoFocus
+                style={inputStyle}
+              />
+              <button
+                type="submit"
+                disabled={forgotLoading}
+                style={{ ...btnStyle, cursor: forgotLoading ? "not-allowed" : "pointer", opacity: forgotLoading ? 0.7 : 1 }}
+              >
+                {forgotLoading ? "…" : "Send reset link"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setForgotOpen(false)}
+                style={{
+                  background: "none", border: "none",
+                  color: "#888", fontSize: 12, cursor: "pointer",
+                  marginTop: 4,
+                }}
+              >
+                Back to sign in
+              </button>
+            </form>
+          )
+        ) : (
+          <>
+            {/* Tab switcher */}
             <div
               style={{
-                background: "rgba(208,52,44,0.15)",
-                border: "1px solid rgba(208,52,44,0.3)",
-                borderRadius: 5,
-                padding: "8px 12px",
-                color: "#f87171",
-                fontSize: 13,
+                display: "flex",
+                background: "rgba(255,255,255,0.05)",
+                borderRadius: 7,
+                padding: 3,
+                marginBottom: 20,
               }}
             >
-              {error}
+              {(["login", "register"] as Tab[]).map((t) => (
+                <button
+                  key={t}
+                  onClick={() => { setTab(t); setError(null); }}
+                  style={{
+                    flex: 1,
+                    padding: "7px 0",
+                    border: "none",
+                    borderRadius: 5,
+                    background: tab === t ? "rgba(255,255,255,0.1)" : "transparent",
+                    color: tab === t ? "#e8e8e8" : "#666",
+                    fontFamily: "ui-sans-serif, system-ui, sans-serif",
+                    fontSize: 13,
+                    fontWeight: tab === t ? 600 : 400,
+                    cursor: "pointer",
+                    transition: "all 0.15s",
+                  }}
+                >
+                  {t === "login" ? "Sign in" : "Create account"}
+                </button>
+              ))}
             </div>
-          )}
 
-          <button type="submit" disabled={loading} style={btnStyle}>
-            {loading ? "…" : tab === "login" ? "Sign in" : "Create account"}
-          </button>
-        </form>
+            <form onSubmit={submit} style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              <input
+                type="email"
+                placeholder="Email"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+                autoComplete="email"
+                style={inputStyle}
+              />
+              <input
+                type="password"
+                placeholder={tab === "register" ? "Password (8+ characters)" : "Password"}
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                required
+                autoComplete={tab === "login" ? "current-password" : "new-password"}
+                style={inputStyle}
+              />
+
+              {error && (
+                <div
+                  style={{
+                    background: "rgba(208,52,44,0.15)",
+                    border: "1px solid rgba(208,52,44,0.3)",
+                    borderRadius: 5,
+                    padding: "8px 12px",
+                    color: "#f87171",
+                    fontSize: 13,
+                  }}
+                >
+                  {error}
+                </div>
+              )}
+
+              <button type="submit" disabled={loading} style={btnStyle}>
+                {loading ? "…" : tab === "login" ? "Sign in" : "Create account"}
+              </button>
+
+              {tab === "login" && (
+                <button
+                  type="button"
+                  onClick={() => { setForgotOpen(true); setForgotEmail(email); }}
+                  style={{
+                    background: "none", border: "none",
+                    color: "#888", fontSize: 12, cursor: "pointer",
+                    marginTop: 4,
+                  }}
+                >
+                  Forgot password?
+                </button>
+              )}
+            </form>
+          </>
+        )}
       </div>
     </div>
   );

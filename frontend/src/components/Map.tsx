@@ -3,7 +3,7 @@ import maplibregl from "maplibre-gl";
 import { apiFetch } from "../auth";
 import { useFetchWithRetry } from "../hooks/useFetchWithRetry";
 import { showToast } from "./Toast";
-import type { StravaStatus } from "../App";
+import type { StravaStatus, UserSummary } from "../App";
 
 import {
   API_URL,
@@ -93,13 +93,19 @@ function useIsMobile() {
 }
 
 export function Map({
+  user,
   onLogout,
   stravaStatus,
   onStravaStatusChange,
+  onResendVerification,
+  onDeleteAccount,
 }: {
+  user: UserSummary;
   onLogout: () => void;
   stravaStatus: StravaStatus;
   onStravaStatusChange: () => void;
+  onResendVerification: () => void;
+  onDeleteAccount: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
@@ -733,6 +739,9 @@ export function Map({
     onLayerReorder: (_groupId: string, newOrder: string[]) => setTerrainOrder(newOrder),
     contourInterval,
     onContourInterval: setContourInterval,
+    emailVerified: user.email_verified,
+    onResendVerification,
+    onDeleteAccount,
   };
 
   // On mobile, bottom-floating panels sit above the nav bar.

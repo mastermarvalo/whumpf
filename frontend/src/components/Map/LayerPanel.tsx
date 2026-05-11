@@ -31,6 +31,9 @@ export function LayerPanel({
   onLayerReorder,
   contourInterval,
   onContourInterval,
+  emailVerified,
+  onResendVerification,
+  onDeleteAccount,
 }: {
   groups: LayerGroup[];
   visible: Record<string, boolean>;
@@ -58,6 +61,9 @@ export function LayerPanel({
   onLayerReorder?: (groupId: string, newOrder: string[]) => void;
   contourInterval?: number | null;
   onContourInterval?: (v: number | null) => void;
+  emailVerified?: boolean;
+  onResendVerification?: () => void;
+  onDeleteAccount?: () => void;
 }) {
   const collapsed = mobile ? false : (collapsedProp ?? false);
   const setCollapsed = (c: boolean) => onCollapsedChange?.(c);
@@ -582,25 +588,80 @@ export function LayerPanel({
         </div>{/* end strava collapsible */}
       </div>
 
-      {/* Sign out */}
-      <button
-        onClick={onLogout}
-        style={{
-          marginTop: 10,
-          width: "100%",
-          padding: "6px 0",
-          border: `1px solid ${theme.divider}`,
-          borderRadius: 5,
-          background: "none",
-          color: theme.muted,
-          fontFamily: "ui-sans-serif, system-ui, sans-serif",
-          fontSize: 11,
-          cursor: "pointer",
-          letterSpacing: "0.04em",
-        }}
-      >
-        Sign out
-      </button>
+      {/* Account section */}
+      <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${theme.divider}` }}>
+        {emailVerified === false && (
+          <div
+            style={{
+              background: "rgba(244,130,10,0.12)",
+              border: "1px solid rgba(244,130,10,0.4)",
+              borderRadius: 5,
+              padding: "6px 8px",
+              marginBottom: 8,
+              fontSize: 11,
+              color: theme.text,
+              lineHeight: 1.4,
+            }}
+          >
+            <div style={{ fontWeight: 600, marginBottom: 2 }}>Verify your email</div>
+            <button
+              onClick={onResendVerification}
+              style={{
+                background: "none",
+                border: "none",
+                padding: 0,
+                color: theme.accent,
+                fontSize: 11,
+                cursor: "pointer",
+                textDecoration: "underline",
+                fontFamily: "inherit",
+              }}
+            >
+              Resend verification email
+            </button>
+          </div>
+        )}
+
+        <button
+          onClick={onLogout}
+          style={{
+            width: "100%",
+            padding: "6px 0",
+            border: `1px solid ${theme.divider}`,
+            borderRadius: 5,
+            background: "none",
+            color: theme.muted,
+            fontFamily: "ui-sans-serif, system-ui, sans-serif",
+            fontSize: 11,
+            cursor: "pointer",
+            letterSpacing: "0.04em",
+          }}
+        >
+          Sign out
+        </button>
+
+        {onDeleteAccount && (
+          <button
+            onClick={onDeleteAccount}
+            style={{
+              marginTop: 6,
+              width: "100%",
+              padding: "5px 0",
+              border: "1px solid transparent",
+              borderRadius: 5,
+              background: "none",
+              color: theme.muted,
+              fontFamily: "ui-sans-serif, system-ui, sans-serif",
+              fontSize: 10,
+              cursor: "pointer",
+              letterSpacing: "0.04em",
+              opacity: 0.6,
+            }}
+          >
+            Delete account
+          </button>
+        )}
+      </div>
     </div>
   );
 }
