@@ -26,7 +26,7 @@ const WEATHER_SOURCES = {
 
 // ── layer definitions ──────────────────────────────────────────────────────────
 
-export const TERRAIN_LAYER_IDS = ["hillshade", "slope", "aspect", "contours"];
+export const TERRAIN_LAYER_IDS = ["hillshade", "slope", "aspect"];
 
 // Layers that use 1m DEM data at zoom >= 13 (either via hiresTiles companion or server-side).
 export const HIRES_LAYER_IDS = TERRAIN_LAYER_IDS;
@@ -47,11 +47,26 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
       color: "#888",
       active: [
         {
-          id: "trails",
-          label: "Streets & trails",
+          id: "streets",
+          label: "Streets",
           kind: "vector_overlay",
           tiles: [],
           opacity: 0.9,
+          defaultVisible: false,
+        },
+        {
+          id: "trails",
+          label: "Trails & peaks",
+          kind: "vector_overlay",
+          tiles: [],
+          opacity: 0.9,
+          defaultVisible: false,
+        },
+        {
+          id: "ski-runs",
+          label: "Ski resort runs",
+          tiles: ["https://tiles.opensnowmap.org/pistes/{z}/{x}/{y}.png"],
+          opacity: 0.85,
           defaultVisible: false,
         },
       ],
@@ -114,15 +129,6 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
               "linear-gradient(to right, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)",
             stops: ["N", "E", "S", "W", "N"],
           },
-        },
-        {
-          id: "contours",
-          label: "Contour lines",
-          tiles: [`${API_URL}/tiles/contours/{z}/{x}/{y}?region=${regionId}`],
-          opacity: 1.0,
-          defaultVisible: false,
-          noSlider: true,
-          sourceMinzoom: 9,
         },
         {
           id: "terrain-filter",

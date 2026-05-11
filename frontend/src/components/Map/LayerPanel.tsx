@@ -32,8 +32,6 @@ export function LayerPanel({
   loadingLayers,
   layerOrder,
   onLayerReorder,
-  contourInterval,
-  onContourInterval,
   terrainFilter,
   onTerrainFilterChange,
   onApplyWindPreset,
@@ -65,8 +63,6 @@ export function LayerPanel({
   loadingLayers?: Set<string>;
   layerOrder?: Record<string, string[]>;
   onLayerReorder?: (groupId: string, newOrder: string[]) => void;
-  contourInterval?: number | null;
-  onContourInterval?: (v: number | null) => void;
   terrainFilter?: TerrainFilterSettings;
   onTerrainFilterChange?: (next: TerrainFilterSettings) => void;
   onApplyWindPreset?: () => void;
@@ -79,7 +75,15 @@ export function LayerPanel({
 
   const [dragId, setDragId] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({});
+  // Default every group (and the Strava section) to collapsed so a first-time
+  // user sees a compact panel they can drill into, not a wall of legends.
+  // The empty `{}` we used to ship made every section expanded by default,
+  // which was visual overload — especially with the new Reference group.
+  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>(() => {
+    const init: Record<string, boolean> = { strava: true };
+    for (const g of groups) init[g.id] = true;
+    return init;
+  });
   const toggleGroup = (id: string) => setCollapsedGroups((prev) => ({ ...prev, [id]: !prev[id] }));
 
   const btnBase: CSSProperties = {
@@ -527,38 +531,6 @@ export function LayerPanel({
                         All
                       </button>
                     </div>
-                  </div>
-                )}
-                {layer.id === "contours" && visible[layer.id] && (
-                  <div style={{ display: "flex", gap: 3, flexWrap: "wrap", marginTop: 4 }}>
-                    {([null, 10, 20, 40, 100, 200] as (number | null)[]).map((v) => {
-                      const active = (contourInterval ?? null) === v;
-                      const label = v === null
-                        ? "Auto"
-                        : units === "imperial"
-                        ? `${Math.round(v * 3.28084)}ft`
-                        : `${v}m`;
-                      return (
-                        <button
-                          key={String(v)}
-                          onClick={() => onContourInterval?.(v)}
-                          style={{
-                            padding: "2px 6px",
-                            borderRadius: 3,
-                            border: `1px solid ${active ? group.color : theme.divider}`,
-                            background: active ? group.color : "transparent",
-                            color: active ? "#fff" : theme.muted,
-                            fontSize: 10,
-                            fontWeight: active ? 700 : 400,
-                            cursor: "pointer",
-                            fontFamily: "ui-sans-serif, system-ui, sans-serif",
-                            lineHeight: 1.4,
-                          }}
-                        >
-                          {label}
-                        </button>
-                      );
-                    })}
                   </div>
                 )}
                 {layer.legend && visible[layer.id] && (

@@ -91,6 +91,15 @@ export default defineConfig(({ mode }) => {
                 cacheableResponse: { statuses: [0, 200] },
               },
             },
+            {
+              urlPattern: /^https:\/\/tiles\.opensnowmap\.org\//,
+              handler: "CacheFirst",
+              options: {
+                cacheName: "opensnowmap",
+                expiration: { maxEntries: 300, maxAgeSeconds: 30 * 86400 },
+                cacheableResponse: { statuses: [0, 200] },
+              },
+            },
           ],
         },
       }),

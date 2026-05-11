@@ -21,7 +21,6 @@ import { fetchSpotData, fetchWindDirection, reverseGeocode } from "./Map/service
 
 import {
   cogS3,
-  getContourUrl,
   getMapStyle,
   getTerrainFilterUrl,
   swapRasterBasemap,
@@ -60,10 +59,13 @@ import {
   setObsVisibility,
 } from "./Map/layers/obs";
 import {
+  addStreetsLayers,
   addTrailsLayers,
+  setStreetsOpacity,
+  setStreetsVisibility,
   setTrailsOpacity,
   setTrailsVisibility,
-} from "./Map/layers/trails";
+} from "./Map/layers/osm";
 import { readUrlState, writeUrlState } from "./Map/urlState";
 import {
   MEASURE_MARKER_STYLE,
@@ -179,9 +181,6 @@ export function Map({
   const selectedStravaIdRef = useRef<number | null>(null);
   const [stravaCard, setStravaCard] = useState<{ activities: ActivityCardProps[]; index: number } | null>(null);
 
-  const [contourInterval, setContourInterval] = useState<number | null>(null);
-  const contourIntervalRef = useRef<number | null>(null);
-
   const [terrainFilter, setTerrainFilter] = useState<TerrainFilterSettings>(() => {
     try {
       const stored = localStorage.getItem("whumpf:terrain-filter");
@@ -215,7 +214,6 @@ export function Map({
   const opacityRef = useRef(opacity);
   useEffect(() => { visibleRef.current = visible; }, [visible]);
   useEffect(() => { opacityRef.current = opacity; }, [opacity]);
-  useEffect(() => { contourIntervalRef.current = contourInterval; }, [contourInterval]);
   useEffect(() => { terrainOrderRef.current = terrainOrder; }, [terrainOrder]);
 
   const snotelDataRef = useRef<object | null>(null);
@@ -248,16 +246,16 @@ export function Map({
     // All addXxx helpers are idempotent (guard on getSource), so re-firing is safe.
     map.on("style.load", () => {
       addOverlayLayers(map, overlayLayers, region.bbox, visibleRef.current, opacityRef.current, {
-        contours: [getContourUrl(region.id, contourIntervalRef.current)],
         "terrain-filter": [getTerrainFilterUrl(region.id, terrainFilterRef.current)],
       });
       applyTerrainOrder(map, terrainOrderRef.current);
-      // Trails sit above the rasters but below interactive geojson points so
-      // SNOTEL/CAIC markers stay clickable. addOverlayLayers anchors against
-      // the first symbol layer of the active basemap — same anchor here so
-      // vector trails land in the same slot, just above the rasters.
-      const trailsBeforeId = map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
-      addTrailsLayers(map, opacityRef.current["trails"] ?? 0.9, trailsBeforeId);
+      // Streets + trails sit above the rasters but below interactive geojson
+      // points so SNOTEL/CAIC markers stay clickable. Same insertion anchor
+      // as addOverlayLayers — the first symbol layer of the active basemap.
+      const osmBeforeId = map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
+      addStreetsLayers(map, opacityRef.current["streets"] ?? 0.9, osmBeforeId);
+      setStreetsVisibility(map, visibleRef.current["streets"] ?? false);
+      addTrailsLayers(map, opacityRef.current["trails"] ?? 0.9, osmBeforeId);
       setTrailsVisibility(map, visibleRef.current["trails"] ?? false);
       addMeasureLayers(map);
       updateMeasureSource(map, measurePtsRef.current);
@@ -586,11 +584,16 @@ export function Map({
   useEffect(() => { setSnotelVisibility(mapRef.current, !!snotelVisible); }, [snotelVisible]);
   useEffect(() => { setCaicVisibility(mapRef.current, !!caicVisible); },     [caicVisible]);
   useEffect(() => { setObsVisibility(mapRef.current, !!obsVisible); },       [obsVisible]);
-  // Trails overlay — same shape as the geojson layers above; the visibility/
-  // opacity loops further up don't touch it because it has multiple sub-layer
-  // ids (trails-road, trails-path, …) under a single panel id.
+  // Vector overlays — same pattern as the geojson layers above; the
+  // visibility/opacity loops further up don't touch them because they have
+  // multiple sub-layer ids (streets-road, trails-path, …) under a single
+  // panel id.
+  const streetsVisible = visible["streets"];
+  const streetsOpacity = opacity["streets"];
   const trailsVisible = visible["trails"];
   const trailsOpacity = opacity["trails"];
+  useEffect(() => { setStreetsVisibility(mapRef.current, !!streetsVisible); }, [streetsVisible]);
+  useEffect(() => { setStreetsOpacity(mapRef.current, streetsOpacity ?? 0.9); }, [streetsOpacity]);
   useEffect(() => { setTrailsVisibility(mapRef.current, !!trailsVisible); }, [trailsVisible]);
   useEffect(() => { setTrailsOpacity(mapRef.current, trailsOpacity ?? 0.9); }, [trailsOpacity]);
 
@@ -698,41 +701,9 @@ export function Map({
   useEffect(() => { writeUrlState({ basemap }); }, [basemap]);
   useEffect(() => { writeUrlState({ units }); }, [units]);
 
-  // When the contour interval changes, swap the MapLibre source+layer with the new tile URL.
-  // Raster sources don't support in-place tile URL updates, so we remove and re-add.
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map || !map.getLayer("contours")) return;
-    const url = getContourUrl(region.id, contourInterval);
-    const isVis = visibleRef.current["contours"] ?? false;
-    const op = opacityRef.current["contours"] ?? 1.0;
-    const beforeId: string | undefined =
-      map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
-    map.removeLayer("contours");
-    map.removeSource("contours");
-    map.addSource("contours", {
-      type: "raster",
-      tiles: [url],
-      tileSize: 256,
-      bounds: region.bbox,
-      minzoom: 9,  // matches buildLayerGroups sourceMinzoom for contours
-      maxzoom: 16,
-      attribution: "USGS 3DEP",
-    });
-    map.addLayer({
-      id: "contours",
-      type: "raster",
-      source: "contours",
-      paint: { "raster-opacity": op, "raster-fade-duration": 400 },
-      layout: { visibility: isVis ? "visible" : "none" },
-    }, beforeId);
-    // Re-apply terrain order since we removed and re-added the contours layer.
-    applyTerrainOrder(map, terrainOrderRef.current);
-  }, [contourInterval]);
-
   // When the terrain-filter settings change, replace the MapLibre source with
   // a new tile URL. Raster sources don't support in-place URL updates so we
-  // remove + re-add — same pattern as the contour interval handler above.
+  // remove + re-add.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.getLayer("terrain-filter")) return;
@@ -896,8 +867,6 @@ export function Map({
     loadingLayers,
     layerOrder: { terrain: terrainOrder },
     onLayerReorder: (_groupId: string, newOrder: string[]) => setTerrainOrder(newOrder),
-    contourInterval,
-    onContourInterval: setContourInterval,
     terrainFilter,
     onTerrainFilterChange: setTerrainFilter,
     onApplyWindPreset: applyWindPreset,

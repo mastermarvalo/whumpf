@@ -54,11 +54,6 @@ export function cogTiles(cogPath: string, extra: Record<string, string> = {}): s
   return [`${TITILER_URL}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?${params}`];
 }
 
-export function getContourUrl(regionId: string, interval: number | null): string {
-  const base = `${API_URL}/tiles/contours/{z}/{x}/{y}?region=${regionId}`;
-  return interval != null ? `${base}&interval=${interval}` : base;
-}
-
 export interface TerrainFilterSettings {
   aspects: string[];        // subset of N, NE, E, SE, S, SW, W, NW
   slopeMin: number;
