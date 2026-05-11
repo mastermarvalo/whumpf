@@ -194,6 +194,9 @@ services:
         VITE_API_URL: ${VITE_API_URL:-http://localhost:8000}
         VITE_MARTIN_URL: ${VITE_MARTIN_URL:-http://localhost:3000}
         VITE_TITILER_URL: ${VITE_TITILER_URL:-http://localhost:8001}
+        VITE_SENTRY_DSN: ${VITE_SENTRY_DSN:-}
+        VITE_PLAUSIBLE_DOMAIN: ${VITE_PLAUSIBLE_DOMAIN:-}
+        VITE_PLAUSIBLE_SRC: ${VITE_PLAUSIBLE_SRC:-}
     image: whumpf-frontend:${FRONTEND_TARGET:-prod}
     container_name: whumpf-frontend
     network_mode: host
