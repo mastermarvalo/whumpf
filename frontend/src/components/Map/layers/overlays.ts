@@ -42,6 +42,22 @@ export const HIRES_LAYER_IDS = TERRAIN_LAYER_IDS;
 export function buildLayerGroups(regionId: string): LayerGroup[] {
   return [
     {
+      id: "reference",
+      label: "Reference",
+      color: "#888",
+      active: [
+        {
+          id: "trails",
+          label: "Streets & trails",
+          kind: "vector_overlay",
+          tiles: [],
+          opacity: 0.9,
+          defaultVisible: false,
+        },
+      ],
+      upcoming: [],
+    },
+    {
       id: "terrain",
       label: "Terrain",
       color: "#a07850",
@@ -269,7 +285,9 @@ export function addOverlayLayers(
       ? "basemap-ref"
       : map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
   for (const layer of layers) {
-    if (layer.kind === "geojson") continue; // managed separately
+    // Both geojson and vector_overlay layers manage their own source/layers
+    // in dedicated helper modules — addOverlayLayers only handles rasters.
+    if (layer.kind === "geojson" || layer.kind === "vector_overlay") continue;
     if (map.getSource(layer.id)) continue;  // already present (e.g. double style.load)
     const tiles = tileOverrides?.[layer.id] ?? layer.tiles;
     map.addSource(layer.id, {

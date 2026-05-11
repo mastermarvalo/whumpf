@@ -35,7 +35,9 @@ export interface ActiveLayer {
   id: string;
   label: string;
   tiles: string[];
-  kind?: "raster" | "geojson"; // default "raster"; geojson layers skip addOverlayLayers
+  // default "raster"; "geojson" and "vector_overlay" both skip addOverlayLayers
+  // and have their sources/layers managed by their own helper module.
+  kind?: "raster" | "geojson" | "vector_overlay";
   opacity: number;
   defaultVisible: boolean;
   noSlider?: boolean;

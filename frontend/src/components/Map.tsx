@@ -57,6 +57,11 @@ import {
   setObsData,
   setObsVisibility,
 } from "./Map/layers/obs";
+import {
+  addTrailsLayers,
+  setTrailsOpacity,
+  setTrailsVisibility,
+} from "./Map/layers/trails";
 import { readUrlState, writeUrlState } from "./Map/urlState";
 import {
   MEASURE_MARKER_STYLE,
@@ -227,6 +232,16 @@ export function Map({
         contours: [getContourUrl(region.id, contourIntervalRef.current)],
       });
       applyTerrainOrder(map, terrainOrderRef.current);
+      // Trails sit above the rasters but below interactive geojson points so
+      // SNOTEL/CAIC markers stay clickable. addOverlayLayers used `basemap-ref`
+      // (hybrid label overlay) or the first symbol layer as its insertion
+      // anchor — re-use the same anchor so vector trails land in the same
+      // slot, just above the rasters.
+      const trailsBeforeId = map.getLayer("basemap-ref")
+        ? "basemap-ref"
+        : map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
+      addTrailsLayers(map, opacityRef.current["trails"] ?? 0.9, trailsBeforeId);
+      setTrailsVisibility(map, visibleRef.current["trails"] ?? false);
       addMeasureLayers(map);
       updateMeasureSource(map, measurePtsRef.current);
       addSnotelLayers(map);
@@ -554,6 +569,13 @@ export function Map({
   useEffect(() => { setSnotelVisibility(mapRef.current, !!snotelVisible); }, [snotelVisible]);
   useEffect(() => { setCaicVisibility(mapRef.current, !!caicVisible); },     [caicVisible]);
   useEffect(() => { setObsVisibility(mapRef.current, !!obsVisible); },       [obsVisible]);
+  // Trails overlay — same shape as the geojson layers above; the visibility/
+  // opacity loops further up don't touch it because it has multiple sub-layer
+  // ids (trails-road, trails-path, …) under a single panel id.
+  const trailsVisible = visible["trails"];
+  const trailsOpacity = opacity["trails"];
+  useEffect(() => { setTrailsVisibility(mapRef.current, !!trailsVisible); }, [trailsVisible]);
+  useEffect(() => { setTrailsOpacity(mapRef.current, trailsOpacity ?? 0.9); }, [trailsOpacity]);
 
   useFetchWithRetry<object>({
     enabled: !!snotelVisible,
