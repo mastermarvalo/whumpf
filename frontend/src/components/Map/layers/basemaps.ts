@@ -1,0 +1,117 @@
+import maplibregl from "maplibre-gl";
+import { MINIO_BUCKET, REGION, TITILER_URL, API_URL } from "../constants";
+import type { BasemapId } from "../types";
+
+const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
+const OMP_GLYPHS = "https://fonts.openmaptiles.org/{fontstack}/{range}.pbf";
+
+const VECTOR_STYLES = {
+  light: "https://tiles.openfreemap.org/styles/positron",
+  dark:  "https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json",
+};
+
+function rasterStyle(
+  tiles: string[],
+  attribution: string,
+  maxzoom?: number,
+): maplibregl.StyleSpecification {
+  return {
+    version: 8,
+    // Glyphs needed for SNOTEL symbol layers on raster basemaps.
+    glyphs: OMP_GLYPHS,
+    sources: {
+      basemap: { type: "raster", tiles, tileSize: 256, attribution, ...(maxzoom ? { maxzoom } : {}) },
+    },
+    layers: [{ id: "basemap", type: "raster", source: "basemap" }],
+  };
+}
+
+// Satellite + transparent label/road overlay (classic "hybrid" view).
+function hybridStyle(): maplibregl.StyleSpecification {
+  return {
+    version: 8,
+    glyphs: OMP_GLYPHS,
+    sources: {
+      sat: {
+        type: "raster",
+        tiles: [`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`],
+        tileSize: 256,
+        maxzoom: 17,
+        attribution: "Esri, DigitalGlobe",
+      },
+      ref: {
+        type: "raster",
+        // Transparent PNG overlay — labels, roads, boundaries on top of satellite.
+        tiles: [`${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`],
+        tileSize: 256,
+        maxzoom: 17,
+      },
+    },
+    layers: [
+      { id: "basemap-sat", type: "raster", source: "sat" },
+      { id: "basemap-ref", type: "raster", source: "ref" },
+    ],
+  };
+}
+
+const RASTER_STYLES: Record<"topo" | "satellite" | "hybrid", maplibregl.StyleSpecification> = {
+  // Esri World Topo Map: contours, shaded relief, trails, water — no API key required.
+  topo:      rasterStyle([`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`], "Esri"),
+  // maxzoom: 17 — beyond that Esri returns a "not available yet" placeholder JPEG.
+  // MapLibre overzooms the z17 tile instead of requesting z18+.
+  satellite: rasterStyle([`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`], "Esri, DigitalGlobe", 17),
+  hybrid:    hybridStyle(),
+};
+
+// Source and layer IDs owned by each raster basemap — used for in-place swaps.
+const RASTER_BASEMAP_IDS: Record<"topo" | "satellite" | "hybrid", { sources: string[]; layers: string[] }> = {
+  topo:      { sources: ["basemap"],    layers: ["basemap"] },
+  satellite: { sources: ["basemap"],    layers: ["basemap"] },
+  hybrid:    { sources: ["sat", "ref"], layers: ["basemap-sat", "basemap-ref"] },
+};
+
+export function getMapStyle(basemap: BasemapId, dark: boolean): string | maplibregl.StyleSpecification {
+  if (basemap === "streets") return VECTOR_STYLES[dark ? "dark" : "light"];
+  return RASTER_STYLES[basemap];
+}
+
+export function cogS3(path: string) {
+  return `s3://${MINIO_BUCKET}/${path}`;
+}
+
+export function cogTiles(cogPath: string, extra: Record<string, string> = {}): string[] {
+  const params = new URLSearchParams({ url: cogS3(cogPath), ...extra });
+  return [`${TITILER_URL}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?${params}`];
+}
+
+export function getContourUrl(interval: number | null): string {
+  const base = `${API_URL}/tiles/contours/{z}/{x}/{y}?region=${REGION}`;
+  return interval != null ? `${base}&interval=${interval}` : base;
+}
+
+// Swap only the basemap source/layers for raster-to-raster transitions without touching overlays.
+export function swapRasterBasemap(
+  map: maplibregl.Map,
+  from: "topo" | "satellite" | "hybrid",
+  to: "topo" | "satellite" | "hybrid",
+) {
+  if (from === to) return;
+  const fromIds = RASTER_BASEMAP_IDS[from];
+  // Capture the first overlay layer ID before removing anything so we can insert below it.
+  const firstOverlayId = map.getStyle().layers.find(
+    (l) => !fromIds.layers.includes(l.id),
+  )?.id;
+  for (const id of fromIds.layers) {
+    if (map.getLayer(id)) map.removeLayer(id);
+  }
+  for (const id of fromIds.sources) {
+    if (map.getSource(id)) map.removeSource(id);
+  }
+  const newStyle = RASTER_STYLES[to];
+  for (const [id, spec] of Object.entries(newStyle.sources)) {
+    map.addSource(id, spec as maplibregl.SourceSpecification);
+  }
+  for (const layer of newStyle.layers) {
+    map.addLayer(layer as maplibregl.LayerSpecification, firstOverlayId);
+  }
+}
