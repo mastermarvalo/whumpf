@@ -188,3 +188,21 @@ async def fetch_activity_detail(access_token: str, activity_id: int) -> dict:
         return r.json()
 
     return await call_with_resilience("strava", _do)
+
+
+async def deauthorize(access_token: str) -> None:
+    """Revoke this access token on Strava's side. 401 is treated as success
+    (already revoked); other non-2xx status codes propagate so the caller can
+    decide whether to log and continue.
+    """
+    async def _do() -> None:
+        r = await _HTTP.post(
+            "https://www.strava.com/oauth/deauthorize",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=15,
+        )
+        if r.status_code == 401:
+            return  # already revoked
+        r.raise_for_status()
+
+    await call_with_resilience("strava", _do)

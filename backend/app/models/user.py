@@ -23,4 +23,27 @@ class User(Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # Email verification — gates "verified" badges, but accounts can still log
+    # in unverified. Token + expiry live on the row so the verification flow
+    # stays single-table; one outstanding token per user is enough.
+    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    email_verified_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+    email_verification_token: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True,
+    )
+    email_verification_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
+    # Password reset — same pattern. Tokens are short-lived (1h) and consumed
+    # on first successful reset.
+    password_reset_token: Mapped[str | None] = mapped_column(
+        String(64), nullable=True, index=True,
+    )
+    password_reset_token_expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True,
+    )
+
     strava_connection = relationship("StravaConnection", back_populates="user", uselist=False)

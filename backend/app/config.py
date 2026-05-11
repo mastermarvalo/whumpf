@@ -71,6 +71,19 @@ class Settings(BaseSettings):
     # --- CORS ---------------------------------------------------------------
     cors_allow_origins: str = "http://localhost:5173"
 
+    # --- Email / account lifecycle ------------------------------------------
+    # Base URL of the frontend; used to build verify/reset links.
+    app_base_url: str = "http://localhost:5173"
+    # "console" (logs URL to stdout, useful in dev/staging) or "resend".
+    mail_provider: str = "console"
+    mail_from: str = "whumpf <no-reply@whumpf.local>"
+    # Resend.com API key (https://resend.com), only required when
+    # mail_provider == "resend".
+    resend_api_key: str = ""
+    # Token TTLs (seconds).
+    email_verification_ttl_s: int = 24 * 3600
+    password_reset_ttl_s: int = 3600
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]

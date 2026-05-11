@@ -97,16 +97,25 @@ async def strava_callback(
 
 
 @router.delete("/auth/strava/disconnect", status_code=204)
-def strava_disconnect(
+async def strava_disconnect(
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> None:
     conn = session.scalars(
         select(StravaConnection).where(StravaConnection.user_id == user.id)
     ).first()
-    if conn:
-        session.delete(conn)
-        session.commit()
+    if not conn:
+        return
+    # Best-effort server-side revoke. If Strava is down or the token is dead,
+    # local row deletion is the source of truth — the user shouldn't be unable
+    # to disconnect just because an upstream is unreachable.
+    try:
+        access_token = await strava_svc.refresh_token(conn, session)
+        await strava_svc.deauthorize(access_token)
+    except Exception as exc:
+        logger.warning("Strava deauthorize failed for user %s: %s", user.id, exc)
+    session.delete(conn)
+    session.commit()
 
 
 # ── Data ───────────────────────────────────────────────────────────────────────

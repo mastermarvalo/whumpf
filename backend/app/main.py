@@ -12,6 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
+from sqlalchemy import text
 
 from app import __version__
 from app.config import get_settings
@@ -44,9 +45,28 @@ async def _prewarm() -> None:
             logger.info("Pre-warm %s OK", name)
 
 
+# Idempotent column adds for tables that pre-date their current model. Run
+# on every startup since we use Base.metadata.create_all (no Alembic). Each
+# statement is a no-op when the column / index already exists. Cheap.
+_SCHEMA_PATCHES: tuple[str, ...] = (
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMP WITH TIME ZONE",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token VARCHAR(64)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token_expires_at TIMESTAMP WITH TIME ZONE",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_token VARCHAR(64)",
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_token_expires_at TIMESTAMP WITH TIME ZONE",
+    "CREATE INDEX IF NOT EXISTS ix_users_email_verification_token ON users(email_verification_token)",
+    "CREATE INDEX IF NOT EXISTS ix_users_password_reset_token ON users(password_reset_token)",
+)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
-    Base.metadata.create_all(get_engine())
+    engine = get_engine()
+    Base.metadata.create_all(engine)
+    with engine.begin() as conn:
+        for stmt in _SCHEMA_PATCHES:
+            conn.execute(text(stmt))
     logger.info("Database tables ensured.")
     asyncio.ensure_future(_prewarm())
     yield
