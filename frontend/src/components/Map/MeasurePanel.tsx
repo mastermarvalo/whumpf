@@ -37,7 +37,6 @@ function TripDetails({
 
   const slopeDist = summary.slope_distribution ?? {};
   const aspectDist = summary.aspect_distribution ?? {};
-  const zones = summary.caic_zones ?? [];
   const minElev = summary.min_elevation_m ?? null;
   const maxElev = summary.max_elevation_m ?? null;
 
@@ -140,16 +139,6 @@ function TripDetails({
         </div>
       )}
 
-      {/* CAIC zones — empty array means the line is outside every forecast
-          polygon (typical for plains east of -105° or during off-season
-          when CAIC collapses zones into a generic statewide feature). Show
-          a one-liner so it's clear this is "no coverage" not "didn't fetch". */}
-      <div style={{ display: "flex", justifyContent: "space-between", color: theme.muted, gap: 8 }}>
-        <span>CAIC zones</span>
-        <span style={{ color: zones.length > 0 ? theme.text : theme.muted, textAlign: "right", flex: 1 }}>
-          {zones.length > 0 ? zones.join(", ") : "outside forecast zones"}
-        </span>
-      </div>
     </div>
   );
 }

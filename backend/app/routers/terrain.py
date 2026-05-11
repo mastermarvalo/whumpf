@@ -13,7 +13,6 @@ from pyproj import Geod
 from app.auth.dependencies import get_current_user
 from app.config import Settings, get_settings, validate_region
 from app.models.user import User
-from app.routers.avalanche import _in_multipolygon, get_forecast
 from app.services.cog_sampler import sample_profile
 
 router = APIRouter(prefix="/terrain", tags=["terrain"])
@@ -76,9 +75,6 @@ class ProfileSummary(BaseModel):
     slope_distribution: dict[str, float]
     # Distribution across the 8-point aspect cardinal buckets.
     aspect_distribution: dict[str, float]
-    # CAIC forecast zone names this line crosses (alphabetical). Empty list
-    # when no zone matched any sample (e.g. line outside Colorado).
-    caic_zones: list[str]
 
 
 class ProfileResponse(BaseModel):
@@ -127,29 +123,6 @@ def _summarise(samples: list) -> dict:
     }
 
 
-async def _caic_zones_for_samples(
-    sample_coords: list[tuple[float, float]],
-) -> list[str]:
-    """Names of CAIC forecast zones that any sample point falls inside."""
-    try:
-        forecast = await get_forecast()
-    except Exception as exc:
-        logger.warning("CAIC forecast unavailable for trip summary: %s", exc)
-        return []
-
-    matched: set[str] = set()
-    for feat in forecast.get("features", []):
-        name = (feat.get("properties") or {}).get("name") or ""
-        geom = feat.get("geometry") or {}
-        if not name or geom.get("type") not in ("Polygon", "MultiPolygon"):
-            continue
-        for lng, lat in sample_coords:
-            if _in_multipolygon(lat, lng, geom):
-                matched.add(name)
-                break  # zone-level — one hit is enough
-    return sorted(matched)
-
-
 @router.get("/profile", response_model=ProfileResponse)
 async def terrain_profile(
     start_lng: float = Query(..., ge=-180, le=180),
@@ -184,19 +157,9 @@ async def terrain_profile(
         logger.error("terrain profile failed: %s", exc)
         raise HTTPException(502, f"COG read failed: {exc}") from exc
 
-    # CAIC zone lookup uses WGS84 coords — same ones we passed to sample_profile,
-    # interpolated. We rebuild the list rather than threading it through.
-    import numpy as _np
-    sample_coords = list(zip(
-        _np.linspace(start_lng, end_lng, n).tolist(),
-        _np.linspace(start_lat, end_lat, n).tolist(),
-    ))
-    caic_zones = await _caic_zones_for_samples(sample_coords)
-
     return ProfileResponse(
         summary=ProfileSummary(
             distance_m=round(samples[-1].distance_m, 1),
-            caic_zones=caic_zones,
             **_summarise(samples),
         ),
         samples=[

@@ -126,7 +126,6 @@ export interface ProfileSummary {
   max_elevation_m?: number | null;
   slope_distribution?: Record<string, number>;
   aspect_distribution?: Record<string, number>;
-  caic_zones?: string[];
 }
 
 export interface ProfileResponse {
