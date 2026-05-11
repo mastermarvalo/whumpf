@@ -9,20 +9,22 @@ import { cogTiles } from "./basemaps";
 const _NWS = "https://mapservices.weather.noaa.gov/raster/rest/services";
 // ArcGIS MapServer/export and ImageServer/exportImage share these params
 const _AGS = "bboxSR=3857&imageSR=3857&size=256,256&f=image&format=png32&transparent=true";
-// NWS GeoServer WMS base — same provider as radar, supports &TIME=ISO8601 for time scrubbing.
+// NWS GeoServer WMS — same host as radar, supports &TIME=ISO8601Z.
 const _WMS = "https://opengeo.ncep.noaa.gov/geoserver";
-const _WMS_COMMON = "SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&FORMAT=image/png&TRANSPARENT=TRUE&WIDTH=256&HEIGHT=256&SRS=EPSG:3857&BBOX={bbox-epsg-3857}&STYLES=";
-// NOHRSC_Snow_Analysis layers: 0=Snow Depth 4=Snow Water Equivalent
+const _WMS_P = "SERVICE=WMS&VERSION=1.1.1&REQUEST=GetMap&FORMAT=image/png&TRANSPARENT=TRUE&WIDTH=256&HEIGHT=256&SRS=EPSG:3857&BBOX={bbox-epsg-3857}&STYLES=";
+// NDFD_temp layers: 9=+3hr (earliest with data), 0=TempF_24Hr forecast
+// NOHRSC_Snow_Analysis layers: 0=Snow Depth
 const WEATHER_SOURCES = {
-  // NDFD temperature via NWS WMS — supports &TIME=ISO8601 for past/forecast scrubbing.
-  // Without TIME, returns latest available hour (≈current conditions).
-  tempNdfd:    `${_WMS}/conus/conus_tmp_2m/ows?${_WMS_COMMON}&LAYERS=conus_tmp_2m`,
-  // MRMS composite reflectivity — current precipitation radar; supports &TIME= for past frames.
-  precipRadar: `${_WMS}/conus/conus_cref_qcd/ows?${_WMS_COMMON}&LAYERS=conus_cref_qcd`,
-  // MRMS QPE — hourly precipitation accumulation (no time scrub; analysis-only ArcGIS service)
-  precipAccum: `${_NWS}/obs/mrms_qpe/ImageServer/exportImage?bbox={bbox-epsg-3857}&${_AGS}`,
-  // NOHRSC analyzed snow depth
-  snowDepth:   `${_NWS}/snow/NOHRSC_Snow_Analysis/MapServer/export?bbox={bbox-epsg-3857}&${_AGS}&layers=show:0`,
+  // NDFD +3hr temperature (ArcGIS — layer index, not time-scrubable via TIME param)
+  tempCurrent:  `${_NWS}/NDFD/NDFD_temp/MapServer/export?bbox={bbox-epsg-3857}&${_AGS}&layers=show:9`,
+  // NDFD 24-hr temperature forecast
+  tempForecast: `${_NWS}/NDFD/NDFD_temp/MapServer/export?bbox={bbox-epsg-3857}&${_AGS}&layers=show:0`,
+  // MRMS composite reflectivity — supports &TIME=ISO8601Z for past frames (NWS WMS).
+  precipRadar:  `${_WMS}/conus/conus_cref_qcd/ows?${_WMS_P}&LAYERS=conus_cref_qcd`,
+  // MRMS QPE hourly accumulation (ArcGIS, time-aware — &time=<ms>,<ms>)
+  precipAccum:  `${_NWS}/obs/mrms_qpe/ImageServer/exportImage?bbox={bbox-epsg-3857}&${_AGS}`,
+  // NOHRSC daily snow depth analysis (ArcGIS, time-aware — &time=<ms>,<ms>)
+  snowDepth:    `${_NWS}/snow/NOHRSC_Snow_Analysis/MapServer/export?bbox={bbox-epsg-3857}&${_AGS}&layers=show:0`,
 };
 
 // ── layer definitions ──────────────────────────────────────────────────────────
@@ -215,12 +217,23 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
       active: [
         {
           id: "temp-current",
-          label: "Temperature (NDFD)",
-          tiles: [WEATHER_SOURCES.tempNdfd],
+          label: "Temp (+3hr, NDFD)",
+          tiles: [WEATHER_SOURCES.tempCurrent],
           opacity: 0.75,
           defaultVisible: false,
           noSlider: true,
-          timeEnabled: true,
+          legend: {
+            gradient: "linear-gradient(to right, #00d0d0, #20e080, #80e020, #c0e000, #e0e000)",
+            stops: ["0°F", "32°F", "50°F", "70°F", "90°F"],
+          },
+        },
+        {
+          id: "temp-forecast",
+          label: "Temp (24hr fcst)",
+          tiles: [WEATHER_SOURCES.tempForecast],
+          opacity: 0.75,
+          defaultVisible: false,
+          noSlider: true,
           legend: {
             gradient: "linear-gradient(to right, #00d0d0, #20e080, #80e020, #c0e000, #e0e000)",
             stops: ["0°F", "32°F", "50°F", "70°F", "90°F"],
@@ -234,6 +247,7 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
           defaultVisible: false,
           noSlider: true,
           timeEnabled: true,
+          timeFmt: "wms",
           legend: {
             gradient: "linear-gradient(to right, #00cc00, #ffff00, #ff6600, #cc0000, #cc00cc)",
             stops: ["15 dBZ", "30", "45", "55", "65+"],
@@ -246,6 +260,8 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
           opacity: 0.75,
           defaultVisible: false,
           noSlider: true,
+          timeEnabled: true,
+          timeFmt: "arcgis",
           legend: {
             gradient: "linear-gradient(to right, #00e0e0, #00c0e0, #0080d0, #0040b0, #002080)",
             stops: ["0.01\"", "0.1\"", "0.25\"", "0.5\"", "1\"+"],
@@ -258,6 +274,8 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
           opacity: 0.75,
           defaultVisible: false,
           noSlider: true,
+          timeEnabled: true,
+          timeFmt: "arcgis",
           legend: {
             gradient: "linear-gradient(to right, #60c0c0, #60a0c0, #4060c0, #2020c0, #101080)",
             stops: ["Trace", "6\"", "24\"", "48\"", "72\"+"],

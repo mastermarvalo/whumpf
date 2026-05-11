@@ -179,6 +179,7 @@ export function Map({
   const [layerPanelCollapsed, setLayerPanelCollapsed] = useState(false);
   const [mapTimeStep, setMapTimeStep] = useState(NOW_STEP);
   const mapTimeStepRef = useRef(NOW_STEP);
+  const [sliderDismissed, setSliderDismissed] = useState(false);
   const caicDataRef = useRef<object | null>(null);
   const [stravaVisible, setStravaVisible] = useState(true);
   const [stravaLoaded, setStravaLoaded] = useState(false);
@@ -694,6 +695,14 @@ export function Map({
 
   const theme = dark ? THEMES.dark : THEMES.light;
 
+  // Show time slider when any time-enabled layer is visible and user hasn't dismissed it.
+  // Re-show automatically when a new time-enabled layer is toggled on after dismissal.
+  const anyTimeEnabledVisible = overlayLayers.some(
+    (l) => l.timeEnabled && (visible[l.id] ?? false),
+  );
+  useEffect(() => {
+    if (anyTimeEnabledVisible) setSliderDismissed(false);
+  }, [anyTimeEnabledVisible]);
 
   // Persist layer selections and basemap to localStorage, debounced.
   // Without the debounce, dragging the opacity slider triggered ~30 writes/sec.
@@ -786,19 +795,26 @@ export function Map({
   }
 
   // When the time slider moves, update tile URLs on time-enabled weather layers.
-  // setTiles() replaces tile URLs in-place without removing/re-adding the source,
-  // so MapLibre can crossfade the new tiles in. At NOW_STEP, revert to base URLs.
+  // setTiles() swaps URLs in-place so MapLibre crossfades rather than blanking.
+  // At NOW_STEP, revert to base URLs (no time param → latest data).
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
     const mapTime = mapTimeStep === NOW_STEP ? null : stepToDate(mapTimeStep);
     for (const layer of overlayLayers) {
-      if (!layer.timeEnabled) continue;
+      if (!layer.timeEnabled || !layer.timeFmt) continue;
       const src = map.getSource(layer.id) as maplibregl.RasterTileSource | undefined;
       if (!src) continue;
       const tiles = mapTime === null
         ? layer.tiles
-        : layer.tiles.map((t) => `${t}&TIME=${mapTime.toISOString().slice(0, 19)}Z`);
+        : layer.tiles.map((t) => {
+            if (layer.timeFmt === "arcgis") {
+              const ms = mapTime.getTime();
+              return `${t}&time=${ms},${ms}`;
+            }
+            // wms
+            return `${t}&TIME=${mapTime.toISOString().slice(0, 19)}Z`;
+          });
       src.setTiles(tiles);
     }
   }, [mapTimeStep, overlayLayers]);
@@ -990,16 +1006,42 @@ export function Map({
         />
       )}
 
-      {/* Time slider — always visible so users can orient themselves; only
-          affects time-enabled layers (weather) when those are toggled on. */}
-      <TimeSlider
-        step={mapTimeStep}
-        onChange={setMapTimeStep}
-        theme={theme}
-        mobile={isMobile}
-        mobileBottom={mobileBottom}
-        layerPanelCollapsed={layerPanelCollapsed}
-      />
+      {/* Time slider — visible when a time-enabled layer is on and not dismissed */}
+      {anyTimeEnabledVisible && !sliderDismissed && (
+        <TimeSlider
+          step={mapTimeStep}
+          onChange={setMapTimeStep}
+          onDismiss={() => setSliderDismissed(true)}
+          theme={theme}
+          mobile={isMobile}
+          mobileBottom={mobileBottom}
+          layerPanelCollapsed={layerPanelCollapsed}
+        />
+      )}
+      {/* Restore button shown when slider is dismissed but a time layer is still on */}
+      {anyTimeEnabledVisible && sliderDismissed && (
+        <button
+          onClick={() => setSliderDismissed(false)}
+          title="Show time slider"
+          style={{
+            position: "fixed",
+            bottom: isMobile ? mobileBottom + 8 : 36,
+            right: 56,
+            zIndex: Z.MAP_OVERLAY,
+            background: theme.panel,
+            border: `1px solid ${theme.divider}`,
+            borderRadius: 8,
+            padding: "5px 10px",
+            fontSize: 12,
+            color: theme.muted,
+            cursor: "pointer",
+            fontFamily: "ui-sans-serif, system-ui, sans-serif",
+            boxShadow: "0 2px 6px rgba(0,0,0,0.25)",
+          }}
+        >
+          ⏱ Time
+        </button>
+      )}
 
       {/* First-load hint nudging zoom-in / layer enablement */}
       <StartHint

@@ -49,9 +49,11 @@ export interface ActiveLayer {
   blendPaint?: { "raster-saturation"?: number; "raster-resampling"?: "linear" | "nearest" };
   // 1m hires tile URLs — if set, a companion `${id}-hires` layer is added at minzoom 13.
   hiresTiles?: string[];
-  // When true, Map.tsx will inject &TIME=ISO8601 into this layer's tile URL as the
-  // time slider moves. The base tiles[] URL must end with a param string the TIME
-  // can be appended to (e.g. "...&STYLES=" → "...&STYLES=&TIME=...").
+  // When true, Map.tsx injects a time parameter into the tile URL as the slider moves.
+  // "wms"    → appends &TIME=ISO8601Z (NWS GeoServer WMS)
+  // "arcgis" → appends &time=<ms>,<ms> (ArcGIS MapServer time-aware layers)
+  timeFmt?: "wms" | "arcgis";
+  // Kept for quick boolean checks (true when timeFmt is set).
   timeEnabled?: boolean;
 }
 
