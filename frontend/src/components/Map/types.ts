@@ -50,9 +50,10 @@ export interface ActiveLayer {
   // 1m hires tile URLs — if set, a companion `${id}-hires` layer is added at minzoom 13.
   hiresTiles?: string[];
   // When true, Map.tsx injects a time parameter into the tile URL as the slider moves.
-  // "wms"    → appends &TIME=ISO8601Z (NWS GeoServer WMS)
-  // "arcgis" → appends &time=<ms>,<ms> (ArcGIS MapServer time-aware layers)
-  timeFmt?: "wms" | "arcgis";
+  // "wms"        → appends &TIME=ISO8601Z (NWS GeoServer WMS)
+  // "arcgis"     → appends &time=<ms>,<ms> (ArcGIS MapServer time-aware layers)
+  // "rainviewer" → picks nearest RainViewer XYZ frame fetched from their API
+  timeFmt?: "wms" | "arcgis" | "rainviewer";
   // Kept for quick boolean checks (true when timeFmt is set).
   timeEnabled?: boolean;
 }

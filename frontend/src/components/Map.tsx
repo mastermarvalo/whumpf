@@ -29,6 +29,7 @@ import {
 import {
   HIRES_LAYER_IDS,
   TERRAIN_LAYER_IDS,
+  RV_TILE_SUFFIX,
   addOverlayLayers,
   applyTerrainOrder,
   buildLayerGroups,
@@ -228,6 +229,8 @@ export function Map({
   useEffect(() => { slopeFilterModeRef.current = slopeFilterMode; }, [slopeFilterMode]);
 
   const snotelDataRef = useRef<object | null>(null);
+  // RainViewer radar frames — fetched async, used by the time injection effect.
+  const rainViewerRef = useRef<{time: number; path: string}[]>([]);
   const prevBasemapRef = useRef<BasemapId>(basemap);
   // Tracks the most-recently *requested* basemap so the permanent style.load handler
   // can update prevBasemapRef to the correct value even after rapid switches.
@@ -777,6 +780,37 @@ export function Map({
     applyTerrainOrder(map, terrainOrderRef.current);
   }, [terrainFilter, region.id, region.bbox]);
 
+  // Fetch RainViewer radar frames (~2h past, up to 3h nowcast) and keep them
+  // fresh. The ref is read by the time injection effect; no state update needed.
+  useEffect(() => {
+    const RV_API = "https://api.rainviewer.com/public/weather-maps.json";
+    const RV_HOST = "https://tilecache.rainviewer.com";
+
+    async function fetchFrames() {
+      try {
+        const r = await fetch(RV_API);
+        if (!r.ok) return;
+        const d = await r.json();
+        const past = (d.radar?.past ?? []) as {time: number; path: string}[];
+        const nowcast = (d.radar?.nowcast ?? []) as {time: number; path: string}[];
+        rainViewerRef.current = [...past, ...nowcast];
+
+        // Immediately update the source with the latest frame if map is ready.
+        const map = mapRef.current;
+        if (!map || !map.isStyleLoaded() || past.length === 0) return;
+        const src = map.getSource("precip-radar") as maplibregl.RasterTileSource | undefined;
+        if (src) {
+          const latest = past[past.length - 1];
+          src.setTiles([`${RV_HOST}${latest.path}${RV_TILE_SUFFIX}`]);
+        }
+      } catch { /* network failure — keep existing tiles */ }
+    }
+
+    fetchFrames();
+    const id = setInterval(fetchFrames, 5 * 60 * 1000);
+    return () => clearInterval(id);
+  }, []);
+
   // Wind preset — fetches NDFD wind at the current map center and flips the
   // aspect filter to the leeward quadrant (where snow loads). Wind direction
   // is "from" (meteorological); leeward = +180°.
@@ -811,25 +845,32 @@ export function Map({
 
   // When the time slider moves, update tile URLs on time-enabled weather layers.
   // setTiles() swaps URLs in-place so MapLibre crossfades rather than blanking.
-  // At NOW_STEP, revert to base URLs (no time param → latest data).
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
     const mapTime = mapTimeStep === NOW_STEP ? null : stepToDate(mapTimeStep);
+    const RV_HOST = "https://tilecache.rainviewer.com";
+
     for (const layer of overlayLayers) {
       if (!layer.timeEnabled || !layer.timeFmt) continue;
       const src = map.getSource(layer.id) as maplibregl.RasterTileSource | undefined;
       if (!src) continue;
+
+      if (layer.timeFmt === "rainviewer") {
+        const frames = rainViewerRef.current;
+        if (frames.length === 0) continue; // not yet fetched — leave existing tiles
+        const targetSec = mapTime === null ? Date.now() / 1000 : mapTime.getTime() / 1000;
+        const nearest = frames.reduce((best, f) =>
+          Math.abs(f.time - targetSec) < Math.abs(best.time - targetSec) ? f : best
+        );
+        src.setTiles([`${RV_HOST}${nearest.path}${RV_TILE_SUFFIX}`]);
+        continue;
+      }
+
+      // WMS TIME injection (kept for any future WMS time-aware layers)
       const tiles = mapTime === null
         ? layer.tiles
-        : layer.tiles.map((t) => {
-            if (layer.timeFmt === "arcgis") {
-              const ms = mapTime.getTime();
-              return `${t}&time=${ms},${ms}`;
-            }
-            // wms
-            return `${t}&TIME=${mapTime.toISOString().slice(0, 19)}Z`;
-          });
+        : layer.tiles.map((t) => `${t}&TIME=${mapTime.toISOString().slice(0, 19)}Z`);
       src.setTiles(tiles);
     }
   }, [mapTimeStep, overlayLayers]);
