@@ -98,27 +98,41 @@ function TripDetails({
         </div>
       )}
 
-      {/* Aspect distribution — 8 bars, one per cardinal direction */}
+      {/* Aspect distribution — 8 bars, one per cardinal direction. Bar
+          heights are pixel values, not percentages; % heights inside flex
+          children with auto-height parents resolve to 0 and the bars vanish. */}
       {Object.keys(aspectDist).length > 0 && (
         <div>
           <div style={{ color: theme.muted, marginBottom: 3 }}>Aspect distribution</div>
-          <div style={{ display: "flex", alignItems: "flex-end", gap: 3, height: 28 }}>
+          <div style={{ display: "flex", gap: 3, height: 34 }}>
             {ASPECT_ORDER.map((a) => {
               const frac = aspectDist[a] ?? 0;
-              const heightPct = (frac / aspectMax) * 100;
+              // The tallest bar is 22px; the rest scale proportionally. Bars
+              // with any data get at least a 2px stub so a 1% sliver is still
+              // visible.
+              const heightPx = Math.max(Math.round((frac / aspectMax) * 22), frac > 0 ? 2 : 0);
               return (
-                <div key={a} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 2 }}>
-                  <div
-                    title={`${a} — ${(frac * 100).toFixed(0)}%`}
-                    style={{
-                      width: "100%",
-                      height: `${Math.max(heightPct, frac > 0 ? 4 : 0)}%`,
-                      background: theme.accent,
-                      borderRadius: "2px 2px 0 0",
-                      opacity: 0.8,
-                    }}
-                  />
-                  <span style={{ fontSize: 9, color: theme.muted, lineHeight: 1 }}>{a}</span>
+                <div key={a} style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+                  <div style={{ height: 22, display: "flex", alignItems: "flex-end" }}>
+                    <div
+                      title={`${a} — ${(frac * 100).toFixed(0)}%`}
+                      style={{
+                        width: "100%",
+                        height: heightPx,
+                        background: theme.accent,
+                        borderRadius: "2px 2px 0 0",
+                        opacity: 0.85,
+                      }}
+                    />
+                  </div>
+                  <span style={{
+                    fontSize: 9,
+                    color: theme.muted,
+                    textAlign: "center",
+                    lineHeight: "12px",
+                  }}>
+                    {a}
+                  </span>
                 </div>
               );
             })}
@@ -126,15 +140,16 @@ function TripDetails({
         </div>
       )}
 
-      {/* CAIC zones */}
-      {zones.length > 0 && (
-        <div style={{ display: "flex", justifyContent: "space-between", color: theme.muted, gap: 8 }}>
-          <span>CAIC zones</span>
-          <span style={{ color: theme.text, textAlign: "right", flex: 1 }}>
-            {zones.join(", ")}
-          </span>
-        </div>
-      )}
+      {/* CAIC zones — empty array means the line is outside every forecast
+          polygon (typical for plains east of -105° or during off-season
+          when CAIC collapses zones into a generic statewide feature). Show
+          a one-liner so it's clear this is "no coverage" not "didn't fetch". */}
+      <div style={{ display: "flex", justifyContent: "space-between", color: theme.muted, gap: 8 }}>
+        <span>CAIC zones</span>
+        <span style={{ color: zones.length > 0 ? theme.text : theme.muted, textAlign: "right", flex: 1 }}>
+          {zones.length > 0 ? zones.join(", ") : "outside forecast zones"}
+        </span>
+      </div>
     </div>
   );
 }
