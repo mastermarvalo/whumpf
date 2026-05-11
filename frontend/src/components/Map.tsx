@@ -130,6 +130,7 @@ export function Map({
 
   const isMobile = useIsMobile();
   const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+  const [mobileToolsOpen, setMobileToolsOpen] = useState(false);
 
   const [dark, setDark] = useState(true);
   const [basemap, setBasemap] = useState<BasemapId>(() => {
@@ -1021,10 +1022,103 @@ export function Map({
         <MobileNav
           theme={theme}
           layersOpen={mobilePanelOpen}
-          measureActive={measureMode}
-          onLayersToggle={() => setMobilePanelOpen((o) => !o)}
-          onMeasureToggle={() => setMeasureMode((m) => !m)}
+          toolsActive={measureMode || slopeFilterMode || mobileToolsOpen}
+          onLayersToggle={() => { setMobilePanelOpen((o) => !o); setMobileToolsOpen(false); }}
+          onToolsToggle={() => { setMobileToolsOpen((o) => !o); setMobilePanelOpen(false); }}
         />
+      )}
+
+      {/* Mobile tools sheet */}
+      {isMobile && (
+        <MobileSheet open={mobileToolsOpen} onClose={() => setMobileToolsOpen(false)} theme={theme}>
+          <div style={{ padding: "8px 16px 24px", fontFamily: "ui-sans-serif, system-ui, sans-serif" }}>
+            <div style={{ fontSize: 11, color: theme.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 10 }}>
+              Tools
+            </div>
+            {/* Measure Slope */}
+            <button
+              onClick={() => { setMeasureMode((m) => !m); setSlopeFilterMode(false); setMobileToolsOpen(false); }}
+              aria-pressed={measureMode}
+              style={{
+                display: "flex", alignItems: "center", gap: 12, width: "100%",
+                background: measureMode ? "rgba(224,90,43,0.12)" : "transparent",
+                color: measureMode ? theme.accent : theme.text,
+                border: `1px solid ${measureMode ? theme.accent : theme.divider}`,
+                borderRadius: 10, padding: "13px 14px", cursor: "pointer",
+                fontSize: 14, fontWeight: 500, fontFamily: "inherit", textAlign: "left",
+                marginBottom: 8,
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <rect x="1" y="4.5" width="12" height="5" rx="1"/>
+                <line x1="4" y1="4.5" x2="4" y2="7"/>
+                <line x1="7" y1="4.5" x2="7" y2="6.2"/>
+                <line x1="10" y1="4.5" x2="10" y2="7"/>
+              </svg>
+              <div>
+                <div>Measure Slope</div>
+                <div style={{ fontSize: 11, color: theme.muted, fontWeight: 400, marginTop: 1 }}>
+                  Draw a line to sample elevation and slope
+                </div>
+              </div>
+            </button>
+            {/* Slope Filter */}
+            <button
+              onClick={() => { setSlopeFilterMode((m) => !m); setMeasureMode(false); setMobileToolsOpen(false); }}
+              aria-pressed={slopeFilterMode}
+              style={{
+                display: "flex", alignItems: "center", gap: 12, width: "100%",
+                background: slopeFilterMode ? "rgba(160,120,80,0.12)" : "transparent",
+                color: slopeFilterMode ? "#a07850" : theme.text,
+                border: `1px solid ${slopeFilterMode ? "#a07850" : theme.divider}`,
+                borderRadius: 10, padding: "13px 14px", cursor: "pointer",
+                fontSize: 14, fontWeight: 500, fontFamily: "inherit", textAlign: "left",
+                marginBottom: 8,
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M1 13 L7 2 L13 13 Z"/>
+                <path d="M4.5 9.5 L7 7 L9.5 9.5"/>
+              </svg>
+              <div>
+                <div>Slope Filter</div>
+                <div style={{ fontSize: 11, color: theme.muted, fontWeight: 400, marginTop: 1 }}>
+                  Highlight terrain by angle and aspect
+                </div>
+              </div>
+            </button>
+            {/* Copy share link */}
+            <button
+              onClick={async () => {
+                try {
+                  await navigator.clipboard.writeText(window.location.href);
+                  showToast("Map link copied to clipboard.", "success");
+                } catch {
+                  showToast("Couldn't copy — select the address bar manually.", "error");
+                }
+                setMobileToolsOpen(false);
+              }}
+              style={{
+                display: "flex", alignItems: "center", gap: 12, width: "100%",
+                background: "transparent", color: theme.text,
+                border: `1px solid ${theme.divider}`,
+                borderRadius: 10, padding: "13px 14px", cursor: "pointer",
+                fontSize: 14, fontWeight: 500, fontFamily: "inherit", textAlign: "left",
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M6 8a3 3 0 0 0 4.24 0l1.41-1.41a3 3 0 1 0-4.24-4.24L6.7 3.07"/>
+                <path d="M8 6a3 3 0 0 0-4.24 0L2.35 7.41a3 3 0 1 0 4.24 4.24L7.3 10.93"/>
+              </svg>
+              <div>
+                <div>Copy share link</div>
+                <div style={{ fontSize: 11, color: theme.muted, fontWeight: 400, marginTop: 1 }}>
+                  Share the current map view
+                </div>
+              </div>
+            </button>
+          </div>
+        </MobileSheet>
       )}
 
       {slopeFilterMode && (

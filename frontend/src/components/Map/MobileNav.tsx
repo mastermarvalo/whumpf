@@ -5,15 +5,15 @@ import { Z } from "./zIndex";
 export function MobileNav({
   theme,
   layersOpen,
-  measureActive,
+  toolsActive,
   onLayersToggle,
-  onMeasureToggle,
+  onToolsToggle,
 }: {
   theme: Theme;
   layersOpen: boolean;
-  measureActive: boolean;
+  toolsActive: boolean;
   onLayersToggle: () => void;
-  onMeasureToggle: () => void;
+  onToolsToggle: () => void;
 }) {
   function NavBtn({
     label,
@@ -86,16 +86,14 @@ export function MobileNav({
         }
       />
       <NavBtn
-        label="Measure"
-        active={measureActive}
-        onClick={onMeasureToggle}
+        label="Tools"
+        active={toolsActive}
+        onClick={onToolsToggle}
         icon={
-          <svg width="18" height="18" viewBox="0 0 18 18" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
-            <line x1="2" y1="16" x2="16" y2="2"/>
-            <line x1="2" y1="16" x2="5" y2="16"/>
-            <line x1="2" y1="16" x2="2" y2="13"/>
-            <line x1="9" y1="9" x2="11" y2="7"/>
-            <line x1="5.5" y1="12.5" x2="7.5" y2="10.5"/>
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M10.5 1.5a4 4 0 0 0-3.78 5.27L2 11.5 4.5 14l4.73-4.72A4 4 0 1 0 10.5 1.5z"/>
+            <line x1="10.5" y1="1.5" x2="12.5" y2="3.5"/>
+            <line x1="8.5" y1="3.5" x2="10.5" y2="5.5"/>
           </svg>
         }
       />
