@@ -1,5 +1,4 @@
 import { useState } from "react";
-import { setToken } from "../auth";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
@@ -20,14 +19,17 @@ export function AuthGate({ onAuth }: { onAuth: () => void }) {
       let r: Response;
       if (tab === "login") {
         const body = new URLSearchParams({ username: email, password });
+        // credentials: "include" lets the browser accept the Set-Cookie response.
         r = await fetch(`${API_URL}/auth/token`, {
           method: "POST",
+          credentials: "include",
           headers: { "Content-Type": "application/x-www-form-urlencoded" },
           body: body.toString(),
         });
       } else {
         r = await fetch(`${API_URL}/auth/register`, {
           method: "POST",
+          credentials: "include",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ email, password }),
         });
@@ -37,8 +39,8 @@ export function AuthGate({ onAuth }: { onAuth: () => void }) {
         setError(data.detail ?? "Something went wrong");
         return;
       }
-      const { access_token } = await r.json();
-      setToken(access_token);
+      // Backend sets the httpOnly session cookie on the response — we don't
+      // touch the body. App.tsx will see the user as authed on the next /auth/me.
       onAuth();
     } catch {
       setError("Could not reach the server");

@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { AuthGate } from "./components/AuthGate";
 import { Map as MapView } from "./components/Map";
 import { StatusBar } from "./components/StatusBar";
-import { apiFetch, clearToken, getToken } from "./auth";
+import { apiFetch, logout as serverLogout } from "./auth";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
 
@@ -13,7 +13,9 @@ export interface StravaStatus {
 }
 
 export default function App() {
-  const [authed, setAuthed] = useState(() => !!getToken());
+  // null = session check in flight; true/false = decided.
+  // The httpOnly cookie is invisible to JS, so we have to ask the backend.
+  const [authed, setAuthed] = useState<boolean | null>(null);
   const [stravaStatus, setStravaStatus] = useState<StravaStatus>({
     connected: false,
     athlete_name: null,
@@ -25,9 +27,21 @@ export default function App() {
     if (r.ok) setStravaStatus(await r.json());
   }
 
+  async function handleLogout() {
+    await serverLogout();
+    setAuthed(false);
+  }
+
+  // Probe the session cookie once on mount.
+  useEffect(() => {
+    fetch(`${API_URL}/auth/me`, { credentials: "include" })
+      .then((r) => setAuthed(r.ok))
+      .catch(() => setAuthed(false));
+  }, []);
+
   // Token expired mid-session → back to login.
   useEffect(() => {
-    const handler = () => { clearToken(); setAuthed(false); };
+    const handler = () => setAuthed(false);
     window.addEventListener("whumpf:unauthorized", handler);
     return () => window.removeEventListener("whumpf:unauthorized", handler);
   }, []);
@@ -43,6 +57,29 @@ export default function App() {
     refreshStravaStatus();
   }, [authed]);
 
+  if (authed === null) {
+    // Brief flash while /auth/me is in flight. Better than showing AuthGate
+    // to a logged-in user only to swap to the map a moment later.
+    return (
+      <div
+        style={{
+          position: "fixed",
+          inset: 0,
+          background: "linear-gradient(135deg, #0d1117 0%, #161b22 100%)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          color: "#555",
+          fontFamily: "ui-sans-serif, system-ui, sans-serif",
+          fontSize: 13,
+          letterSpacing: "0.04em",
+        }}
+      >
+        whumpf
+      </div>
+    );
+  }
+
   if (!authed) {
     return <AuthGate onAuth={() => setAuthed(true)} />;
   }
@@ -50,7 +87,7 @@ export default function App() {
   return (
     <div style={{ position: "relative", width: "100vw", height: "100vh" }}>
       <MapView
-        onLogout={() => { clearToken(); setAuthed(false); }}
+        onLogout={handleLogout}
         stravaStatus={stravaStatus}
         onStravaStatusChange={refreshStravaStatus}
       />
