@@ -17,7 +17,7 @@ export interface UrlState {
   units?: Units;
 }
 
-const BASEMAPS: readonly BasemapId[] = ["streets", "topo", "satellite", "hybrid"];
+const BASEMAPS: readonly BasemapId[] = ["streets", "topo", "satellite"];
 const UNITS: readonly Units[] = ["imperial", "metric"];
 
 export function readUrlState(): UrlState {

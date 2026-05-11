@@ -26,48 +26,18 @@ function rasterStyle(
   };
 }
 
-// Satellite + transparent label/road overlay (classic "hybrid" view).
-function hybridStyle(): maplibregl.StyleSpecification {
-  return {
-    version: 8,
-    glyphs: OMP_GLYPHS,
-    sources: {
-      sat: {
-        type: "raster",
-        tiles: [`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`],
-        tileSize: 256,
-        maxzoom: 17,
-        attribution: "Esri, DigitalGlobe",
-      },
-      ref: {
-        type: "raster",
-        // Transparent PNG overlay — labels, roads, boundaries on top of satellite.
-        tiles: [`${ESRI}/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}`],
-        tileSize: 256,
-        maxzoom: 17,
-      },
-    },
-    layers: [
-      { id: "basemap-sat", type: "raster", source: "sat" },
-      { id: "basemap-ref", type: "raster", source: "ref" },
-    ],
-  };
-}
-
-const RASTER_STYLES: Record<"topo" | "satellite" | "hybrid", maplibregl.StyleSpecification> = {
+const RASTER_STYLES: Record<"topo" | "satellite", maplibregl.StyleSpecification> = {
   // Esri World Topo Map: contours, shaded relief, trails, water — no API key required.
   topo:      rasterStyle([`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`], "Esri"),
   // maxzoom: 17 — beyond that Esri returns a "not available yet" placeholder JPEG.
   // MapLibre overzooms the z17 tile instead of requesting z18+.
   satellite: rasterStyle([`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`], "Esri, DigitalGlobe", 17),
-  hybrid:    hybridStyle(),
 };
 
 // Source and layer IDs owned by each raster basemap — used for in-place swaps.
-const RASTER_BASEMAP_IDS: Record<"topo" | "satellite" | "hybrid", { sources: string[]; layers: string[] }> = {
-  topo:      { sources: ["basemap"],    layers: ["basemap"] },
-  satellite: { sources: ["basemap"],    layers: ["basemap"] },
-  hybrid:    { sources: ["sat", "ref"], layers: ["basemap-sat", "basemap-ref"] },
+const RASTER_BASEMAP_IDS: Record<"topo" | "satellite", { sources: string[]; layers: string[] }> = {
+  topo:      { sources: ["basemap"], layers: ["basemap"] },
+  satellite: { sources: ["basemap"], layers: ["basemap"] },
 };
 
 export function getMapStyle(basemap: BasemapId, dark: boolean): string | maplibregl.StyleSpecification {
@@ -108,8 +78,8 @@ export function getTerrainFilterUrl(regionId: string, s: TerrainFilterSettings):
 // Swap only the basemap source/layers for raster-to-raster transitions without touching overlays.
 export function swapRasterBasemap(
   map: maplibregl.Map,
-  from: "topo" | "satellite" | "hybrid",
-  to: "topo" | "satellite" | "hybrid",
+  from: "topo" | "satellite",
+  to: "topo" | "satellite",
 ) {
   if (from === to) return;
   const fromIds = RASTER_BASEMAP_IDS[from];

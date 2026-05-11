@@ -2,7 +2,7 @@
 // subcomponents (LayerPanel, InfoPanel, etc.) can share them without
 // circular imports.
 
-export type BasemapId = "streets" | "topo" | "satellite" | "hybrid";
+export type BasemapId = "streets" | "topo" | "satellite";
 
 export type Units = "imperial" | "metric";
 

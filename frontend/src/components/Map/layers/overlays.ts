@@ -288,13 +288,11 @@ export function addOverlayLayers(
   opacity: Record<string, number>,
   tileOverrides?: Record<string, string[]>,
 ) {
-  // On vector basemaps, insert overlays before the first symbol layer so labels stay on top.
-  // On hybrid, insert before basemap-ref (the transparent road/label overlay) for the same reason.
-  // On plain raster basemaps (topo, satellite) there are no symbol layers — append to top.
+  // On vector basemaps (streets), insert overlays before the first symbol
+  // layer so basemap labels stay on top. On plain raster basemaps (topo,
+  // satellite) there are no symbol layers — overlays just append to top.
   const beforeId: string | undefined =
-    map.getLayer("basemap-ref")
-      ? "basemap-ref"
-      : map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
+    map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
   for (const layer of layers) {
     // Both geojson and vector_overlay layers manage their own source/layers
     // in dedicated helper modules — addOverlayLayers only handles rasters.

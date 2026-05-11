@@ -238,7 +238,7 @@ export function LayerPanel({
 
       {/* Basemap picker — Streets follows the light/dark toggle; raster options are independent */}
       <div style={{ display: "flex", gap: 3, marginBottom: 10 }}>
-        {(["streets", "topo", "satellite", "hybrid"] as const).map((id) => (
+        {(["streets", "topo", "satellite"] as const).map((id) => (
           <button
             key={id}
             onClick={() => onBasemapChange(id)}
@@ -252,13 +252,13 @@ export function LayerPanel({
               background: basemap === id ? theme.accent : "none",
               color: basemap === id ? "#fff" : theme.muted,
               fontFamily: "ui-sans-serif, system-ui, sans-serif",
-              fontSize: 9,
+              fontSize: 10,
               fontWeight: basemap === id ? 700 : 400,
               cursor: "pointer",
               letterSpacing: "0.02em",
             }}
           >
-            {id === "streets" ? "Streets" : id === "satellite" ? "Sat" : id === "hybrid" ? "Hyb" : "Topo"}
+            {id === "streets" ? "Streets" : id === "satellite" ? "Satellite" : "Topo"}
           </button>
         ))}
       </div>

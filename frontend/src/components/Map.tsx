@@ -129,7 +129,7 @@ export function Map({
     if (initialUrlState.basemap) return initialUrlState.basemap;
     try {
       const s = localStorage.getItem("whumpf:basemap");
-      if (s === "streets" || s === "topo" || s === "satellite" || s === "hybrid") return s;
+      if (s === "streets" || s === "topo" || s === "satellite") return s;
     } catch { /* ignore */ }
     return "streets";
   });
@@ -253,13 +253,10 @@ export function Map({
       });
       applyTerrainOrder(map, terrainOrderRef.current);
       // Trails sit above the rasters but below interactive geojson points so
-      // SNOTEL/CAIC markers stay clickable. addOverlayLayers used `basemap-ref`
-      // (hybrid label overlay) or the first symbol layer as its insertion
-      // anchor — re-use the same anchor so vector trails land in the same
-      // slot, just above the rasters.
-      const trailsBeforeId = map.getLayer("basemap-ref")
-        ? "basemap-ref"
-        : map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
+      // SNOTEL/CAIC markers stay clickable. addOverlayLayers anchors against
+      // the first symbol layer of the active basemap — same anchor here so
+      // vector trails land in the same slot, just above the rasters.
+      const trailsBeforeId = map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
       addTrailsLayers(map, opacityRef.current["trails"] ?? 0.9, trailsBeforeId);
       setTrailsVisibility(map, visibleRef.current["trails"] ?? false);
       addMeasureLayers(map);
@@ -505,7 +502,7 @@ export function Map({
     if (prev !== "streets" && basemap !== "streets" && map.isStyleLoaded()) {
       // Raster → raster with the current style fully loaded: swap only the basemap.
       // Guard on isStyleLoaded() so we don't call swapRasterBasemap mid-setStyle.
-      swapRasterBasemap(map, prev as "topo" | "satellite" | "hybrid", basemap as "topo" | "satellite" | "hybrid");
+      swapRasterBasemap(map, prev as "topo" | "satellite", basemap as "topo" | "satellite");
       prevBasemapRef.current = basemap;
       return;
     }
@@ -710,9 +707,7 @@ export function Map({
     const isVis = visibleRef.current["contours"] ?? false;
     const op = opacityRef.current["contours"] ?? 1.0;
     const beforeId: string | undefined =
-      map.getLayer("basemap-ref")
-        ? "basemap-ref"
-        : map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
+      map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
     map.removeLayer("contours");
     map.removeSource("contours");
     map.addSource("contours", {
@@ -745,9 +740,7 @@ export function Map({
     const isVis = visibleRef.current["terrain-filter"] ?? false;
     const op = opacityRef.current["terrain-filter"] ?? 0.6;
     const beforeId: string | undefined =
-      map.getLayer("basemap-ref")
-        ? "basemap-ref"
-        : map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
+      map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
     map.removeLayer("terrain-filter");
     map.removeSource("terrain-filter");
     map.addSource("terrain-filter", {
