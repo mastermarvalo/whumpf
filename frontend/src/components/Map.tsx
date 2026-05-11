@@ -57,7 +57,6 @@ import {
   setObsData,
   setObsVisibility,
 } from "./Map/layers/obs";
-import { addRegionMask, setMaskVisibility } from "./Map/layers/mask";
 import { readUrlState, writeUrlState } from "./Map/urlState";
 import {
   MEASURE_MARKER_STYLE,
@@ -164,7 +163,6 @@ export function Map({
   const [caicLoaded, setCaicLoaded] = useState(false);
   const [obsLoaded, setObsLoaded] = useState(false);
   const obsDataRef = useRef<object | null>(null);
-  const [boundsLocked, setBoundsLocked] = useState(true);
   const [aboveHiresZoom, setAboveHiresZoom] = useState(region.default_zoom >= 13);
   const [layerPanelCollapsed, setLayerPanelCollapsed] = useState(false);
   const caicDataRef = useRef<object | null>(null);
@@ -216,7 +214,6 @@ export function Map({
       style: getMapStyle(basemap, dark),
       center: initialUrlState.center ?? region.center,
       zoom: initialUrlState.zoom ?? region.default_zoom,
-      maxBounds: region.max_bounds,
       renderWorldCopies: false,
     });
 
@@ -230,7 +227,6 @@ export function Map({
         contours: [getContourUrl(region.id, contourIntervalRef.current)],
       });
       applyTerrainOrder(map, terrainOrderRef.current);
-      addRegionMask(map, region.mask_geojson);
       addMeasureLayers(map);
       updateMeasureSource(map, measurePtsRef.current);
       addSnotelLayers(map);
@@ -706,13 +702,6 @@ export function Map({
     applyTerrainOrder(map, terrainOrder);
   }, [terrainOrder]);
 
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    map.setMaxBounds(boundsLocked ? region.max_bounds : null);
-    setMaskVisibility(map, boundsLocked);
-  }, [boundsLocked, region.max_bounds]);
-
   // Subscribe the start-hint to first-interaction events. Stable identity so
   // StartHint's effect doesn't re-bind on every parent render.
   const bindStartHintDismiss = useCallback((dismiss: () => void) => {
@@ -755,10 +744,7 @@ export function Map({
         const [w, s, e, n] = region.bbox;
         const inside = longitude >= w && longitude <= e && latitude >= s && latitude <= n;
         if (!inside) {
-          // The region mask + maxBounds would hide the user behind a black
-          // mask. Drop the lock so they can at least see where they are.
-          showToast(`You're outside ${region.label} — unlocking the map.`, "info");
-          if (boundsLocked) setBoundsLocked(false);
+          showToast(`You're outside ${region.label}, but here you are.`, "info");
         }
         flyToCoords(latitude, longitude);
       },
@@ -930,7 +916,7 @@ export function Map({
         </div>
       )}
 
-      {/* My location — bottom-right, above the region-lock toggle */}
+      {/* My location — bottom-right, above MapLibre attribution */}
       <button
         onClick={locateMe}
         disabled={locating}
@@ -938,7 +924,7 @@ export function Map({
         aria-label="Show my location"
         style={{
           position: "fixed",
-          bottom: 68,
+          bottom: 28,
           right: 10,
           zIndex: Z.MAP_OVERLAY,
           width: 32,
@@ -973,35 +959,6 @@ export function Map({
         </svg>
       </button>
 
-      {/* Region lock toggle — bottom-right, above MapLibre attribution */}
-      <button
-        onClick={() => setBoundsLocked((l) => !l)}
-        title={boundsLocked ? `Expand map beyond ${region.label}` : `Lock map to ${region.label}`}
-        aria-label={boundsLocked ? `Expand map beyond ${region.label}` : `Lock map to ${region.label}`}
-        aria-pressed={boundsLocked}
-        style={{
-          position: "fixed",
-          bottom: 28,
-          right: 10,
-          zIndex: Z.MAP_OVERLAY,
-          display: "flex",
-          alignItems: "center",
-          gap: 5,
-          padding: "5px 10px",
-          borderRadius: 5,
-          border: `1px solid ${boundsLocked ? theme.accent : theme.divider}`,
-          background: theme.panel,
-          color: boundsLocked ? theme.accent : theme.muted,
-          fontSize: 12,
-          fontFamily: "ui-sans-serif, system-ui, sans-serif",
-          cursor: "pointer",
-          boxShadow: "0 1px 6px rgba(0,0,0,0.3)",
-          userSelect: "none",
-        }}
-      >
-        <span style={{ fontSize: 13 }}>{boundsLocked ? "🔒" : "🌐"}</span>
-        {boundsLocked ? region.label : "Unlocked"}
-      </button>
     </>
   );
 }
