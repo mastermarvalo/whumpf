@@ -325,14 +325,14 @@ export function LayerPanel({
             transition: "max-height 200ms ease",
           }}>
 
-          {/* Active layers */}
+          {/* Active layers — terrain-filter is managed by the Slope Filter tool */}
           {(group.reorderable && layerOrder?.[group.id]
             ? [...group.active].sort((a, b) => {
                 const ord = layerOrder[group.id];
                 return ord.indexOf(a.id) - ord.indexOf(b.id);
               })
             : group.active
-          ).map((layer) => {
+          ).filter((layer) => layer.id !== "terrain-filter").map((layer) => {
             const isReorderable = group.reorderable && !mobile;
             return (
               <div

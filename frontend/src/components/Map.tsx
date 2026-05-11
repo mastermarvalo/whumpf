@@ -80,6 +80,7 @@ import { TimeSlider, NOW_STEP, stepToDate } from "./Map/TimeSlider";
 import { LayerPanel } from "./Map/LayerPanel";
 import { InfoPanel } from "./Map/InfoPanel";
 import { MeasurePanel } from "./Map/MeasurePanel";
+import { SlopeFilterPanel } from "./Map/SlopeFilterPanel";
 import { SearchBar } from "./Map/SearchBar";
 import { StravaActivityCard } from "./Map/StravaActivityCard";
 import { StartHint } from "./Map/StartHint";
@@ -165,6 +166,8 @@ export function Map({
   });
   const [point, setPoint] = useState<PointData | null>(null);
   const [measureMode, setMeasureMode] = useState(false);
+  const [slopeFilterMode, setSlopeFilterMode] = useState(false);
+  const slopeFilterModeRef = useRef(false);
   const [measurePts, setMeasurePts] = useState<[number, number][]>([]);
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
@@ -222,6 +225,7 @@ export function Map({
   useEffect(() => { opacityRef.current = opacity; }, [opacity]);
   useEffect(() => { terrainOrderRef.current = terrainOrder; }, [terrainOrder]);
   useEffect(() => { mapTimeStepRef.current = mapTimeStep; }, [mapTimeStep]);
+  useEffect(() => { slopeFilterModeRef.current = slopeFilterMode; }, [slopeFilterMode]);
 
   const snotelDataRef = useRef<object | null>(null);
   const prevBasemapRef = useRef<BasemapId>(basemap);
@@ -256,6 +260,9 @@ export function Map({
         "terrain-filter": [getTerrainFilterUrl(region.id, terrainFilterRef.current)],
       });
       applyTerrainOrder(map, terrainOrderRef.current);
+      // terrain-filter visibility is driven by the Slope Filter tool, not the layer panel.
+      if (map.getLayer("terrain-filter"))
+        map.setLayoutProperty("terrain-filter", "visibility", slopeFilterModeRef.current ? "visible" : "none");
       // Streets + trails sit above the rasters but below interactive geojson
       // points so SNOTEL/CAIC markers stay clickable. Same insertion anchor
       // as addOverlayLayers — the first symbol layer of the active basemap.
@@ -543,6 +550,14 @@ export function Map({
         map.setLayoutProperty(`${id}-hires`, "visibility", isVis ? "visible" : "none");
     }
   }, [visible]);
+
+  // Slope filter tool — drives terrain-filter layer visibility independently of
+  // the layer panel (which no longer shows terrain-filter as a toggle).
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.getLayer("terrain-filter")) return;
+    map.setLayoutProperty("terrain-filter", "visibility", slopeFilterMode ? "visible" : "none");
+  }, [slopeFilterMode]);
 
   // Sync opacity state → MapLibre.
   useEffect(() => {
@@ -952,9 +967,11 @@ export function Map({
       {!isMobile && (
         <ToolboxPanel
           measureActive={measureMode}
+          slopeFilterActive={slopeFilterMode}
           layerPanelCollapsed={layerPanelCollapsed}
           theme={theme}
-          onMeasureToggle={() => setMeasureMode((m) => !m)}
+          onMeasureToggle={() => { setMeasureMode((m) => !m); setSlopeFilterMode(false); }}
+          onSlopeFilterToggle={() => { setSlopeFilterMode((m) => !m); setMeasureMode(false); }}
         />
       )}
 
@@ -969,6 +986,17 @@ export function Map({
         />
       )}
 
+      {slopeFilterMode && (
+        <SlopeFilterPanel
+          filter={terrainFilter}
+          onChange={setTerrainFilter}
+          onApplyWindPreset={applyWindPreset}
+          onClose={() => setSlopeFilterMode(false)}
+          theme={theme}
+          mobile={isMobile}
+          mobileBottom={mobileBottom}
+        />
+      )}
       {measureMode && (
         <MeasurePanel
           pts={measurePts}
