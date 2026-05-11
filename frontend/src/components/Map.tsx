@@ -58,6 +58,7 @@ import {
   setObsVisibility,
 } from "./Map/layers/obs";
 import { addRegionMask, setMaskVisibility } from "./Map/layers/mask";
+import { readUrlState, writeUrlState } from "./Map/urlState";
 import {
   MEASURE_MARKER_STYLE,
   addMeasureLayers,
@@ -106,6 +107,10 @@ export function Map({
   // recomputed when the user picks a different region.
   const layerGroups = useMemo(() => buildLayerGroups(region.id), [region.id]);
   const overlayLayers = useMemo(() => buildOverlayLayers(layerGroups), [layerGroups]);
+
+  // URL state takes precedence over localStorage for the initial render so
+  // shared links land on the exact viewport the sharer intended.
+  const initialUrlState = useMemo(() => readUrlState(), []);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const searchMarkerRef = useRef<maplibregl.Marker | null>(null);
@@ -115,6 +120,7 @@ export function Map({
 
   const [dark, setDark] = useState(true);
   const [basemap, setBasemap] = useState<BasemapId>(() => {
+    if (initialUrlState.basemap) return initialUrlState.basemap;
     try {
       const s = localStorage.getItem("whumpf:basemap");
       if (s === "streets" || s === "topo" || s === "satellite" || s === "hybrid") return s;
@@ -124,6 +130,16 @@ export function Map({
   const [loadingLayers, setLoadingLayers] = useState<Set<string>>(new Set());
   const [visible, setVisible] = useState<Record<string, boolean>>(() => {
     const defaults = Object.fromEntries(overlayLayers.map((l) => [l.id, l.defaultVisible]));
+    // URL wins — and the URL list is authoritative: anything not listed is OFF.
+    if (initialUrlState.visibleLayers) {
+      const out: Record<string, boolean> = Object.fromEntries(
+        overlayLayers.map((l) => [l.id, false]),
+      );
+      for (const id of initialUrlState.visibleLayers) {
+        if (id in out) out[id] = true;
+      }
+      return out;
+    }
     try {
       const stored = localStorage.getItem("whumpf:layer-visible");
       return stored ? { ...defaults, ...JSON.parse(stored) } : defaults;
@@ -141,7 +157,7 @@ export function Map({
   const [measurePts, setMeasurePts] = useState<[number, number][]>([]);
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
-  const [units, setUnits] = useState<Units>("imperial");
+  const [units, setUnits] = useState<Units>(() => initialUrlState.units ?? "imperial");
   const [forecast, setForecast] = useState<ForecastPeriod[] | null>(null);
   const [forecastLoading, setForecastLoading] = useState(false);
   const [snotelLoaded, setSnotelLoaded] = useState(false);
@@ -198,8 +214,8 @@ export function Map({
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: getMapStyle(basemap, dark),
-      center: region.center,
-      zoom: region.default_zoom,
+      center: initialUrlState.center ?? region.center,
+      zoom: initialUrlState.zoom ?? region.default_zoom,
       maxBounds: region.max_bounds,
       renderWorldCopies: false,
     });
@@ -410,6 +426,17 @@ export function Map({
 
     // Track whether we're at hires zoom — only re-renders when crossing z13.
     map.on("zoom", () => setAboveHiresZoom(map.getZoom() >= 13));
+
+    // Sync viewport into the URL so the page is always shareable. Debounced
+    // because moveend fires on every pan/zoom interaction.
+    let urlTimer: ReturnType<typeof setTimeout> | null = null;
+    map.on("moveend", () => {
+      if (urlTimer) clearTimeout(urlTimer);
+      urlTimer = setTimeout(() => {
+        const c = map.getCenter();
+        writeUrlState({ center: [c.lng, c.lat], zoom: map.getZoom() });
+      }, 400);
+    });
 
     // Basemap CDN failure: maplibre fires "error" once per failed tile request,
     // so a broken upstream can emit hundreds of events. Throttle to one toast
@@ -625,6 +652,15 @@ export function Map({
     }, 250);
     return () => clearTimeout(t);
   }, [basemap, visible, opacity, terrainOrder]);
+
+  // Sync the layer/basemap/units pieces of URL state. Viewport is handled by
+  // the map's moveend listener; these effects cover everything else.
+  useEffect(() => {
+    const ids = Object.entries(visible).filter(([, v]) => v).map(([id]) => id);
+    writeUrlState({ visibleLayers: ids });
+  }, [visible]);
+  useEffect(() => { writeUrlState({ basemap }); }, [basemap]);
+  useEffect(() => { writeUrlState({ units }); }, [units]);
 
   // When the contour interval changes, swap the MapLibre source+layer with the new tile URL.
   // Raster sources don't support in-place tile URL updates, so we remove and re-add.

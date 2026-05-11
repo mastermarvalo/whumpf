@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { showToast } from "../Toast";
 import type { Theme } from "./theme";
 import { Z } from "./zIndex";
 
@@ -19,6 +20,17 @@ export function ToolboxPanel({
 
   function activateTool(toggle: () => void) {
     toggle();
+    setOpen(false);
+  }
+
+  async function copyShareLink() {
+    const url = window.location.href;
+    try {
+      await navigator.clipboard.writeText(url);
+      showToast("Map link copied to clipboard.", "success");
+    } catch {
+      showToast("Couldn't copy — select the address bar manually.", "error");
+    }
     setOpen(false);
   }
 
@@ -110,6 +122,35 @@ export function ToolboxPanel({
               <line x1="10" y1="4.5" x2="10" y2="7"/>
             </svg>
             Measure Slope
+          </button>
+
+          {/* Copy share link */}
+          <button
+            onClick={copyShareLink}
+            title="Copy a shareable link to the current map view"
+            aria-label="Copy a shareable link to the current map view"
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 9,
+              background: "transparent",
+              color: theme.text,
+              border: "1px solid transparent",
+              borderRadius: 6,
+              padding: "7px 10px",
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: 500,
+              textAlign: "left",
+              width: "100%",
+            }}
+          >
+            {/* Link icon */}
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M6 8a3 3 0 0 0 4.24 0l1.41-1.41a3 3 0 1 0-4.24-4.24L6.7 3.07"/>
+              <path d="M8 6a3 3 0 0 0-4.24 0L2.35 7.41a3 3 0 1 0 4.24 4.24L7.3 10.93"/>
+            </svg>
+            Copy share link
           </button>
         </div>
       )}
