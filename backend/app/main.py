@@ -9,11 +9,15 @@ from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.middleware import SlowAPIMiddleware
 
 from app import __version__
 from app.config import get_settings
 from app.db import get_engine
 from app.models import Base
+from app.rate_limit import limiter
 from app.routers import auth, avalanche, health, snowpack, strava, terrain, tiles
 from app.routers.avalanche import get_forecast, get_observations
 from app.services.snotel import fetch_stations_geojson
@@ -60,13 +64,26 @@ def create_app() -> FastAPI:
         lifespan=lifespan,
     )
 
+    # Explicit method/header lists — wildcards combined with allow_credentials=True
+    # are an anti-pattern: they let any origin in the allow_origins set carry user
+    # cookies/Authorization through any unfamiliar verb or header.
+    # Explicit method/header lists — wildcards combined with allow_credentials=True
+    # are an anti-pattern: they let any origin in the allow_origins set carry user
+    # cookies/Authorization through any unfamiliar verb or header.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
         allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
+        max_age=600,
     )
+
+    # Rate limiter wiring — per-endpoint @limiter.limit("...") decorators in the
+    # routers do the actual enforcement; this just exposes the request hook.
+    app.state.limiter = limiter
+    app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_middleware(SlowAPIMiddleware)
 
     app.include_router(health.router)
     app.include_router(auth.router)

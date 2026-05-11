@@ -21,7 +21,12 @@ from rasterio.crs import CRS
 from rasterio.transform import from_bounds
 from rasterio.warp import Resampling, reproject
 
-from app.config import get_settings
+from app.config import get_settings, validate_region
+
+# Web-mercator tile coordinates are bounded by z (we serve at most z16) and
+# 0 <= x,y < 2**z. Validating up-front avoids upstream rasterio reads for
+# nonsensical inputs.
+_MAX_Z = 18
 
 router = APIRouter(prefix="/tiles", tags=["tiles"])
 logger = logging.getLogger("whumpf.tiles")
@@ -104,6 +109,9 @@ async def slope_tile(
     Requests 512×512 from TiTiler so MapLibre's 2:1 display downscale
     acts as bilinear anti-aliasing, reducing the blocky DEM cell appearance.
     """
+    validate_region(region)
+    if z < 0 or z > _MAX_Z or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
+        raise HTTPException(400, "tile coordinates out of range")
     cog_name = "slope_hires.tif" if hires else "slope.tif"
 
     cache_key = (z, x, y, region, hires)
@@ -291,6 +299,9 @@ async def contour_tile(
     At z>=13, prefers dem_hires.tif (1m) over dem.tif (10m) when hires data
     exists for the region. Falls back to dem.tif transparently if hires is absent.
     """
+    validate_region(region)
+    if z < 0 or z > _MAX_Z or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
+        raise HTTPException(400, "tile coordinates out of range")
     cache_key = (z, x, y, region, interval)
     if cached := _cache_get(_CONTOUR_CACHE, cache_key):
         return Response(content=cached, media_type="image/png",

@@ -225,8 +225,8 @@ def _build_zone_detail(product: dict) -> dict:
 
 @router.get("/zone_detail")
 async def caic_zone_detail(
-    lat: float = Query(..., description="Clicked latitude"),
-    lng: float = Query(..., description="Clicked longitude"),
+    lat: float = Query(..., ge=-90, le=90, description="Clicked latitude"),
+    lng: float = Query(..., ge=-180, le=180, description="Clicked longitude"),
 ) -> dict:
     """Full danger rose + avalanche problems for the CAIC zone at (lat, lng)."""
     try:

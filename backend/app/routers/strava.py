@@ -92,7 +92,7 @@ async def strava_callback(
     conn.athlete_icon_url = icon_url
     session.commit()
 
-    logger.info("Strava connected: user=%s athlete=%s (%d)", email, athlete_name, strava_id)
+    logger.info("Strava connected: user_id=%s athlete_id=%s", user.id, strava_id)
     return RedirectResponse(f"{success_url}?strava=connected", status_code=302)
 
 

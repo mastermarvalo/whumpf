@@ -7,13 +7,22 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from pyproj import Geod
+
 from app.auth.dependencies import get_current_user
-from app.config import Settings, get_settings
+from app.config import Settings, get_settings, validate_region
 from app.models.user import User
 from app.services.cog_sampler import sample_profile
 
 router = APIRouter(prefix="/terrain", tags=["terrain"])
 logger = logging.getLogger("whumpf.terrain")
+
+# Cap a single profile request to a reasonable backcountry-route distance.
+# Anything longer is almost certainly a bug or abuse — sampling a continental-scale
+# line costs egress for tiny per-pixel value and provides no real-world utility.
+_MAX_PROFILE_DISTANCE_M = 200_000  # 200 km
+
+_GEOD = Geod(ellps="WGS84")
 
 
 class SlopeSample(BaseModel):
@@ -63,16 +72,20 @@ def _summarise(samples: list) -> dict:
 
 @router.get("/profile", response_model=ProfileResponse)
 def terrain_profile(
-    start_lng: float,
-    start_lat: float,
-    end_lng: float,
-    end_lat: float,
-    region: str = "colorado",
+    start_lng: float = Query(..., ge=-180, le=180),
+    start_lat: float = Query(..., ge=-90, le=90),
+    end_lng: float = Query(..., ge=-180, le=180),
+    end_lat: float = Query(..., ge=-90, le=90),
+    region: str = Query(default="colorado"),
     n: int = Query(default=64, ge=10, le=256),
     settings: Settings = Depends(get_settings),
     _auth: User = Depends(get_current_user),
 ) -> ProfileResponse:
     """Sample slope and elevation along a line between two coordinates."""
+    validate_region(region)
+    _, _, dist_m = _GEOD.inv(start_lng, start_lat, end_lng, end_lat)
+    if dist_m > _MAX_PROFILE_DISTANCE_M:
+        raise HTTPException(400, f"Profile distance {dist_m/1000:.0f} km exceeds the {_MAX_PROFILE_DISTANCE_M/1000:.0f} km limit")
     try:
         samples = sample_profile(
             start=(start_lng, start_lat),

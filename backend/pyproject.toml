@@ -24,6 +24,9 @@ dependencies = [
     "python-jose[cryptography]>=3.3",
     "passlib[bcrypt]>=1.7",
 
+    # Rate limiting
+    "slowapi>=0.1.9",
+
     # Object storage
     "boto3>=1.35",
 

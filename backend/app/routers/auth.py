@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -14,6 +14,7 @@ from app.auth.dependencies import get_current_user
 from app.auth.service import create_access_token, hash_password, verify_password
 from app.db import get_session
 from app.models.user import User
+from app.rate_limit import limiter
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger("whumpf.auth")
@@ -37,7 +38,8 @@ class UserOut(BaseModel):
 
 
 @router.post("/register", response_model=TokenOut, status_code=status.HTTP_201_CREATED)
-def register(body: RegisterIn, session: Session = Depends(get_session)) -> TokenOut:
+@limiter.limit("5/hour")
+def register(request: Request, body: RegisterIn, session: Session = Depends(get_session)) -> TokenOut:
     email = body.email.lower().strip()
     if "@" not in email:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid email address")
@@ -49,12 +51,14 @@ def register(body: RegisterIn, session: Session = Depends(get_session)) -> Token
     user = User(email=email, hashed_password=hash_password(body.password))
     session.add(user)
     session.commit()
-    logger.info("New user registered: %s", email)
+    logger.info("New user registered: id=%s", user.id)
     return TokenOut(access_token=create_access_token(user.email))
 
 
 @router.post("/token", response_model=TokenOut)
+@limiter.limit("10/minute")
 def login(
+    request: Request,
     form: OAuth2PasswordRequestForm = Depends(),
     session: Session = Depends(get_session),
 ) -> TokenOut:
