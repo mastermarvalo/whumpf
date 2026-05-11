@@ -3,10 +3,9 @@
 // "streets" basemap, but rendered as a thin overlay you can slide on top
 // of slope/aspect/satellite/topo so trails and place names stay legible.
 //
-// Layered for cross-basemap visibility: each line layer has a dark casing
-// underneath a lighter fill on top, so it reads against both Esri imagery
-// and the existing positron basemap. Labels use white text with a heavy
-// dark halo for the same reason.
+// Filter / placement / minzoom values track what openfreemap's own
+// positron style uses for transportation_name (its `highway-name-*`
+// layers), so we know they actually surface data at the right zooms.
 
 import maplibregl from "maplibre-gl";
 
@@ -22,28 +21,29 @@ export const TRAILS_LAYER_IDS = [
   "trails-road-label",
   "trails-minor-label",
   "trails-path-label",
+  "trails-shield",
   "trails-peak",
   "trails-place",
 ] as const;
 
-// TileJSON URL form rather than explicit tiles[]. OpenFreeMap rebuilds
-// the planet under a versioned path (e.g. /planet/20260506_001001_pt/…)
-// and only exposes the current version via this TileJSON document; the
-// unversioned /planet/{z}/{x}/{y}.pbf path returns empty tiles. MapLibre
-// fetches the TileJSON on source load and uses whatever path it points at.
+// TileJSON URL form: OpenFreeMap rebuilds the planet under a versioned
+// path (/planet/20260506_001001_pt/…) and only exposes the current
+// version via this TileJSON document; the unversioned tile path returns
+// empty tiles.
 const OFM_TILEJSON = "https://tiles.openfreemap.org/planet";
 
-const MAJOR_CLASSES: string[] = ["motorway", "trunk", "primary"];
-const MINOR_CLASSES: string[] = ["secondary", "tertiary", "minor", "service"];
-const PATH_CLASSES:  string[] = ["track", "path", "pedestrian"];
+// Match positron's groupings — secondary/tertiary live with the bigger
+// roads, not the small ones. The eye-test confirms it: tertiary roads
+// in Colorado are usually paved feeder roads, not driveways.
+const MAJOR_CLASSES: string[] = ["motorway", "trunk", "primary", "secondary", "tertiary"];
+const MINOR_CLASSES: string[] = ["minor", "service"];
+const TRACK_PATH_CLASSES: string[] = ["track", "path", "pedestrian"];
 
-// Prefer the short highway ref ("I-70") over the long name on major roads;
-// fall back to name where ref is absent. Minor roads / trails just use name.
-const REF_OR_NAME: maplibregl.ExpressionSpecification = [
-  "case",
-  ["all", ["has", "ref"], [">", ["length", ["coalesce", ["get", "ref"], ""]], 0]],
-  ["get", "ref"],
-  ["coalesce", ["get", "name"], ""],
+// Cleaner than my prior REF_OR_NAME case-tree: prefer name; if there's
+// no name, show the ref (e.g. unnamed interstates show "I 70"); failing
+// that, render nothing.
+const NAME_OR_REF: maplibregl.ExpressionSpecification = [
+  "coalesce", ["get", "name"], ["get", "ref"], "",
 ];
 
 export function addTrailsLayers(
@@ -58,14 +58,16 @@ export function addTrailsLayers(
     attribution: "© OpenStreetMap, OpenFreeMap",
   });
 
+  const lineCapJoin = { "line-cap": "round" as const, "line-join": "round" as const };
+
   // ── Major roads — wide dark casing + bright yellow fill ─────────────────
   map.addLayer({
     id: "trails-road-case",
     type: "line",
     source: SOURCE_ID,
     "source-layer": "transportation",
-    filter: ["in", ["get", "class"], ["literal", MAJOR_CLASSES]],
-    layout: { "line-cap": "round", "line-join": "round" },
+    filter: ["match", ["get", "class"], MAJOR_CLASSES, true, false],
+    layout: lineCapJoin,
     paint: {
       "line-color": "#000",
       "line-width": ["interpolate", ["linear"], ["zoom"], 6, 2.5, 14, 9],
@@ -77,8 +79,8 @@ export function addTrailsLayers(
     type: "line",
     source: SOURCE_ID,
     "source-layer": "transportation",
-    filter: ["in", ["get", "class"], ["literal", MAJOR_CLASSES]],
-    layout: { "line-cap": "round", "line-join": "round" },
+    filter: ["match", ["get", "class"], MAJOR_CLASSES, true, false],
+    layout: lineCapJoin,
     paint: {
       "line-color": "#ffd34d",
       "line-width": ["interpolate", ["linear"], ["zoom"], 6, 1.2, 14, 6],
@@ -92,8 +94,8 @@ export function addTrailsLayers(
     type: "line",
     source: SOURCE_ID,
     "source-layer": "transportation",
-    filter: ["in", ["get", "class"], ["literal", MINOR_CLASSES]],
-    layout: { "line-cap": "round", "line-join": "round" },
+    filter: ["match", ["get", "class"], MINOR_CLASSES, true, false],
+    layout: lineCapJoin,
     paint: {
       "line-color": "#000",
       "line-width": ["interpolate", ["linear"], ["zoom"], 8, 1.6, 14, 5],
@@ -105,8 +107,8 @@ export function addTrailsLayers(
     type: "line",
     source: SOURCE_ID,
     "source-layer": "transportation",
-    filter: ["in", ["get", "class"], ["literal", MINOR_CLASSES]],
-    layout: { "line-cap": "round", "line-join": "round" },
+    filter: ["match", ["get", "class"], MINOR_CLASSES, true, false],
+    layout: lineCapJoin,
     paint: {
       "line-color": "#fafafa",
       "line-width": ["interpolate", ["linear"], ["zoom"], 8, 0.8, 14, 3],
@@ -114,15 +116,14 @@ export function addTrailsLayers(
     },
   }, beforeId);
 
-  // ── Trails / paths / tracks ─ bright orange, dashed, with a dark casing
-  // for legibility over satellite imagery + slope shading. Wider than before.
+  // ── Trails / paths / tracks — bright orange dashed with dark casing ─────
   map.addLayer({
     id: "trails-path-case",
     type: "line",
     source: SOURCE_ID,
     "source-layer": "transportation",
-    filter: ["in", ["get", "class"], ["literal", PATH_CLASSES]],
-    layout: { "line-cap": "round", "line-join": "round" },
+    filter: ["match", ["get", "class"], TRACK_PATH_CLASSES, true, false],
+    layout: lineCapJoin,
     paint: {
       "line-color": "#000",
       "line-width": ["interpolate", ["linear"], ["zoom"], 9, 1.6, 14, 4],
@@ -134,8 +135,8 @@ export function addTrailsLayers(
     type: "line",
     source: SOURCE_ID,
     "source-layer": "transportation",
-    filter: ["in", ["get", "class"], ["literal", PATH_CLASSES]],
-    layout: { "line-cap": "round", "line-join": "round" },
+    filter: ["match", ["get", "class"], TRACK_PATH_CLASSES, true, false],
+    layout: lineCapJoin,
     paint: {
       "line-color": "#ff7a3a",
       "line-width": ["interpolate", ["linear"], ["zoom"], 9, 0.9, 14, 2.5],
@@ -145,26 +146,25 @@ export function addTrailsLayers(
   }, beforeId);
 
   // ── Line-following labels ───────────────────────────────────────────────
-  // symbol-placement: line makes the text track the road's curve. The
-  // openfreemap glyphs server has Noto Sans Regular/Bold; we fall back to
-  // Open Sans (positron basemap) and Arial Unicode (everything else).
+  // Single Noto Sans Regular — matches the openmaptiles glyph server and
+  // positron's own usage. Bold/italic variants were silently failing on
+  // some tiles, which dropped entire label layers.
 
   map.addLayer({
     id: "trails-road-label",
     type: "symbol",
     source: SOURCE_ID,
     "source-layer": "transportation_name",
-    filter: ["in", ["get", "class"], ["literal", MAJOR_CLASSES]],
-    minzoom: 10,
+    filter: ["match", ["get", "class"], MAJOR_CLASSES, true, false],
+    minzoom: 11,
     layout: {
-      "text-field": REF_OR_NAME,
-      "text-size": ["interpolate", ["linear"], ["zoom"], 10, 11, 16, 14],
-      "text-font": ["Noto Sans Bold", "Open Sans Bold", "Arial Unicode MS Bold"],
+      "text-field": NAME_OR_REF,
+      "text-size": ["interpolate", ["linear"], ["zoom"], 11, 11, 16, 14],
+      "text-font": ["Noto Sans Regular"],
       "symbol-placement": "line",
       "text-rotation-alignment": "map",
       "text-pitch-alignment": "viewport",
       "symbol-spacing": 350,
-      "text-max-angle": 30,
       "text-padding": 2,
     },
     paint: {
@@ -180,17 +180,16 @@ export function addTrailsLayers(
     type: "symbol",
     source: SOURCE_ID,
     "source-layer": "transportation_name",
-    filter: ["in", ["get", "class"], ["literal", MINOR_CLASSES]],
+    filter: ["match", ["get", "class"], MINOR_CLASSES, true, false],
     minzoom: 13,
     layout: {
       "text-field": ["coalesce", ["get", "name"], ""],
       "text-size": ["interpolate", ["linear"], ["zoom"], 13, 10, 16, 12],
-      "text-font": ["Noto Sans Regular", "Open Sans Regular", "Arial Unicode MS Regular"],
+      "text-font": ["Noto Sans Regular"],
       "symbol-placement": "line",
       "text-rotation-alignment": "map",
       "text-pitch-alignment": "viewport",
       "symbol-spacing": 280,
-      "text-max-angle": 35,
     },
     paint: {
       "text-color": "#fff",
@@ -205,27 +204,58 @@ export function addTrailsLayers(
     type: "symbol",
     source: SOURCE_ID,
     "source-layer": "transportation_name",
-    filter: ["in", ["get", "class"], ["literal", PATH_CLASSES]],
-    minzoom: 14,
+    filter: ["match", ["get", "class"], TRACK_PATH_CLASSES, true, false],
+    minzoom: 13,
     layout: {
       "text-field": ["coalesce", ["get", "name"], ""],
-      "text-size": ["interpolate", ["linear"], ["zoom"], 14, 10, 18, 13],
-      "text-font": ["Noto Sans Italic", "Open Sans Italic", "Noto Sans Regular", "Open Sans Regular"],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 13, 10, 18, 13],
+      "text-font": ["Noto Sans Regular"],
       "symbol-placement": "line",
       "text-rotation-alignment": "map",
       "text-pitch-alignment": "viewport",
-      "symbol-spacing": 250,
-      "text-max-angle": 40,
+      "symbol-spacing": 220,
     },
     paint: {
-      "text-color": "#ff7a3a",
+      "text-color": "#ff9d6e",
       "text-halo-color": "#000",
       "text-halo-width": 2,
       "text-halo-blur": 0.5,
     },
   }, beforeId);
 
-  // ── Mountain peaks — name labels with halo, sorted by elevation ─────────
+  // ── Highway shield refs (point-placed) ──────────────────────────────────
+  // Separate layer with point placement so route refs ("I 70", "US 285",
+  // "CO 119") appear as recurring badges along the road, not blended into
+  // the road name. Filtered to ref-having US-style networks only.
+  map.addLayer({
+    id: "trails-shield",
+    type: "symbol",
+    source: SOURCE_ID,
+    "source-layer": "transportation_name",
+    filter: ["all",
+      ["has", "ref"],
+      ["match", ["get", "class"], MAJOR_CLASSES, true, false],
+    ],
+    minzoom: 9,
+    layout: {
+      "text-field": ["to-string", ["get", "ref"]],
+      "text-size": ["interpolate", ["linear"], ["zoom"], 9, 11, 14, 13],
+      "text-font": ["Noto Sans Regular"],
+      "symbol-placement": "line",
+      "text-rotation-alignment": "viewport",
+      "text-pitch-alignment": "viewport",
+      "symbol-spacing": 240,
+      "text-padding": 2,
+    },
+    paint: {
+      "text-color": "#000",
+      "text-halo-color": "#ffd34d",
+      "text-halo-width": 4,
+      "text-halo-blur": 0.5,
+    },
+  }, beforeId);
+
+  // ── Mountain peaks ──────────────────────────────────────────────────────
   map.addLayer({
     id: "trails-peak",
     type: "symbol",
@@ -235,7 +265,7 @@ export function addTrailsLayers(
     layout: {
       "text-field": ["coalesce", ["get", "name"], ""],
       "text-size": ["interpolate", ["linear"], ["zoom"], 8, 9, 14, 12],
-      "text-font": ["Noto Sans Bold", "Open Sans Bold", "Arial Unicode MS Bold"],
+      "text-font": ["Noto Sans Regular"],
       "text-anchor": "top",
       "text-offset": [0, 0.6],
       "text-max-width": 8,
@@ -255,11 +285,11 @@ export function addTrailsLayers(
     type: "symbol",
     source: SOURCE_ID,
     "source-layer": "place",
-    filter: ["in", ["get", "class"], ["literal", ["city", "town", "village", "hamlet"]]],
+    filter: ["match", ["get", "class"], ["city", "town", "village", "hamlet"], true, false],
     layout: {
       "text-field": ["coalesce", ["get", "name"], ""],
       "text-size": ["interpolate", ["linear"], ["zoom"], 6, 10, 14, 14],
-      "text-font": ["Noto Sans Regular", "Open Sans Regular", "Arial Unicode MS Regular"],
+      "text-font": ["Noto Sans Regular"],
       "text-max-width": 8,
       "symbol-sort-key": ["case",
         ["==", ["get", "class"], "city"], 0,
