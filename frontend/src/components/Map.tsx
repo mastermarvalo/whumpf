@@ -694,10 +694,6 @@ export function Map({
 
   const theme = dark ? THEMES.dark : THEMES.light;
 
-  // Show the time slider when any weather layer is toggled on.
-  const anyWeatherVisible = layerGroups
-    .find((g) => g.id === "weather")
-    ?.active.some((l) => visible[l.id]) ?? false;
 
   // Persist layer selections and basemap to localStorage, debounced.
   // Without the debounce, dragging the opacity slider triggered ~30 writes/sec.
@@ -994,17 +990,16 @@ export function Map({
         />
       )}
 
-      {/* Time slider — shown when any weather layer is active */}
-      {anyWeatherVisible && (
-        <TimeSlider
-          step={mapTimeStep}
-          onChange={setMapTimeStep}
-          theme={theme}
-          mobile={isMobile}
-          mobileBottom={mobileBottom}
-          layerPanelCollapsed={layerPanelCollapsed}
-        />
-      )}
+      {/* Time slider — always visible so users can orient themselves; only
+          affects time-enabled layers (weather) when those are toggled on. */}
+      <TimeSlider
+        step={mapTimeStep}
+        onChange={setMapTimeStep}
+        theme={theme}
+        mobile={isMobile}
+        mobileBottom={mobileBottom}
+        layerPanelCollapsed={layerPanelCollapsed}
+      />
 
       {/* First-load hint nudging zoom-in / layer enablement */}
       <StartHint

@@ -156,7 +156,7 @@ export function LayerPanel({
         zIndex: Z.TOP_PANEL,
         width: 210,
         boxSizing: "border-box",
-        bottom: 10,
+        maxHeight: "calc(100vh - 20px)",
         overflowY: "auto",
         userSelect: "none",
       }}
