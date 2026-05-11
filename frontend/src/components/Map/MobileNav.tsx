@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import { MOBILE_NAV_H, type Theme } from "./theme";
+import { Z } from "./zIndex";
 
 export function MobileNav({
   theme,
@@ -28,6 +29,8 @@ export function MobileNav({
     return (
       <button
         onClick={onClick}
+        aria-label={label}
+        aria-pressed={active}
         style={{
           flex: 1,
           display: "flex",
@@ -65,7 +68,7 @@ export function MobileNav({
         borderTop: `1px solid ${theme.divider}`,
         display: "flex",
         alignItems: "stretch",
-        zIndex: 1000,
+        zIndex: Z.MOBILE_NAV,
         paddingBottom: "env(safe-area-inset-bottom)",
         boxShadow: "0 -2px 12px rgba(0,0,0,0.12)",
       }}

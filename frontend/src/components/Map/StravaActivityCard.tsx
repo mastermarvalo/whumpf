@@ -3,6 +3,7 @@ import { apiFetch } from "../../auth";
 import { API_URL } from "./constants";
 import type { ActivityCardProps, Units } from "./types";
 import type { Theme } from "./theme";
+import { Z } from "./zIndex";
 
 export function StravaActivityCard({
   activities,
@@ -26,6 +27,14 @@ export function StravaActivityCard({
   const act = activities[index];
   const descCache = useRef<Record<number, string | null>>({});
   const [description, setDescription] = useState<string | null | "loading">("loading");
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
 
   useEffect(() => {
     if (act.id in descCache.current) {
@@ -71,6 +80,8 @@ export function StravaActivityCard({
 
   return (
     <div
+      role="dialog"
+      aria-label={`Strava activity ${act.name}`}
       style={mobile ? {
         position: "fixed",
         bottom: mobileBottom,
@@ -81,7 +92,7 @@ export function StravaActivityCard({
         boxShadow: "0 4px 24px rgba(0,0,0,0.28)",
         overflow: "hidden",
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        zIndex: 999,
+        zIndex: Z.FLOATING_PANEL,
         color: theme.text,
       } : {
         position: "fixed",
@@ -93,7 +104,7 @@ export function StravaActivityCard({
         boxShadow: "0 4px 24px rgba(0,0,0,0.28)",
         overflow: "hidden",
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        zIndex: 1000,
+        zIndex: Z.FLOATING_PANEL,
         color: theme.text,
       }}
     >
@@ -130,6 +141,7 @@ export function StravaActivityCard({
           </div>
           <button
             onClick={onClose}
+            aria-label="Close activity card"
             style={{ background: "none", border: "none", cursor: "pointer", color: theme.muted, fontSize: 18, lineHeight: 1, padding: "0 0 0 8px", flexShrink: 0 }}
           >×</button>
         </div>
@@ -177,12 +189,14 @@ export function StravaActivityCard({
               <button
                 onClick={() => onIndexChange(index - 1)}
                 disabled={index === 0}
+                aria-label="Previous activity"
                 style={{ background: "none", border: "none", cursor: index === 0 ? "default" : "pointer", color: index === 0 ? theme.muted : theme.text, fontSize: 16, padding: "0 2px", lineHeight: 1 }}
               >‹</button>
               <span>{index + 1} / {activities.length}</span>
               <button
                 onClick={() => onIndexChange(index + 1)}
                 disabled={index === activities.length - 1}
+                aria-label="Next activity"
                 style={{ background: "none", border: "none", cursor: index === activities.length - 1 ? "default" : "pointer", color: index === activities.length - 1 ? theme.muted : theme.text, fontSize: 16, padding: "0 2px", lineHeight: 1 }}
               >›</button>
             </div>

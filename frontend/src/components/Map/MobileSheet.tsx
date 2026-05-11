@@ -1,5 +1,6 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
 import type { Theme } from "./theme";
+import { Z } from "./zIndex";
 
 export function MobileSheet({
   open,
@@ -12,14 +13,25 @@ export function MobileSheet({
   theme: Theme;
   children: ReactNode;
 }) {
+  // Esc closes the sheet, matching the backdrop-click behaviour.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open, onClose]);
+
   return (
     <>
       <div
         onClick={onClose}
+        aria-hidden="true"
         style={{
           position: "fixed",
           inset: 0,
-          zIndex: 1001,
+          zIndex: Z.SHEET_BACKDROP,
           background: "rgba(0,0,0,0.35)",
           opacity: open ? 1 : 0,
           pointerEvents: open ? "auto" : "none",
@@ -27,12 +39,14 @@ export function MobileSheet({
         }}
       />
       <div
+        role="dialog"
+        aria-modal="true"
         style={{
           position: "fixed",
           bottom: 0,
           left: 0,
           right: 0,
-          zIndex: 1002,
+          zIndex: Z.SHEET,
           background: theme.panel,
           borderRadius: "16px 16px 0 0",
           maxHeight: "82vh",

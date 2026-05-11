@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { Theme } from "./theme";
+import { Z } from "./zIndex";
 
 // Sits at top-left below the hamburger menu. Wrench icon opens a fly-out panel
 // listing available tools. Add new tools here as the feature set grows.
@@ -27,11 +28,13 @@ export function ToolboxPanel({
   const leftPos = layerPanelCollapsed ? 50 : 228;
 
   return (
-    <div style={{ position: "fixed", top: 10, left: leftPos, zIndex: 1001, transition: "left 200ms ease" }}>
+    <div style={{ position: "fixed", top: 10, left: leftPos, zIndex: Z.FLY_OUT, transition: "left 200ms ease" }}>
       {/* Toolbox trigger button */}
       <button
         onClick={() => setOpen((o) => !o)}
         title="Tools"
+        aria-label="Tools"
+        aria-expanded={open}
         style={{
           width: 36,
           height: 36,
@@ -81,6 +84,8 @@ export function ToolboxPanel({
           <button
             onClick={() => activateTool(onMeasureToggle)}
             title={measureActive ? "Exit slope measurement" : "Measure slope between two points"}
+            aria-label="Measure slope between two points"
+            aria-pressed={measureActive}
             style={{
               display: "flex",
               alignItems: "center",

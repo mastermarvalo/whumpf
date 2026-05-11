@@ -14,6 +14,7 @@ import {
   TITILER_URL,
 } from "./Map/constants";
 import { THEMES, MOBILE_NAV_H } from "./Map/theme";
+import { Z } from "./Map/zIndex";
 import type {
   ActivityCardProps,
   BasemapId,
@@ -782,7 +783,7 @@ export function Map({
             position: "fixed",
             bottom: isMobile ? mobileBottom + 4 : 28,
             left: 80,
-            zIndex: 900,
+            zIndex: Z.MAP_OVERLAY,
             display: "flex",
             alignItems: "center",
             gap: 4,
@@ -808,11 +809,13 @@ export function Map({
       <button
         onClick={() => setBoundsLocked((l) => !l)}
         title={boundsLocked ? "Expand map beyond Colorado" : "Lock map to Colorado"}
+        aria-label={boundsLocked ? "Expand map beyond Colorado" : "Lock map to Colorado"}
+        aria-pressed={boundsLocked}
         style={{
           position: "fixed",
           bottom: 28,
           right: 10,
-          zIndex: 900,
+          zIndex: Z.MAP_OVERLAY,
           display: "flex",
           alignItems: "center",
           gap: 5,

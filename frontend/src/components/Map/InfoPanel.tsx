@@ -1,6 +1,8 @@
+import { useEffect } from "react";
 import type { ForecastPeriod, PointData, Units } from "./types";
 import type { Theme } from "./theme";
 import { aspectCompass } from "./utils";
+import { Z } from "./zIndex";
 
 export function InfoPanel({
   data,
@@ -21,6 +23,14 @@ export function InfoPanel({
   mobileBottom?: number;
   onClose: () => void;
 }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   const imp = units === "imperial";
   const fmt = (n: number | undefined, dec = 0) =>
     n == null || n === -9999 ? "—" : n.toFixed(dec);
@@ -34,6 +44,8 @@ export function InfoPanel({
 
   return (
     <div
+      role="dialog"
+      aria-label="Point info"
       style={mobile ? {
         position: "fixed",
         bottom: mobileBottom,
@@ -46,7 +58,7 @@ export function InfoPanel({
         fontSize: 14,
         color: theme.text,
         boxShadow: "0 2px 16px rgba(0,0,0,0.28)",
-        zIndex: 999,
+        zIndex: Z.FLOATING_PANEL,
       } : {
         position: "fixed",
         bottom: 36,
@@ -59,7 +71,7 @@ export function InfoPanel({
         fontSize: 13,
         color: theme.text,
         boxShadow: "0 2px 12px rgba(0,0,0,0.24)",
-        zIndex: 1000,
+        zIndex: Z.FLOATING_PANEL,
         maxWidth: "calc(100vw - 40px)",
         minWidth: 320,
       }}
@@ -111,6 +123,7 @@ export function InfoPanel({
         )}
         <button
           onClick={onClose}
+          aria-label="Close point info"
           style={{
             marginLeft: "auto",
             background: "none",

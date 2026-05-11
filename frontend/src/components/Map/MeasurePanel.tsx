@@ -1,8 +1,9 @@
-import type { CSSProperties, ReactNode } from "react";
+import { useEffect, type CSSProperties, type ReactNode } from "react";
 import type { ProfileResponse, Units } from "./types";
 import type { Theme } from "./theme";
 import { slopeColor } from "./utils";
 import { ProfileChart } from "./ProfileChart";
+import { Z } from "./zIndex";
 
 export function MeasurePanel({
   pts,
@@ -23,6 +24,14 @@ export function MeasurePanel({
   mobileBottom?: number;
   onClose: () => void;
 }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
   const imp = units === "imperial";
 
   const summaryRow = profile ? (() => {
@@ -78,7 +87,7 @@ export function MeasurePanel({
     fontSize: 13,
     color: theme.text,
     boxShadow: "0 2px 16px rgba(0,0,0,0.28)",
-    zIndex: 999,
+    zIndex: Z.FLOATING_PANEL,
   } : {
     position: "fixed",
     bottom: 36,
@@ -91,17 +100,18 @@ export function MeasurePanel({
     fontSize: 13,
     color: theme.text,
     boxShadow: "0 2px 10px rgba(0,0,0,0.22)",
-    zIndex: 1000,
+    zIndex: Z.FLOATING_PANEL,
     width: hasChart ? 360 : undefined,
     whiteSpace: hasChart ? undefined : "nowrap",
   };
 
   return (
-    <div style={panelStyle}>
+    <div role="dialog" aria-label="Slope profile" style={panelStyle}>
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <span style={{ color: theme.muted, fontSize: 11 }}>A → B</span>
         <button
           onClick={onClose}
+          aria-label="Close slope measurement"
           style={{
             background: "none", border: "none", cursor: "pointer",
             color: theme.muted, fontSize: 18, lineHeight: 1,

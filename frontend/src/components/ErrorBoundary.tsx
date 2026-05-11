@@ -1,4 +1,5 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
+import { Z } from "./Map/zIndex";
 
 interface Props {
   children: ReactNode;
@@ -23,9 +24,11 @@ export class ErrorBoundary extends Component<Props, State> {
     if (!this.state.error) return this.props.children;
     return (
       <div
+        role="alert"
         style={{
           position: "fixed",
           inset: 0,
+          zIndex: Z.ERROR_BOUNDARY,
           display: "flex",
           flexDirection: "column",
           alignItems: "center",

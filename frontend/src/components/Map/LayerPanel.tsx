@@ -2,6 +2,7 @@ import { useState, type CSSProperties } from "react";
 import type { StravaStatus } from "../../App";
 import type { BasemapId, LayerGroup, Units } from "./types";
 import type { Theme } from "./theme";
+import { Z } from "./zIndex";
 
 export function LayerPanel({
   groups,
@@ -80,7 +81,7 @@ export function LayerPanel({
     justifyContent: "center",
     cursor: "pointer",
     boxShadow: "0 2px 12px rgba(0,0,0,0.18)",
-    zIndex: 1000,
+    zIndex: Z.TOP_PANEL,
     color: theme.text,
     fontSize: 16,
     padding: 0,
@@ -90,8 +91,14 @@ export function LayerPanel({
   // On mobile the sheet handles show/hide — no collapse toggle needed.
   if (!mobile && collapsed) {
     return (
-      <button style={btnBase} onClick={() => setCollapsed(false)} title="Show layers">
-        <svg width="16" height="14" viewBox="0 0 16 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round">
+      <button
+        style={btnBase}
+        onClick={() => setCollapsed(false)}
+        title="Show layers"
+        aria-label="Show layer panel"
+        aria-expanded={false}
+      >
+        <svg width="16" height="14" viewBox="0 0 16 14" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" aria-hidden="true">
           <line x1="1" y1="2" x2="15" y2="2"/>
           <line x1="1" y1="7" x2="15" y2="7"/>
           <line x1="1" y1="12" x2="15" y2="12"/>
@@ -102,6 +109,8 @@ export function LayerPanel({
 
   return (
     <div
+      role={mobile ? undefined : "region"}
+      aria-label={mobile ? undefined : "Layer controls"}
       style={mobile ? {
         padding: "4px 16px 16px",
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
@@ -125,7 +134,7 @@ export function LayerPanel({
         display: "flex",
         flexDirection: "column",
         gap: 0,
-        zIndex: 1000,
+        zIndex: Z.TOP_PANEL,
         width: 210,
         boxSizing: "border-box",
         bottom: 10,
@@ -147,6 +156,8 @@ export function LayerPanel({
             <button
               onClick={() => setCollapsed(true)}
               title="Collapse layers"
+              aria-label="Collapse layer panel"
+              aria-expanded={true}
               style={{
                 background: "none",
                 border: "none",
@@ -174,6 +185,7 @@ export function LayerPanel({
           <button
             onClick={onUnitsToggle}
             title={`Switch to ${units === "imperial" ? "metric" : "imperial"}`}
+            aria-label={`Switch units to ${units === "imperial" ? "metric" : "imperial"}`}
             style={{
               background: "none",
               border: `1px solid ${theme.divider}`,
@@ -192,6 +204,7 @@ export function LayerPanel({
           <button
             onClick={onDarkToggle}
             title={dark ? "Switch to light mode" : "Switch to dark mode"}
+            aria-label={dark ? "Switch to light mode" : "Switch to dark mode"}
             style={{
               background: "none",
               border: "none",
@@ -214,6 +227,8 @@ export function LayerPanel({
           <button
             key={id}
             onClick={() => onBasemapChange(id)}
+            aria-label={`${id} basemap`}
+            aria-pressed={basemap === id}
             style={{
               flex: 1,
               padding: "3px 0",

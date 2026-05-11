@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { Theme } from "./theme";
+import { Z } from "./zIndex";
 import {
   parseCoords,
   photonLabel,
@@ -102,7 +103,7 @@ export function SearchBar({
         ...(mobile
           ? { left: 10, right: 10 }
           : { left: "55%", transform: "translateX(-50%)", width: 380 }),
-        zIndex: 1000,
+        zIndex: Z.TOP_PANEL,
         display: "flex",
         flexDirection: "column",
         alignItems: "stretch",
@@ -135,6 +136,7 @@ export function SearchBar({
         />
         <button
           type="submit"
+          aria-label="Search"
           style={{
             padding: "9px 16px",
             borderRadius: 6,
