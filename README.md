@@ -5,7 +5,9 @@ Personal CalTopo + OnX, purpose-built for backcountry skiing and avalanche
 terrain analysis.
 
 See [`whumpf-stack.md`](./whumpf-stack.md) for the full stack decisions and
-rationale. This README covers how to actually run the thing.
+rationale. This README covers how to actually run the thing. For sign-up
+walkthroughs of Resend / Sentry / Plausible / Backblaze / UptimeRobot,
+see [`docs/external-services.md`](./docs/external-services.md).
 
 ## Services at a glance
 

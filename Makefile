@@ -108,3 +108,9 @@ test-api:  ## run backend pytest inside the api container
 .PHONY: lint-api
 lint-api:  ## ruff check the backend
 	$(COMPOSE) exec api uv run ruff check app tests
+
+# --- backups ---------------------------------------------------------------
+
+.PHONY: backup
+backup:  ## dump postgres + user-uploads to BACKUP_S3_* (see docs/external-services.md)
+	./scripts/backup.sh

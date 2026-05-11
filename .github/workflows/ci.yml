@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Cancel in-flight runs when a new commit lands on the same ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    name: Backend (lint + tests)
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgis/postgis:17-3.5
+        env:
+          POSTGRES_USER: whumpf
+          POSTGRES_PASSWORD: whumpf
+          POSTGRES_DB: whumpf_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U whumpf"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Sync deps
+        working-directory: backend
+        run: uv sync --frozen
+
+      - name: Ruff
+        working-directory: backend
+        run: uv run ruff check app tests
+
+      - name: Pytest
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://whumpf:whumpf@localhost:5432/whumpf_test
+          JWT_SECRET: ci-secret-not-for-prod
+          S3_ENDPOINT: http://localhost:9000
+          S3_ACCESS_KEY: ci
+          S3_SECRET_KEY: cisecret123
+          WHUMPF_ENV: ci
+        run: uv run pytest -q
+
+  frontend:
+    name: Frontend (typecheck + build)
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: "npm"
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Typecheck + build
+        working-directory: frontend
+        # npm run build = tsc -b && vite build, so this covers both.
+        run: npm run build
