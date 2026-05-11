@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import { apiFetch } from "../auth";
 import { useFetchWithRetry } from "../hooks/useFetchWithRetry";
@@ -77,6 +77,7 @@ import { InfoPanel } from "./Map/InfoPanel";
 import { MeasurePanel } from "./Map/MeasurePanel";
 import { SearchBar } from "./Map/SearchBar";
 import { StravaActivityCard } from "./Map/StravaActivityCard";
+import { StartHint } from "./Map/StartHint";
 import { ToolboxPanel } from "./Map/ToolboxPanel";
 import { MobileSheet } from "./Map/MobileSheet";
 import { MobileNav } from "./Map/MobileNav";
@@ -671,6 +672,21 @@ export function Map({
     setMaskVisibility(map, boundsLocked);
   }, [boundsLocked]);
 
+  // Subscribe the start-hint to first-interaction events. Stable identity so
+  // StartHint's effect doesn't re-bind on every parent render.
+  const bindStartHintDismiss = useCallback((dismiss: () => void) => {
+    const map = mapRef.current;
+    if (!map) return () => {};
+    map.once("zoomstart", dismiss);
+    map.once("dragstart", dismiss);
+    map.once("click", dismiss);
+    return () => {
+      map.off("zoomstart", dismiss);
+      map.off("dragstart", dismiss);
+      map.off("click", dismiss);
+    };
+  }, []);
+
   function flyToCoords(lat: number, lon: number) {
     const map = mapRef.current;
     if (!map) return;
@@ -795,6 +811,14 @@ export function Map({
           mobileBottom={mobileBottom}
         />
       )}
+
+      {/* First-load hint nudging zoom-in / layer enablement */}
+      <StartHint
+        theme={theme}
+        mobile={isMobile}
+        mobileBottom={mobileBottom}
+        onDismissBind={bindStartHintDismiss}
+      />
 
       {/* Resolution pill — appears bottom-left when a terrain layer is using 1m data */}
       {aboveHiresZoom && HIRES_LAYER_IDS.some((id) => visible[id]) && (
