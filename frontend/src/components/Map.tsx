@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import maplibregl from "maplibre-gl";
 import { apiFetch } from "../auth";
+import { useFetchWithRetry } from "../hooks/useFetchWithRetry";
 import type { StravaStatus } from "../App";
 
 const TITILER_URL = import.meta.env.VITE_TITILER_URL ?? "http://localhost:8001";
@@ -1386,9 +1387,6 @@ export function Map({
     return "streets";
   });
   const [loadingLayers, setLoadingLayers] = useState<Set<string>>(new Set());
-  // Ref so the map idle handler (set up once) can always reach the current setter.
-  const setLoadingLayersRef = useRef(setLoadingLayers);
-  setLoadingLayersRef.current = setLoadingLayers;
   const [visible, setVisible] = useState<Record<string, boolean>>(() => {
     const defaults = Object.fromEntries(OVERLAY_LAYERS.map((l) => [l.id, l.defaultVisible]));
     try {
@@ -1669,8 +1667,10 @@ export function Map({
     });
 
     // Clear all loading spinners once the map is fully idle (all tiles rendered).
+    // The useState setter is referentially stable across renders, so calling it
+    // directly from this handler — set up exactly once — is safe.
     map.on("idle", () => {
-      setLoadingLayersRef.current(prev => prev.size === 0 ? prev : new Set());
+      setLoadingLayers((prev) => (prev.size === 0 ? prev : new Set()));
     });
 
     // Track whether we're at hires zoom — only re-renders when crossing z13.
@@ -1772,83 +1772,53 @@ export function Map({
     }
   }, [measurePts]);
 
-  // Fetch SNOTEL data the first time the layer is enabled.
+  // Sync visibility immediately; fetch lazily via useFetchWithRetry below.
   const snotelVisible = visible["snotel"];
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!snotelVisible) { setSnotelVisibility(map, false); return; }
-    setSnotelVisibility(map, true);
-    if (snotelLoaded) return;
-    let cancelled = false;
-    const load = (attempt: number) =>
-      apiFetch(`${API_URL}/snowpack/stations`)
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-        .then((geojson) => {
-          if (cancelled) return;
-          snotelDataRef.current = geojson;
-          setSnotelData(mapRef.current, geojson);
-          setSnotelLoaded(true);
-        })
-        .catch((err) => {
-          if (cancelled) return;
-          console.warn(`SNOTEL fetch failed (attempt ${attempt + 1}):`, err);
-          if (attempt < 4) setTimeout(() => load(attempt + 1), Math.min(2000 * 2 ** attempt, 20000));
-        });
-    load(0);
-    return () => { cancelled = true; };
-  }, [snotelVisible, snotelLoaded]);
+  const caicVisible   = visible["caic-danger"];
+  const obsVisible    = visible["caic-obs"];
 
-  // Fetch CAIC danger zones the first time the layer is enabled.
-  const caicVisible = visible["caic-danger"];
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!caicVisible) { setCaicVisibility(map, false); return; }
-    setCaicVisibility(map, true);
-    if (caicLoaded) return;
-    let cancelled = false;
-    const load = (attempt: number) =>
-      fetch(`${API_URL}/avalanche/forecast`)
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-        .then((geojson) => {
-          if (cancelled) return;
-          caicDataRef.current = geojson;
-          setCaicData(mapRef.current, geojson);
-          setCaicLoaded(true);
-        })
-        .catch((err) => {
-          if (cancelled) return;
-          console.warn(`CAIC fetch failed (attempt ${attempt + 1}):`, err);
-          if (attempt < 4) setTimeout(() => load(attempt + 1), Math.min(2000 * 2 ** attempt, 20000));
-        });
-    load(0);
-    return () => { cancelled = true; };
-  }, [caicVisible, caicLoaded]);
+  useEffect(() => { setSnotelVisibility(mapRef.current, !!snotelVisible); }, [snotelVisible]);
+  useEffect(() => { setCaicVisibility(mapRef.current, !!caicVisible); },     [caicVisible]);
+  useEffect(() => { setObsVisibility(mapRef.current, !!obsVisible); },       [obsVisible]);
 
-  // Fetch CAIC field observations the first time the layer is enabled.
-  const obsVisible = visible["caic-obs"];
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!obsVisible) { setObsVisibility(map, false); return; }
-    setObsVisibility(map, true);
-    if (obsLoaded) return;
-    let cancelled = false;
-    const load = (attempt: number) =>
-      fetch(`${API_URL}/avalanche/observations`)
-        .then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${r.status}`))))
-        .then((geojson) => {
-          if (cancelled) return;
-          obsDataRef.current = geojson;
-          setObsData(mapRef.current, geojson);
-          setObsLoaded(true);
-        })
-        .catch((err) => {
-          if (cancelled) return;
-          console.warn(`Obs fetch failed (attempt ${attempt + 1}):`, err);
-          if (attempt < 4) setTimeout(() => load(attempt + 1), Math.min(2000 * 2 ** attempt, 20000));
-        });
-    load(0);
-    return () => { cancelled = true; };
-  }, [obsVisible, obsLoaded]);
+  useFetchWithRetry<object>({
+    enabled: !!snotelVisible,
+    done: snotelLoaded,
+    fetcher: () => apiFetch(`${API_URL}/snowpack/stations`),
+    onSuccess: (geojson) => {
+      snotelDataRef.current = geojson;
+      setSnotelData(mapRef.current, geojson);
+      setSnotelLoaded(true);
+    },
+    label: "SNOTEL",
+    deps: [snotelVisible, snotelLoaded],
+  });
+
+  useFetchWithRetry<object>({
+    enabled: !!caicVisible,
+    done: caicLoaded,
+    fetcher: () => fetch(`${API_URL}/avalanche/forecast`),
+    onSuccess: (geojson) => {
+      caicDataRef.current = geojson;
+      setCaicData(mapRef.current, geojson);
+      setCaicLoaded(true);
+    },
+    label: "CAIC",
+    deps: [caicVisible, caicLoaded],
+  });
+
+  useFetchWithRetry<object>({
+    enabled: !!obsVisible,
+    done: obsLoaded,
+    fetcher: () => fetch(`${API_URL}/avalanche/observations`),
+    onSuccess: (geojson) => {
+      obsDataRef.current = geojson;
+      setObsData(mapRef.current, geojson);
+      setObsLoaded(true);
+    },
+    label: "CAIC observations",
+    deps: [obsVisible, obsLoaded],
+  });
 
   // Highlight selected Strava route; dim all others.
   useEffect(() => {
@@ -1862,40 +1832,44 @@ export function Map({
     setStravaVisibility(mapRef.current, stravaVisible);
   }, [stravaVisible]);
 
+  // Clear cached Strava data when the user disconnects.
   useEffect(() => {
-    if (!stravaStatus.connected) {
-      stravaDataRef.current = null;
-      setStravaData(mapRef.current, { type: "FeatureCollection", features: [] });
-      setStravaLoaded(false);
-      return;
-    }
-    if (stravaLoaded) return;
-    apiFetch(`${API_URL}/strava/activities`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((geojson) => {
-        if (!geojson) return;
-        stravaDataRef.current = geojson;
-        setStravaData(mapRef.current, geojson);
-        setStravaLoaded(true);
-      })
-      .catch((err) => console.warn("Strava fetch failed", err));
-  }, [stravaStatus.connected, stravaLoaded]);
+    if (stravaStatus.connected) return;
+    stravaDataRef.current = null;
+    setStravaData(mapRef.current, { type: "FeatureCollection", features: [] });
+    setStravaLoaded(false);
+  }, [stravaStatus.connected]);
+
+  useFetchWithRetry<object>({
+    enabled: stravaStatus.connected,
+    done: stravaLoaded,
+    fetcher: () => apiFetch(`${API_URL}/strava/activities`),
+    onSuccess: (geojson) => {
+      stravaDataRef.current = geojson;
+      setStravaData(mapRef.current, geojson);
+      setStravaLoaded(true);
+    },
+    label: "Strava activities",
+    deps: [stravaStatus.connected, stravaLoaded],
+  });
 
   const theme = dark ? THEMES.dark : THEMES.light;
 
-  // Persist layer selections and basemap to localStorage.
+  // Persist layer selections and basemap to localStorage, debounced.
+  // Without the debounce, dragging the opacity slider triggered ~30 writes/sec.
   useEffect(() => {
-    try { localStorage.setItem("whumpf:basemap", basemap); } catch { /* quota */ }
-  }, [basemap]);
-  useEffect(() => {
-    try { localStorage.setItem("whumpf:layer-visible", JSON.stringify(visible)); } catch { /* quota */ }
-  }, [visible]);
-  useEffect(() => {
-    try { localStorage.setItem("whumpf:layer-opacity", JSON.stringify(opacity)); } catch { /* quota */ }
-  }, [opacity]);
-  useEffect(() => {
-    try { localStorage.setItem("whumpf:terrain-order", JSON.stringify(terrainOrder)); } catch { /* quota */ }
-  }, [terrainOrder]);
+    const t = setTimeout(() => {
+      try {
+        localStorage.setItem("whumpf:basemap", basemap);
+        localStorage.setItem("whumpf:layer-visible", JSON.stringify(visible));
+        localStorage.setItem("whumpf:layer-opacity", JSON.stringify(opacity));
+        localStorage.setItem("whumpf:terrain-order", JSON.stringify(terrainOrder));
+      } catch {
+        // quota / private mode — best-effort, no point alerting the user
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [basemap, visible, opacity, terrainOrder]);
 
   // When the contour interval changes, swap the MapLibre source+layer with the new tile URL.
   // Raster sources don't support in-place tile URL updates, so we remove and re-add.

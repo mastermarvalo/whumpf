@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { AuthGate } from "./components/AuthGate";
+import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Map as MapView } from "./components/Map";
 import { StatusBar } from "./components/StatusBar";
 import { apiFetch, logout as serverLogout } from "./auth";
@@ -86,11 +87,13 @@ export default function App() {
 
   return (
     <div style={{ position: "relative", width: "100vw", height: "100vh" }}>
-      <MapView
-        onLogout={handleLogout}
-        stravaStatus={stravaStatus}
-        onStravaStatusChange={refreshStravaStatus}
-      />
+      <ErrorBoundary>
+        <MapView
+          onLogout={handleLogout}
+          stravaStatus={stravaStatus}
+          onStravaStatusChange={refreshStravaStatus}
+        />
+      </ErrorBoundary>
       <StatusBar />
     </div>
   );
