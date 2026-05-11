@@ -1,3 +1,4 @@
+import { useState } from "react";
 import type { CSSProperties } from "react";
 import type { Theme } from "./theme";
 import type { TerrainFilterSettings } from "./layers/basemaps";
@@ -170,46 +171,65 @@ const SLOPE_ZONES = [
   { label: "> 45°",  color: "#2b7bb9", note: "Very steep" },
 ];
 
-// ── preset button (wind / all) ─────────────────────────────────────────────────
+// ── aspect mode toggle (All ↔ From wind) ──────────────────────────────────────
 
-function PresetBtn({ label, icon, onClick, theme }: {
-  label: string;
-  icon: React.ReactNode;
-  onClick: () => void;
+function AspectToggle({ windMode, onSelectAll, onSelectWind, theme }: {
+  windMode: boolean;
+  onSelectAll: () => void;
+  onSelectWind: () => void;
   theme: Theme;
 }) {
   return (
-    <button
-      onClick={onClick}
-      style={{
-        flex: 1,
-        display: "flex",
-        alignItems: "center",
-        justifyContent: "center",
-        gap: 5,
-        padding: "6px 8px",
-        borderRadius: 8,
-        border: `1.5px solid ${theme.divider}`,
-        background: theme.soonBg,
-        color: theme.text,
-        fontSize: 11,
-        fontWeight: 600,
-        fontFamily: "inherit",
-        cursor: "pointer",
-        transition: "background 100ms, border-color 100ms",
-      }}
-      onMouseEnter={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.borderColor = "#a07850";
-        (e.currentTarget as HTMLButtonElement).style.background = "rgba(160,120,80,0.15)";
-      }}
-      onMouseLeave={(e) => {
-        (e.currentTarget as HTMLButtonElement).style.borderColor = theme.divider;
-        (e.currentTarget as HTMLButtonElement).style.background = theme.soonBg;
-      }}
-    >
-      {icon}
-      {label}
-    </button>
+    <div style={{
+      position: "relative",
+      display: "flex",
+      borderRadius: 8,
+      border: `1.5px solid ${theme.divider}`,
+      overflow: "hidden",
+      marginTop: 8,
+      flexShrink: 0,
+    }}>
+      {/* Sliding pill */}
+      <div style={{
+        position: "absolute",
+        top: 2, bottom: 2,
+        left: windMode ? "calc(50% + 1px)" : "2px",
+        right: windMode ? "2px" : "calc(50% + 1px)",
+        background: "#a07850",
+        borderRadius: 6,
+        transition: "left 180ms ease, right 180ms ease",
+        pointerEvents: "none",
+      }} />
+      <button
+        onClick={onSelectAll}
+        style={{
+          flex: 1, position: "relative", zIndex: 1,
+          padding: "6px 8px", background: "transparent", border: "none",
+          cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "inherit",
+          color: !windMode ? "#fff" : theme.text,
+          transition: "color 120ms",
+        }}
+      >
+        All aspects
+      </button>
+      <div style={{ width: 1, background: theme.divider, alignSelf: "stretch", flexShrink: 0 }} />
+      <button
+        onClick={onSelectWind}
+        style={{
+          flex: 1, position: "relative", zIndex: 1,
+          padding: "6px 8px", background: "transparent", border: "none",
+          cursor: "pointer", fontSize: 11, fontWeight: 600, fontFamily: "inherit",
+          color: windMode ? "#fff" : theme.text,
+          transition: "color 120ms",
+          display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+        }}
+      >
+        <svg width="10" height="10" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round">
+          <path d="M2 10 L10 2"/><path d="M5 2 L10 2 L10 7"/>
+        </svg>
+        From wind
+      </button>
+    </div>
   );
 }
 
@@ -244,6 +264,7 @@ interface Props {
 const ALL_ASPECTS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 
 export function SlopeFilterPanel({ filter, onChange, onApplyWindPreset, onClose, theme, mobile, mobileBottom }: Props) {
+  const [windMode, setWindMode] = useState(false);
   const panelStyle: CSSProperties = mobile ? {
     position: "fixed",
     bottom: mobileBottom,
@@ -272,7 +293,7 @@ export function SlopeFilterPanel({ filter, onChange, onApplyWindPreset, onClose,
     width: 300,
   };
 
-  const setAspects = (aspects: string[]) => onChange({ ...filter, aspects });
+  const setAspects = (aspects: string[]) => { setWindMode(false); onChange({ ...filter, aspects }); };
 
   return (
     <>
@@ -330,29 +351,16 @@ export function SlopeFilterPanel({ filter, onChange, onApplyWindPreset, onClose,
               })}
             </div>
 
-            {/* ── Preset buttons ── */}
-            <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
-              <PresetBtn
-                label="From wind"
-                onClick={onApplyWindPreset}
-                theme={theme}
-                icon={
-                  <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-                    <path d="M2 10 L10 2"/><path d="M5 2 L10 2 L10 7"/>
-                  </svg>
-                }
-              />
-              <PresetBtn
-                label="All aspects"
-                onClick={() => setAspects([...ALL_ASPECTS])}
-                theme={theme}
-                icon={
-                  <svg width="11" height="11" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round">
-                    <circle cx="6" cy="6" r="4"/><line x1="6" y1="2" x2="6" y2="10"/><line x1="2" y1="6" x2="10" y2="6"/>
-                  </svg>
-                }
-              />
-            </div>
+            {/* ── Aspect mode toggle ── */}
+            <AspectToggle
+              windMode={windMode}
+              onSelectAll={() => setAspects([...ALL_ASPECTS])}
+              onSelectWind={() => {
+                setWindMode(true);
+                onApplyWindPreset();
+              }}
+              theme={theme}
+            />
           </div>
         </div>
 

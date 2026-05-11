@@ -116,6 +116,15 @@ export function InfoPanel({
                   : `${Math.round(data.snowDepthIn * 2.54)} cm`}
               </span>
             )}
+            {!forecastLoading && forecast && forecast.length > 0 && (
+              <span>
+                <b>Wind</b>{" "}
+                {imp
+                  ? forecast[0].windSpeed
+                  : forecast[0].windSpeed.replace(/\d+/g, (n) => String(Math.round(Number(n) * 1.60934))).replace("mph", "km/h")
+                }{" "}{forecast[0].windDirection}
+              </span>
+            )}
             <span style={{ color: theme.muted, fontSize: 11 }}>
               {data.lat.toFixed(4)}°, {data.lon.toFixed(4)}°
             </span>
