@@ -5,6 +5,8 @@ interface Args<T> {
   done: boolean;
   fetcher: () => Promise<Response>;
   onSuccess: (data: T) => void;
+  /** Fires once when all retry attempts have been exhausted. */
+  onError?: (err: unknown) => void;
   label?: string;
   deps: DependencyList;
 }
@@ -22,6 +24,7 @@ export function useFetchWithRetry<T>({
   done,
   fetcher,
   onSuccess,
+  onError,
   label,
   deps,
 }: Args<T>): void {
@@ -41,6 +44,8 @@ export function useFetchWithRetry<T>({
           console.warn(`${tag} fetch failed (attempt ${attempt + 1}):`, err);
           if (attempt < 4) {
             setTimeout(() => load(attempt + 1), Math.min(2000 * 2 ** attempt, 20000));
+          } else if (onError) {
+            onError(err);
           }
         });
     };

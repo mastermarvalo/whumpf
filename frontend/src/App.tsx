@@ -3,6 +3,7 @@ import { AuthGate } from "./components/AuthGate";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Map as MapView } from "./components/Map";
 import { StatusBar } from "./components/StatusBar";
+import { ToastContainer } from "./components/Toast";
 import { apiFetch, logout as serverLogout } from "./auth";
 
 const API_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
@@ -95,6 +96,7 @@ export default function App() {
         />
       </ErrorBoundary>
       <StatusBar />
+      <ToastContainer />
     </div>
   );
 }

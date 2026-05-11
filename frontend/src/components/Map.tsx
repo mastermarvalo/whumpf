@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import { apiFetch } from "../auth";
 import { useFetchWithRetry } from "../hooks/useFetchWithRetry";
+import { showToast } from "./Toast";
 import type { StravaStatus } from "../App";
 
 import {
@@ -404,6 +405,22 @@ export function Map({
     // Track whether we're at hires zoom — only re-renders when crossing z13.
     map.on("zoom", () => setAboveHiresZoom(map.getZoom() >= 13));
 
+    // Basemap CDN failure: maplibre fires "error" once per failed tile request,
+    // so a broken upstream can emit hundreds of events. Throttle to one toast
+    // per 10s and ignore the noise from cancelled requests during basemap swaps.
+    let lastTileErrorAt = 0;
+    map.on("error", (e: { error?: { status?: number; name?: string; message?: string } }) => {
+      const err = e.error;
+      if (!err || err.name === "AbortError") return;
+      const status = err.status;
+      const isAuthOrServer = status === 401 || status === 403 || (status != null && status >= 500);
+      if (!isAuthOrServer) return;
+      const now = Date.now();
+      if (now - lastTileErrorAt < 10_000) return;
+      lastTileErrorAt = now;
+      showToast(`Basemap tiles returned ${status} — try a different basemap.`, "error");
+    });
+
     mapRef.current = map;
     return () => { map.remove(); mapRef.current = null; };
   }, []);
@@ -518,6 +535,7 @@ export function Map({
       setSnotelData(mapRef.current, geojson);
       setSnotelLoaded(true);
     },
+    onError: () => showToast("SNOTEL data unavailable — try again later.", "error"),
     label: "SNOTEL",
     deps: [snotelVisible, snotelLoaded],
   });
@@ -531,6 +549,7 @@ export function Map({
       setCaicData(mapRef.current, geojson);
       setCaicLoaded(true);
     },
+    onError: () => showToast("CAIC forecast unavailable — try again later.", "error"),
     label: "CAIC",
     deps: [caicVisible, caicLoaded],
   });
@@ -544,6 +563,7 @@ export function Map({
       setObsData(mapRef.current, geojson);
       setObsLoaded(true);
     },
+    onError: () => showToast("CAIC observations unavailable — try again later.", "error"),
     label: "CAIC observations",
     deps: [obsVisible, obsLoaded],
   });
@@ -577,6 +597,7 @@ export function Map({
       setStravaData(mapRef.current, geojson);
       setStravaLoaded(true);
     },
+    onError: () => showToast("Couldn't load Strava activities.", "error"),
     label: "Strava activities",
     deps: [stravaStatus.connected, stravaLoaded],
   });
