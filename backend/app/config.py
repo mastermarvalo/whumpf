@@ -60,6 +60,10 @@ class Settings(BaseSettings):
     strava_client_secret: str = ""
     strava_redirect_uri: str = "http://localhost:8000/auth/strava/callback"
     strava_success_url: str = "http://localhost:5173"
+    # Fernet key (base64url-encoded 32 bytes) used to encrypt Strava OAuth
+    # tokens at rest. Empty string disables encryption (legacy plaintext path).
+    # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+    strava_token_key: str = ""
 
     # --- CORS ---------------------------------------------------------------
     cors_allow_origins: str = "http://localhost:5173"

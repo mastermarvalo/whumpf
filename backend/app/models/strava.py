@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from sqlalchemy import DateTime, ForeignKey, Integer, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from app.auth.encryption import EncryptedString
 from app.models.user import Base
 
 
@@ -14,8 +15,11 @@ class StravaConnection(Base):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"), unique=True, nullable=False)
     strava_athlete_id: Mapped[int] = mapped_column(Integer, unique=True, index=True, nullable=False)
-    access_token: Mapped[str] = mapped_column(String(255), nullable=False)
-    refresh_token: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Tokens are encrypted at rest via Fernet (cryptography). The 255-char
+    # column comfortably holds the ~140-char Fernet ciphertext for a 40-char
+    # Strava token. See app/auth/encryption.py.
+    access_token: Mapped[str] = mapped_column(EncryptedString(255), nullable=False)
+    refresh_token: Mapped[str] = mapped_column(EncryptedString(255), nullable=False)
     expires_at: Mapped[int] = mapped_column(Integer, nullable=False)  # Unix timestamp
     scope: Mapped[str] = mapped_column(String(255), nullable=False, default="")
     athlete_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
