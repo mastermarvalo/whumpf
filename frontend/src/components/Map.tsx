@@ -738,6 +738,42 @@ export function Map({
       .addTo(map);
   }
 
+  const [locating, setLocating] = useState(false);
+
+  function locateMe() {
+    if (!navigator.geolocation) {
+      showToast("Geolocation isn't supported by this browser.", "error");
+      return;
+    }
+    setLocating(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setLocating(false);
+        const map = mapRef.current;
+        if (!map) return;
+        const { latitude, longitude } = pos.coords;
+        const [w, s, e, n] = region.bbox;
+        const inside = longitude >= w && longitude <= e && latitude >= s && latitude <= n;
+        if (!inside) {
+          // The region mask + maxBounds would hide the user behind a black
+          // mask. Drop the lock so they can at least see where they are.
+          showToast(`You're outside ${region.label} — unlocking the map.`, "info");
+          if (boundsLocked) setBoundsLocked(false);
+        }
+        flyToCoords(latitude, longitude);
+      },
+      (err) => {
+        setLocating(false);
+        const msg =
+          err.code === err.PERMISSION_DENIED ? "Location permission denied"
+          : err.code === err.TIMEOUT          ? "Location request timed out"
+          : "Couldn't get your location";
+        showToast(msg, "error");
+      },
+      { enableHighAccuracy: true, timeout: 8000, maximumAge: 60_000 },
+    );
+  }
+
   const layerPanelProps = {
     groups: layerGroups,
     visible,
@@ -893,6 +929,49 @@ export function Map({
           1m
         </div>
       )}
+
+      {/* My location — bottom-right, above the region-lock toggle */}
+      <button
+        onClick={locateMe}
+        disabled={locating}
+        title="Show my location"
+        aria-label="Show my location"
+        style={{
+          position: "fixed",
+          bottom: 68,
+          right: 10,
+          zIndex: Z.MAP_OVERLAY,
+          width: 32,
+          height: 32,
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          padding: 0,
+          borderRadius: 5,
+          border: `1px solid ${theme.divider}`,
+          background: theme.panel,
+          color: locating ? theme.muted : theme.accent,
+          cursor: locating ? "wait" : "pointer",
+          boxShadow: "0 1px 6px rgba(0,0,0,0.3)",
+        }}
+      >
+        {/* Crosshair / locate icon */}
+        <svg
+          width="16" height="16" viewBox="0 0 16 16" fill="none"
+          stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round"
+          style={{
+            animation: locating ? "whumpf-spin 1.2s linear infinite" : undefined,
+          }}
+          aria-hidden="true"
+        >
+          <circle cx="8" cy="8" r="3"/>
+          <circle cx="8" cy="8" r="6"/>
+          <line x1="8" y1="0.5" x2="8" y2="3"/>
+          <line x1="8" y1="13" x2="8" y2="15.5"/>
+          <line x1="0.5" y1="8" x2="3" y2="8"/>
+          <line x1="13" y1="8" x2="15.5" y2="8"/>
+        </svg>
+      </button>
 
       {/* Region lock toggle — bottom-right, above MapLibre attribution */}
       <button
