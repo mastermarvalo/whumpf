@@ -1,5 +1,5 @@
 import maplibregl from "maplibre-gl";
-import { MINIO_BUCKET, REGION, TITILER_URL, API_URL } from "../constants";
+import { API_URL, MINIO_BUCKET, TITILER_URL } from "../constants";
 import type { BasemapId } from "../types";
 
 const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
@@ -84,8 +84,8 @@ export function cogTiles(cogPath: string, extra: Record<string, string> = {}): s
   return [`${TITILER_URL}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png?${params}`];
 }
 
-export function getContourUrl(interval: number | null): string {
-  const base = `${API_URL}/tiles/contours/{z}/{x}/{y}?region=${REGION}`;
+export function getContourUrl(regionId: string, interval: number | null): string {
+  const base = `${API_URL}/tiles/contours/{z}/{x}/{y}?region=${regionId}`;
   return interval != null ? `${base}&interval=${interval}` : base;
 }
 

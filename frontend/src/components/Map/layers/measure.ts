@@ -1,6 +1,6 @@
 import maplibregl from "maplibre-gl";
 import { apiFetch } from "../../../auth";
-import { API_URL, REGION } from "../constants";
+import { API_URL } from "../constants";
 import type { ProfileResponse } from "../types";
 
 export const MEASURE_MARKER_STYLE =
@@ -11,13 +11,14 @@ export const MEASURE_MARKER_STYLE =
 export async function fetchProfile(
   a: [number, number],
   b: [number, number],
+  regionId: string,
 ): Promise<ProfileResponse> {
   const p = new URLSearchParams({
     start_lng: String(a[0]),
     start_lat: String(a[1]),
     end_lng: String(b[0]),
     end_lat: String(b[1]),
-    region: REGION,
+    region: regionId,
     n: "64",
   });
   const r = await apiFetch(`${API_URL}/terrain/profile?${p}`);

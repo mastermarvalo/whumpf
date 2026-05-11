@@ -1,21 +1,14 @@
-"""Application settings loaded from environment variables."""
+"""Application settings loaded from environment variables.
+
+Region validation lives in app.regions — re-exported here so existing imports
+of `from app.config import validate_region` keep working.
+"""
 
 from functools import lru_cache
 
-from fastapi import HTTPException, status
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-# Regions for which we host DEM/COG data. Endpoints accepting a `region` query
-# parameter must validate against this set — passing arbitrary strings would
-# attempt arbitrary S3 lookups and bypass cost controls as the product expands.
-ALLOWED_REGIONS: frozenset[str] = frozenset({"colorado"})
-
-
-def validate_region(region: str) -> str:
-    """Raise 400 if `region` isn't in the allowlist. Returns the validated region."""
-    if region not in ALLOWED_REGIONS:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, f"Unknown region: {region}")
-    return region
+from app.regions import validate_region  # noqa: F401 — re-export for backwards compat
 
 
 class Settings(BaseSettings):

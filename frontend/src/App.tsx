@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { AuthGate } from "./components/AuthGate";
 import { ErrorBoundary } from "./components/ErrorBoundary";
 import { Map as MapView } from "./components/Map";
+import type { Region } from "./components/Map/types";
 import { ResetPasswordView } from "./components/ResetPasswordView";
 import { StatusBar } from "./components/StatusBar";
 import { ToastContainer, showToast } from "./components/Toast";
@@ -35,6 +36,8 @@ export default function App() {
   // null = session check in flight; UserSummary = authed; false = not authed.
   // The httpOnly cookie is invisible to JS, so we have to ask the backend.
   const [user, setUser] = useState<UserSummary | false | null>(null);
+  // Regions the user can access. null until /regions completes.
+  const [regions, setRegions] = useState<Region[] | null>(null);
   const [stravaStatus, setStravaStatus] = useState<StravaStatus>({
     connected: false,
     athlete_name: null,
@@ -136,6 +139,29 @@ export default function App() {
     refreshStravaStatus();
   }, [user]);
 
+  // Fetch the user's region registry on auth. The map can't initialize
+  // without bbox/center metadata, so we block its mount until this resolves.
+  useEffect(() => {
+    if (!user) {
+      setRegions(null);
+      return;
+    }
+    apiFetch(`${API_URL}/regions`)
+      .then((r) => (r.ok ? r.json() : Promise.reject(new Error(String(r.status)))))
+      .then((data: Region[]) => {
+        if (data.length === 0) {
+          showToast("No regions are enabled for your account.", "error");
+          setRegions([]);
+          return;
+        }
+        setRegions(data);
+      })
+      .catch(() => {
+        showToast("Couldn't load regions — try refreshing.", "error");
+        setRegions([]);
+      });
+  }, [user]);
+
   // Reset-password flow — full-screen view above auth.
   if (resetToken) {
     return (
@@ -185,11 +211,38 @@ export default function App() {
     );
   }
 
+  // Hold rendering of the map until we know which region to show. Same
+  // splash as the auth probe — usually < 50ms after login.
+  if (regions === null || regions.length === 0) {
+    return (
+      <>
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "linear-gradient(135deg, #0d1117 0%, #161b22 100%)",
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            color: "#555",
+            fontFamily: "ui-sans-serif, system-ui, sans-serif",
+            fontSize: 13,
+            letterSpacing: "0.04em",
+          }}
+        >
+          whumpf
+        </div>
+        <ToastContainer />
+      </>
+    );
+  }
+
   return (
     <div style={{ position: "relative", width: "100vw", height: "100vh" }}>
       <ErrorBoundary>
         <MapView
           user={user}
+          region={regions[0]}
           onLogout={handleLogout}
           stravaStatus={stravaStatus}
           onStravaStatusChange={refreshStravaStatus}

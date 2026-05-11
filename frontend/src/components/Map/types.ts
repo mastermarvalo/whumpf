@@ -6,6 +6,25 @@ export type BasemapId = "streets" | "topo" | "satellite" | "hybrid";
 
 export type Units = "imperial" | "metric";
 
+/**
+ * Per-region metadata served by /regions. Mirrors backend app.regions.Region.
+ * Drives the map's initial bounds/center, the region-lock max bounds, and
+ * the mask cutout — all of which used to be hardcoded to Colorado.
+ */
+export interface Region {
+  id: string;
+  label: string;
+  /** lon_min, lat_min, lon_max, lat_max — content extent for raster sources. */
+  bbox: [number, number, number, number];
+  /** Padded extent used as MapLibre maxBounds when the region lock is on. */
+  max_bounds: [number, number, number, number];
+  /** Default fly-to (lon, lat). */
+  center: [number, number];
+  default_zoom: number;
+  /** GeoJSON FeatureCollection: world rectangle with the region as a hole. */
+  mask_geojson: unknown;
+}
+
 export interface Legend {
   gradient?: string;
   stops?: string[];

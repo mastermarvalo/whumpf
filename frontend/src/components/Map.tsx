@@ -1,19 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import maplibregl from "maplibre-gl";
 import { apiFetch } from "../auth";
 import { useFetchWithRetry } from "../hooks/useFetchWithRetry";
 import { showToast } from "./Toast";
 import type { StravaStatus, UserSummary } from "../App";
 
-import {
-  API_URL,
-  CO_MAX_BOUNDS,
-  COLORADO_MTN_BOUNDS,
-  INITIAL_CENTER,
-  INITIAL_ZOOM,
-  REGION,
-  TITILER_URL,
-} from "./Map/constants";
+import { API_URL, TITILER_URL } from "./Map/constants";
 import { THEMES, MOBILE_NAV_H } from "./Map/theme";
 import { Z } from "./Map/zIndex";
 import type {
@@ -22,6 +14,7 @@ import type {
   ForecastPeriod,
   PointData,
   ProfileResponse,
+  Region,
   Units,
 } from "./Map/types";
 import { fetchSpotData, reverseGeocode } from "./Map/services";
@@ -34,11 +27,11 @@ import {
 } from "./Map/layers/basemaps";
 import {
   HIRES_LAYER_IDS,
-  LAYER_GROUPS,
-  OVERLAY_LAYERS,
   TERRAIN_LAYER_IDS,
   addOverlayLayers,
   applyTerrainOrder,
+  buildLayerGroups,
+  buildOverlayLayers,
 } from "./Map/layers/overlays";
 import {
   addSnotelLayers,
@@ -64,7 +57,7 @@ import {
   setObsData,
   setObsVisibility,
 } from "./Map/layers/obs";
-import { addColoradoMask, setMaskVisibility } from "./Map/layers/mask";
+import { addRegionMask, setMaskVisibility } from "./Map/layers/mask";
 import {
   MEASURE_MARKER_STYLE,
   addMeasureLayers,
@@ -94,6 +87,7 @@ function useIsMobile() {
 
 export function Map({
   user,
+  region,
   onLogout,
   stravaStatus,
   onStravaStatusChange,
@@ -101,12 +95,17 @@ export function Map({
   onDeleteAccount,
 }: {
   user: UserSummary;
+  region: Region;
   onLogout: () => void;
   stravaStatus: StravaStatus;
   onStravaStatusChange: () => void;
   onResendVerification: () => void;
   onDeleteAccount: () => void;
 }) {
+  // Region-derived layer registry. Stable across renders for a fixed region;
+  // recomputed when the user picks a different region.
+  const layerGroups = useMemo(() => buildLayerGroups(region.id), [region.id]);
+  const overlayLayers = useMemo(() => buildOverlayLayers(layerGroups), [layerGroups]);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<maplibregl.Map | null>(null);
   const searchMarkerRef = useRef<maplibregl.Marker | null>(null);
@@ -124,14 +123,14 @@ export function Map({
   });
   const [loadingLayers, setLoadingLayers] = useState<Set<string>>(new Set());
   const [visible, setVisible] = useState<Record<string, boolean>>(() => {
-    const defaults = Object.fromEntries(OVERLAY_LAYERS.map((l) => [l.id, l.defaultVisible]));
+    const defaults = Object.fromEntries(overlayLayers.map((l) => [l.id, l.defaultVisible]));
     try {
       const stored = localStorage.getItem("whumpf:layer-visible");
       return stored ? { ...defaults, ...JSON.parse(stored) } : defaults;
     } catch { return defaults; }
   });
   const [opacity, setOpacity] = useState<Record<string, number>>(() => {
-    const defaults = Object.fromEntries(OVERLAY_LAYERS.map((l) => [l.id, l.opacity]));
+    const defaults = Object.fromEntries(overlayLayers.map((l) => [l.id, l.opacity]));
     try {
       const stored = localStorage.getItem("whumpf:layer-opacity");
       return stored ? { ...defaults, ...JSON.parse(stored) } : defaults;
@@ -150,7 +149,7 @@ export function Map({
   const [obsLoaded, setObsLoaded] = useState(false);
   const obsDataRef = useRef<object | null>(null);
   const [boundsLocked, setBoundsLocked] = useState(true);
-  const [aboveHiresZoom, setAboveHiresZoom] = useState(INITIAL_ZOOM >= 13);
+  const [aboveHiresZoom, setAboveHiresZoom] = useState(region.default_zoom >= 13);
   const [layerPanelCollapsed, setLayerPanelCollapsed] = useState(false);
   const caicDataRef = useRef<object | null>(null);
   const [stravaVisible, setStravaVisible] = useState(true);
@@ -199,9 +198,9 @@ export function Map({
     const map = new maplibregl.Map({
       container: containerRef.current,
       style: getMapStyle(basemap, dark),
-      center: INITIAL_CENTER,
-      zoom: INITIAL_ZOOM,
-      maxBounds: CO_MAX_BOUNDS,
+      center: region.center,
+      zoom: region.default_zoom,
+      maxBounds: region.max_bounds,
       renderWorldCopies: false,
     });
 
@@ -211,11 +210,11 @@ export function Map({
     // Single permanent handler for both initial load and every subsequent setStyle call.
     // All addXxx helpers are idempotent (guard on getSource), so re-firing is safe.
     map.on("style.load", () => {
-      addOverlayLayers(map, visibleRef.current, opacityRef.current, {
-        contours: [getContourUrl(contourIntervalRef.current)],
+      addOverlayLayers(map, overlayLayers, region.bbox, visibleRef.current, opacityRef.current, {
+        contours: [getContourUrl(region.id, contourIntervalRef.current)],
       });
       applyTerrainOrder(map, terrainOrderRef.current);
-      addColoradoMask(map);
+      addRegionMask(map, region.mask_geojson);
       addMeasureLayers(map);
       updateMeasureSource(map, measurePtsRef.current);
       addSnotelLayers(map);
@@ -380,7 +379,7 @@ export function Map({
       const zoom = map.getZoom();
       const pick = async (name: string): Promise<number | undefined> => {
         const doFetch = (fname: string) =>
-          fetch(`${TITILER_URL}/cog/point/${lng},${lat}?url=${encodeURIComponent(cogS3(`${REGION}/${fname}`))}`)
+          fetch(`${TITILER_URL}/cog/point/${lng},${lat}?url=${encodeURIComponent(cogS3(`${region.id}/${fname}`))}`)
             .then((r) => (r.ok ? r.json() : null))
             .then((d) => d?.values?.[0] as number | undefined)
             .catch(() => undefined);
@@ -518,7 +517,7 @@ export function Map({
     if (measurePts.length === 2) {
       setProfileLoading(true);
       setProfile(null);
-      fetchProfile(measurePts[0], measurePts[1])
+      fetchProfile(measurePts[0], measurePts[1], region.id)
         .then((r) => { setProfile(r); setProfileLoading(false); })
         .catch(() => setProfileLoading(false));
     }
@@ -632,7 +631,7 @@ export function Map({
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.getLayer("contours")) return;
-    const url = getContourUrl(contourInterval);
+    const url = getContourUrl(region.id, contourInterval);
     const isVis = visibleRef.current["contours"] ?? false;
     const op = opacityRef.current["contours"] ?? 1.0;
     const beforeId: string | undefined =
@@ -645,8 +644,8 @@ export function Map({
       type: "raster",
       tiles: [url],
       tileSize: 256,
-      bounds: COLORADO_MTN_BOUNDS,
-      minzoom: 9,  // matches LAYER_GROUPS sourceMinzoom for contours
+      bounds: region.bbox,
+      minzoom: 9,  // matches buildLayerGroups sourceMinzoom for contours
       maxzoom: 16,
       attribution: "USGS 3DEP",
     });
@@ -674,9 +673,9 @@ export function Map({
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    map.setMaxBounds(boundsLocked ? CO_MAX_BOUNDS : null);
+    map.setMaxBounds(boundsLocked ? region.max_bounds : null);
     setMaskVisibility(map, boundsLocked);
-  }, [boundsLocked]);
+  }, [boundsLocked, region.max_bounds]);
 
   // Subscribe the start-hint to first-interaction events. Stable identity so
   // StartHint's effect doesn't re-bind on every parent render.
@@ -704,7 +703,7 @@ export function Map({
   }
 
   const layerPanelProps = {
-    groups: LAYER_GROUPS,
+    groups: layerGroups,
     visible,
     opacity,
     dark,
@@ -862,8 +861,8 @@ export function Map({
       {/* Region lock toggle — bottom-right, above MapLibre attribution */}
       <button
         onClick={() => setBoundsLocked((l) => !l)}
-        title={boundsLocked ? "Expand map beyond Colorado" : "Lock map to Colorado"}
-        aria-label={boundsLocked ? "Expand map beyond Colorado" : "Lock map to Colorado"}
+        title={boundsLocked ? `Expand map beyond ${region.label}` : `Lock map to ${region.label}`}
+        aria-label={boundsLocked ? `Expand map beyond ${region.label}` : `Lock map to ${region.label}`}
         aria-pressed={boundsLocked}
         style={{
           position: "fixed",
@@ -886,7 +885,7 @@ export function Map({
         }}
       >
         <span style={{ fontSize: 13 }}>{boundsLocked ? "🔒" : "🌐"}</span>
-        {boundsLocked ? "Colorado" : "Unlocked"}
+        {boundsLocked ? region.label : "Unlocked"}
       </button>
     </>
   );

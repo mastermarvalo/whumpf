@@ -23,6 +23,13 @@ class User(Base):
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
 
+    # CSV of region IDs this user can access (e.g. "colorado,utah"). Validated
+    # against the REGIONS registry by the /regions endpoint and any future
+    # per-region feature gates.
+    allowed_regions: Mapped[str] = mapped_column(
+        String(255), default="colorado", server_default="colorado", nullable=False,
+    )
+
     # Email verification — gates "verified" badges, but accounts can still log
     # in unverified. Token + expiry live on the row so the verification flow
     # stays single-table; one outstanding token per user is enough.
@@ -47,3 +54,7 @@ class User(Base):
     )
 
     strava_connection = relationship("StravaConnection", back_populates="user", uselist=False)
+
+    @property
+    def region_ids(self) -> list[str]:
+        return [r.strip() for r in self.allowed_regions.split(",") if r.strip()]
