@@ -12,6 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.admin import is_admin as _check_admin
 from app.auth.dependencies import get_current_user
 from app.auth.service import (
     clear_auth_cookie,
@@ -58,8 +59,7 @@ class UserOut(BaseModel):
     id: int
     email: str
     email_verified: bool
-
-    model_config = {"from_attributes": True}
+    is_admin: bool
 
 
 class EmailIn(BaseModel):
@@ -144,7 +144,14 @@ def logout(response: Response) -> Response:
 
 @router.get("/me", response_model=UserOut)
 def me(user: User = Depends(get_current_user)) -> UserOut:
-    return user
+    # is_admin combines the per-row column + the ADMIN_EMAILS env allowlist,
+    # so the frontend gets a single boolean to gate admin UI on.
+    return UserOut(
+        id=user.id,
+        email=user.email,
+        email_verified=user.email_verified,
+        is_admin=_check_admin(user),
+    )
 
 
 # ── email verification ─────────────────────────────────────────────────────────

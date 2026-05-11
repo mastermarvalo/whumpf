@@ -165,6 +165,7 @@ services:
       MAIL_PROVIDER: ${MAIL_PROVIDER:-console}
       MAIL_FROM: ${MAIL_FROM:-whumpf <no-reply@whumpf.local>}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
     volumes:
       - ./backend/app:/app/app
     ulimits:

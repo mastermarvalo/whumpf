@@ -5,6 +5,7 @@ import { Map as MapView } from "./components/Map";
 import type { Region } from "./components/Map/types";
 import { ResetPasswordView } from "./components/ResetPasswordView";
 import { StatusBar } from "./components/StatusBar";
+import { StatusPage } from "./components/StatusPage";
 import { ToastContainer, showToast } from "./components/Toast";
 import { apiFetch, logout as serverLogout } from "./auth";
 
@@ -14,6 +15,7 @@ export interface UserSummary {
   id: number;
   email: string;
   email_verified: boolean;
+  is_admin: boolean;
 }
 
 export interface StravaStatus {
@@ -33,6 +35,20 @@ function readAndStripParam(name: string): string | null {
 }
 
 export default function App() {
+  // /status is a standalone public page — split into its own component so
+  // hooks order in the main app stays consistent across renders.
+  if (window.location.pathname === "/status") {
+    return (
+      <>
+        <StatusPage />
+        <ToastContainer />
+      </>
+    );
+  }
+  return <MainApp />;
+}
+
+function MainApp() {
   // null = session check in flight; UserSummary = authed; false = not authed.
   // The httpOnly cookie is invisible to JS, so we have to ask the backend.
   const [user, setUser] = useState<UserSummary | false | null>(null);

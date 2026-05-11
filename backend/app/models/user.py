@@ -22,6 +22,11 @@ class User(Base):
         nullable=False,
     )
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Admin flag — independent of ADMIN_EMAILS env allowlist; either grants
+    # admin. See app.admin.is_admin().
+    is_admin: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False,
+    )
 
     # CSV of region IDs this user can access (e.g. "colorado,utah"). Validated
     # against the REGIONS registry by the /regions endpoint and any future
