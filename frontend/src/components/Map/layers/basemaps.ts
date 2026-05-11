@@ -89,6 +89,22 @@ export function getContourUrl(regionId: string, interval: number | null): string
   return interval != null ? `${base}&interval=${interval}` : base;
 }
 
+export interface TerrainFilterSettings {
+  aspects: string[];        // subset of N, NE, E, SE, S, SW, W, NW
+  slopeMin: number;
+  slopeMax: number;
+}
+
+export function getTerrainFilterUrl(regionId: string, s: TerrainFilterSettings): string {
+  const p = new URLSearchParams({
+    region: regionId,
+    slope_min: String(s.slopeMin),
+    slope_max: String(s.slopeMax),
+    aspects: s.aspects.join(","),
+  });
+  return `${API_URL}/tiles/terrain_filter/{z}/{x}/{y}?${p}`;
+}
+
 // Swap only the basemap source/layers for raster-to-raster transitions without touching overlays.
 export function swapRasterBasemap(
   map: maplibregl.Map,

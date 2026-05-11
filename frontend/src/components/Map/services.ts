@@ -36,6 +36,26 @@ export async function fetchSpotData(lat: number, lng: number): Promise<SpotData>
   };
 }
 
+/**
+ * Wind direction at a location, in degrees ("from" — the meteorological
+ * convention). null if NWS doesn't cover the point or grid data is missing.
+ *
+ * Two-hop: /points/ → meta.properties.forecastGridData → windDirection.values[0].
+ */
+export async function fetchWindDirection(lat: number, lng: number): Promise<number | null> {
+  const headers = { "User-Agent": "(whumpf, backcountry-terrain-app)" };
+  const meta = await fetch(
+    `https://api.weather.gov/points/${lat.toFixed(4)},${lng.toFixed(4)}`,
+    { headers },
+  ).then((r) => (r.ok ? r.json() : null)).catch(() => null);
+  if (!meta?.properties?.forecastGridData) return null;
+  const grid = await fetch(meta.properties.forecastGridData, { headers })
+    .then((r) => (r.ok ? r.json() : null))
+    .catch(() => null);
+  const value = grid?.properties?.windDirection?.values?.[0]?.value;
+  return typeof value === "number" ? value : null;
+}
+
 export async function reverseGeocode(lat: number, lon: number): Promise<string | null> {
   try {
     const r = await fetch(`https://photon.komoot.io/reverse?lat=${lat}&lon=${lon}`);

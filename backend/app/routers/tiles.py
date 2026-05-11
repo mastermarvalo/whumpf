@@ -50,8 +50,10 @@ _HTTP = httpx.AsyncClient(
 
 _SLOPE_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
 _CONTOUR_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
+_FILTER_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
 _SLOPE_CACHE_MAX   = 512   # ~13 MB ceiling
 _CONTOUR_CACHE_MAX = 1024  # ~15 MB ceiling
+_FILTER_CACHE_MAX  = 512   # ~10 MB ceiling — outputs are mostly transparent
 
 
 def _cache_get(store: "OrderedDict[tuple, bytes]", key: tuple) -> bytes | None:
@@ -348,4 +350,159 @@ async def contour_tile(
         content=png,
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+# ── terrain filter ────────────────────────────────────────────────────────────
+# Highlight slopes whose (aspect, slope-angle) match a user-selected combo —
+# the single most important question for backcountry travel ("is this run a
+# trap given today's CAIC problems?"). Read slope + aspect COGs at the tile
+# bbox, mask, render a translucent PNG.
+
+_ASPECT_CENTERS: dict[str, float] = {
+    "N": 0, "NE": 45, "E": 90, "SE": 135,
+    "S": 180, "SW": 225, "W": 270, "NW": 315,
+}
+_FILTER_RENDER_PX = 512
+_FILTER_OUT_PX = 256
+_FILTER_FILL_RGBA = (220, 50, 50, 180)  # avalanche-warning red, ~70% alpha
+
+
+def _aspect_mask(aspect_deg: np.ndarray, allowed: set[str]) -> np.ndarray:
+    """Boolean array: True where the cell's aspect falls in any selected bucket.
+
+    Each bucket is a 45° arc centred on N/NE/E/…/NW. North wraps, so we
+    compute angular distance via min(|d|, 360 - |d|).
+    """
+    if not allowed:
+        return np.zeros_like(aspect_deg, dtype=bool)
+    mask = np.zeros_like(aspect_deg, dtype=bool)
+    for name in allowed:
+        center = _ASPECT_CENTERS.get(name)
+        if center is None:
+            continue
+        diff = np.abs(aspect_deg - center)
+        diff = np.minimum(diff, 360 - diff)
+        mask |= (diff <= 22.5)
+    return mask
+
+
+def _render_terrain_filter(
+    slope_url: str,
+    aspect_url: str,
+    xmin: float, ymin: float, xmax: float, ymax: float,
+    slope_min: float,
+    slope_max: float,
+    aspects: set[str],
+) -> bytes | None:
+    """Blocking: read slope + aspect at the tile window, mask, return PNG."""
+    H = W = _FILTER_RENDER_PX
+    dst_transform = from_bounds(xmin, ymin, xmax, ymax, W, H)
+
+    slope_arr = np.full((H, W), -9999.0, dtype=np.float32)
+    aspect_arr = np.full((H, W), -9999.0, dtype=np.float32)
+
+    try:
+        with rasterio.Env(**_COG_ENV):
+            with rasterio.open(slope_url) as ds:
+                reproject(
+                    source=rasterio.band(ds, 1),
+                    destination=slope_arr,
+                    src_transform=ds.transform, src_crs=ds.crs,
+                    src_nodata=ds.nodata,
+                    dst_transform=dst_transform, dst_crs=_WM_CRS,
+                    dst_nodata=-9999.0,
+                    # MAX, not bilinear. When the destination cell is coarser
+                    # than the source (zoomed out), bilinear averages slope
+                    # across huge windows and an actual 35° rib gets smoothed
+                    # into a 5° mean — the filter then highlights nothing. MAX
+                    # preserves the steepest source slope in each cell, which
+                    # is what we actually want for "does this area contain
+                    # avalanche terrain at all?".
+                    resampling=Resampling.max,
+                )
+            with rasterio.open(aspect_url) as ds:
+                reproject(
+                    source=rasterio.band(ds, 1),
+                    destination=aspect_arr,
+                    src_transform=ds.transform, src_crs=ds.crs,
+                    src_nodata=ds.nodata,
+                    dst_transform=dst_transform, dst_crs=_WM_CRS,
+                    dst_nodata=-9999.0,
+                    # Nearest for aspect — averaging directions gives meaningless
+                    # numbers across the wrap-around at north. At low zooms a
+                    # cell may contain mixed aspects we can't represent
+                    # accurately, which is a known limitation; zooming in
+                    # past z~13 gets you per-pixel-correct aspect filtering.
+                    resampling=Resampling.nearest,
+                )
+    except Exception as exc:
+        logger.warning("terrain_filter read failed: %s", exc)
+        return None
+
+    valid = (slope_arr != -9999.0) & (aspect_arr != -9999.0)
+    matches = valid & (slope_arr >= slope_min) & (slope_arr <= slope_max) & _aspect_mask(aspect_arr, aspects)
+
+    if not matches.any():
+        return None  # empty tile → handler returns 204
+
+    img = np.zeros((H, W, 4), dtype=np.uint8)
+    img[matches] = list(_FILTER_FILL_RGBA)
+    pil = Image.fromarray(img, mode="RGBA").resize((_FILTER_OUT_PX, _FILTER_OUT_PX), Image.LANCZOS)
+    buf = io.BytesIO()
+    pil.save(buf, format="PNG")
+    return buf.getvalue()
+
+
+@router.get("/terrain_filter/{z}/{x}/{y}")
+async def terrain_filter_tile(
+    z: int, x: int, y: int,
+    region: str = "colorado",
+    slope_min: float = Query(default=30.0, ge=0, le=89),
+    slope_max: float = Query(default=45.0, ge=1, le=90),
+    aspects: str = Query(default="N,NE,E,SE,S,SW,W,NW"),
+    hires: bool = False,
+) -> Response:
+    """Translucent overlay highlighting cells whose slope is in [slope_min,
+    slope_max] AND aspect falls in any of `aspects` (comma-separated of
+    N,NE,E,SE,S,SW,W,NW). Empty intersection → 204."""
+    validate_region(region)
+    if z < 0 or z > _MAX_Z or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
+        raise HTTPException(400, "tile coordinates out of range")
+    if slope_min >= slope_max:
+        raise HTTPException(400, "slope_min must be < slope_max")
+
+    valid_aspect_names = set(_ASPECT_CENTERS)
+    aspect_set = {a.strip().upper() for a in aspects.split(",") if a.strip()} & valid_aspect_names
+    if not aspect_set:
+        return Response(status_code=204)
+
+    cache_key = (z, x, y, region, hires, round(slope_min, 1), round(slope_max, 1),
+                 tuple(sorted(aspect_set)))
+    if cached := _cache_get(_FILTER_CACHE, cache_key):
+        return Response(content=cached, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=3600"})
+
+    settings = get_settings()
+    suffix = "_hires" if hires else ""
+    base = f"{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{region}"
+    slope_url  = f"/vsicurl/{base}/slope{suffix}.tif"
+    aspect_url = f"/vsicurl/{base}/aspect{suffix}.tif"
+
+    xmin, ymin, xmax, ymax = _tile_mercator_bounds(z, x, y)
+
+    loop = asyncio.get_event_loop()
+    png = await loop.run_in_executor(
+        _POOL, _render_terrain_filter,
+        slope_url, aspect_url, xmin, ymin, xmax, ymax,
+        slope_min, slope_max, aspect_set,
+    )
+    if png is None:
+        return Response(status_code=204)
+
+    _cache_put(_FILTER_CACHE, cache_key, png, _FILTER_CACHE_MAX)
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=3600"},
     )

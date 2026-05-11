@@ -19,6 +19,7 @@ class TerrainSample:
     distance_m: float
     elevation_m: float | None
     slope_deg: float | None
+    aspect_deg: float | None
 
 
 def sample_profile(
@@ -28,7 +29,7 @@ def sample_profile(
     settings: Settings,
     n: int = 64,
 ) -> list[TerrainSample]:
-    """Sample slope and elevation along a line at n evenly-spaced points.
+    """Sample slope, elevation, and aspect along a line at n evenly-spaced points.
 
     start/end are (longitude, latitude) in WGS84.
     """
@@ -53,37 +54,29 @@ def sample_profile(
         GDAL_HTTP_VERSION="2",
     )
 
-    with rasterio.Env(**env_vars):
-        # Prefer 1m hires files; fall back to 10m if hires isn't available for the region.
-        try:
-            with rasterio.open(f"/vsicurl/{base}/slope_hires.tif") as ds:
-                nd = ds.nodata
-                raw_slope = [float(v[0]) for v in ds.sample(coords)]
-        except Exception:
-            with rasterio.open(f"/vsicurl/{base}/slope.tif") as ds:
-                nd = ds.nodata
-                raw_slope = [float(v[0]) for v in ds.sample(coords)]
-        slopes: list[float | None] = [
-            None if (nd is not None and v == nd) else v for v in raw_slope
-        ]
+    def _sample_one(name: str) -> list[float | None]:
+        """Open a COG (preferring hires), sample at every coord, mask nodata."""
+        for variant in (f"{name}_hires", name):
+            try:
+                with rasterio.open(f"/vsicurl/{base}/{variant}.tif") as ds:
+                    nd = ds.nodata
+                    raw = [float(v[0]) for v in ds.sample(coords)]
+                return [None if (nd is not None and v == nd) else v for v in raw]
+            except Exception:
+                continue
+        return [None] * n
 
-        try:
-            with rasterio.open(f"/vsicurl/{base}/dem_hires.tif") as ds:
-                nd = ds.nodata
-                raw_dem = [float(v[0]) for v in ds.sample(coords)]
-        except Exception:
-            with rasterio.open(f"/vsicurl/{base}/dem.tif") as ds:
-                nd = ds.nodata
-                raw_dem = [float(v[0]) for v in ds.sample(coords)]
-        elevs: list[float | None] = [
-            None if (nd is not None and v == nd) else v for v in raw_dem
-        ]
+    with rasterio.Env(**env_vars):
+        slopes  = _sample_one("slope")
+        elevs   = _sample_one("dem")
+        aspects = _sample_one("aspect")
 
     return [
         TerrainSample(
             distance_m=float(distances[i]),
             elevation_m=elevs[i],
             slope_deg=slopes[i],
+            aspect_deg=aspects[i],
         )
         for i in range(n)
     ]

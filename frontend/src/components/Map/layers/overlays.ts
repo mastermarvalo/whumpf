@@ -124,6 +124,17 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
           noSlider: true,
           sourceMinzoom: 9,
         },
+        {
+          id: "terrain-filter",
+          label: "Slope filter",
+          // Tiles are populated dynamically — Map.tsx replaces the source
+          // every time the user changes aspects or slope range. The default
+          // values here match the panel's initial state for first render.
+          tiles: [`${API_URL}/tiles/terrain_filter/{z}/{x}/{y}?region=${regionId}&slope_min=30&slope_max=45&aspects=N,NE,E,SE,S,SW,W,NW`],
+          opacity: 0.6,
+          defaultVisible: false,
+          sourceMinzoom: 9,
+        },
       ],
       upcoming: [],
     },

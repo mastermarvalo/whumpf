@@ -17,13 +17,15 @@ import type {
   Region,
   Units,
 } from "./Map/types";
-import { fetchSpotData, reverseGeocode } from "./Map/services";
+import { fetchSpotData, fetchWindDirection, reverseGeocode } from "./Map/services";
 
 import {
   cogS3,
   getContourUrl,
   getMapStyle,
+  getTerrainFilterUrl,
   swapRasterBasemap,
+  type TerrainFilterSettings,
 } from "./Map/layers/basemaps";
 import {
   HIRES_LAYER_IDS,
@@ -179,6 +181,23 @@ export function Map({
 
   const [contourInterval, setContourInterval] = useState<number | null>(null);
   const contourIntervalRef = useRef<number | null>(null);
+
+  const [terrainFilter, setTerrainFilter] = useState<TerrainFilterSettings>(() => {
+    try {
+      const stored = localStorage.getItem("whumpf:terrain-filter");
+      if (stored) {
+        const p = JSON.parse(stored) as Partial<TerrainFilterSettings>;
+        const aspects = Array.isArray(p.aspects) && p.aspects.length > 0
+          ? p.aspects.filter((a) => typeof a === "string") : ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
+        const slopeMin = typeof p.slopeMin === "number" ? p.slopeMin : 30;
+        const slopeMax = typeof p.slopeMax === "number" ? p.slopeMax : 45;
+        return { aspects, slopeMin, slopeMax };
+      }
+    } catch { /* ignore */ }
+    return { aspects: ["N", "NE", "E", "SE", "S", "SW", "W", "NW"], slopeMin: 30, slopeMax: 45 };
+  });
+  const terrainFilterRef = useRef(terrainFilter);
+  useEffect(() => { terrainFilterRef.current = terrainFilter; }, [terrainFilter]);
   const [terrainOrder, setTerrainOrder] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem("whumpf:terrain-order");
@@ -230,6 +249,7 @@ export function Map({
     map.on("style.load", () => {
       addOverlayLayers(map, overlayLayers, region.bbox, visibleRef.current, opacityRef.current, {
         contours: [getContourUrl(region.id, contourIntervalRef.current)],
+        "terrain-filter": [getTerrainFilterUrl(region.id, terrainFilterRef.current)],
       });
       applyTerrainOrder(map, terrainOrderRef.current);
       // Trails sit above the rasters but below interactive geojson points so
@@ -664,12 +684,13 @@ export function Map({
         localStorage.setItem("whumpf:layer-visible", JSON.stringify(visible));
         localStorage.setItem("whumpf:layer-opacity", JSON.stringify(opacity));
         localStorage.setItem("whumpf:terrain-order", JSON.stringify(terrainOrder));
+        localStorage.setItem("whumpf:terrain-filter", JSON.stringify(terrainFilter));
       } catch {
         // quota / private mode — best-effort, no point alerting the user
       }
     }, 250);
     return () => clearTimeout(t);
-  }, [basemap, visible, opacity, terrainOrder]);
+  }, [basemap, visible, opacity, terrainOrder, terrainFilter]);
 
   // Sync the layer/basemap/units pieces of URL state. Viewport is handled by
   // the map's moveend listener; these effects cover everything else.
@@ -713,6 +734,72 @@ export function Map({
     // Re-apply terrain order since we removed and re-added the contours layer.
     applyTerrainOrder(map, terrainOrderRef.current);
   }, [contourInterval]);
+
+  // When the terrain-filter settings change, replace the MapLibre source with
+  // a new tile URL. Raster sources don't support in-place URL updates so we
+  // remove + re-add — same pattern as the contour interval handler above.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.getLayer("terrain-filter")) return;
+    const url = getTerrainFilterUrl(region.id, terrainFilter);
+    const isVis = visibleRef.current["terrain-filter"] ?? false;
+    const op = opacityRef.current["terrain-filter"] ?? 0.6;
+    const beforeId: string | undefined =
+      map.getLayer("basemap-ref")
+        ? "basemap-ref"
+        : map.getStyle()?.layers?.find((l) => l.type === "symbol")?.id;
+    map.removeLayer("terrain-filter");
+    map.removeSource("terrain-filter");
+    map.addSource("terrain-filter", {
+      type: "raster",
+      tiles: [url],
+      tileSize: 256,
+      bounds: region.bbox,
+      minzoom: 9,
+      maxzoom: 16,
+      attribution: "USGS 3DEP",
+    });
+    map.addLayer({
+      id: "terrain-filter",
+      type: "raster",
+      source: "terrain-filter",
+      paint: { "raster-opacity": op, "raster-fade-duration": 400 },
+      layout: { visibility: isVis ? "visible" : "none" },
+    }, beforeId);
+    applyTerrainOrder(map, terrainOrderRef.current);
+  }, [terrainFilter, region.id, region.bbox]);
+
+  // Wind preset — fetches NDFD wind at the current map center and flips the
+  // aspect filter to the leeward quadrant (where snow loads). Wind direction
+  // is "from" (meteorological); leeward = +180°.
+  async function applyWindPreset() {
+    const map = mapRef.current;
+    if (!map) return;
+    const c = map.getCenter();
+    const fromDeg = await fetchWindDirection(c.lat, c.lng);
+    if (fromDeg == null) {
+      showToast("No NDFD wind forecast for this location.", "error");
+      return;
+    }
+    const leeward = (fromDeg + 180) % 360;
+    // Pick all aspect buckets within ±67.5° of the leeward direction — that's
+    // 3 contiguous buckets, the realistic "loaded zone" for slabs.
+    const ASPECT_CENTERS_ARR: Array<{ name: string; deg: number }> = [
+      { name: "N", deg: 0 }, { name: "NE", deg: 45 }, { name: "E", deg: 90 },
+      { name: "SE", deg: 135 }, { name: "S", deg: 180 }, { name: "SW", deg: 225 },
+      { name: "W", deg: 270 }, { name: "NW", deg: 315 },
+    ];
+    const loadedAspects = ASPECT_CENTERS_ARR.filter(({ deg }) => {
+      const diff = Math.min(Math.abs(deg - leeward), 360 - Math.abs(deg - leeward));
+      return diff <= 67.5;
+    }).map((a) => a.name);
+    setTerrainFilter((f) => ({ ...f, aspects: loadedAspects }));
+    const cardinal = ASPECT_CENTERS_ARR.reduce((best, a) => {
+      const diff = Math.min(Math.abs(a.deg - fromDeg), 360 - Math.abs(a.deg - fromDeg));
+      return diff < best.diff ? { name: a.name, diff } : best;
+    }, { name: "?", diff: Infinity }).name;
+    showToast(`Wind from ${cardinal} (${Math.round(fromDeg)}°) — loaded on ${loadedAspects.join(", ")}.`, "success");
+  }
 
   // Reorder terrain layers in MapLibre whenever the sidebar order changes.
   // Guard with isStyleLoaded(): on initial mount the effect fires before the async style fetch
@@ -818,6 +905,9 @@ export function Map({
     onLayerReorder: (_groupId: string, newOrder: string[]) => setTerrainOrder(newOrder),
     contourInterval,
     onContourInterval: setContourInterval,
+    terrainFilter,
+    onTerrainFilterChange: setTerrainFilter,
+    onApplyWindPreset: applyWindPreset,
     emailVerified: user.email_verified,
     onResendVerification,
     onDeleteAccount,

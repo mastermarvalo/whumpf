@@ -1,8 +1,11 @@
 import { useState, type CSSProperties } from "react";
 import type { StravaStatus } from "../../App";
+import type { TerrainFilterSettings } from "./layers/basemaps";
 import type { BasemapId, LayerGroup, Units } from "./types";
 import type { Theme } from "./theme";
 import { Z } from "./zIndex";
+
+const ASPECT_NAMES = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"] as const;
 
 export function LayerPanel({
   groups,
@@ -31,6 +34,9 @@ export function LayerPanel({
   onLayerReorder,
   contourInterval,
   onContourInterval,
+  terrainFilter,
+  onTerrainFilterChange,
+  onApplyWindPreset,
   emailVerified,
   onResendVerification,
   onDeleteAccount,
@@ -61,6 +67,9 @@ export function LayerPanel({
   onLayerReorder?: (groupId: string, newOrder: string[]) => void;
   contourInterval?: number | null;
   onContourInterval?: (v: number | null) => void;
+  terrainFilter?: TerrainFilterSettings;
+  onTerrainFilterChange?: (next: TerrainFilterSettings) => void;
+  onApplyWindPreset?: () => void;
   emailVerified?: boolean;
   onResendVerification?: () => void;
   onDeleteAccount?: () => void;
@@ -397,6 +406,127 @@ export function LayerPanel({
                       onChange={(e) => onOpacity(layer.id, parseFloat(e.target.value))}
                       style={{ width: "100%", accentColor: group.color, margin: 0, display: "block" }}
                     />
+                  </div>
+                )}
+                {layer.id === "terrain-filter" && visible[layer.id] && terrainFilter && onTerrainFilterChange && (
+                  <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+                    {/* Slope range */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: theme.muted }}>
+                      <span style={{ minWidth: 28 }}>Slope</span>
+                      <input
+                        type="number"
+                        min={0}
+                        max={89}
+                        value={terrainFilter.slopeMin}
+                        onChange={(e) => {
+                          const v = Math.max(0, Math.min(89, parseInt(e.target.value, 10) || 0));
+                          if (v < terrainFilter.slopeMax) {
+                            onTerrainFilterChange({ ...terrainFilter, slopeMin: v });
+                          }
+                        }}
+                        style={{
+                          width: 38,
+                          padding: "1px 4px",
+                          borderRadius: 3,
+                          border: `1px solid ${theme.divider}`,
+                          background: "transparent",
+                          color: theme.text,
+                          fontSize: 11,
+                          fontFamily: "inherit",
+                        }}
+                      />
+                      <span>–</span>
+                      <input
+                        type="number"
+                        min={1}
+                        max={90}
+                        value={terrainFilter.slopeMax}
+                        onChange={(e) => {
+                          const v = Math.max(1, Math.min(90, parseInt(e.target.value, 10) || 0));
+                          if (v > terrainFilter.slopeMin) {
+                            onTerrainFilterChange({ ...terrainFilter, slopeMax: v });
+                          }
+                        }}
+                        style={{
+                          width: 38,
+                          padding: "1px 4px",
+                          borderRadius: 3,
+                          border: `1px solid ${theme.divider}`,
+                          background: "transparent",
+                          color: theme.text,
+                          fontSize: 11,
+                          fontFamily: "inherit",
+                        }}
+                      />
+                      <span>°</span>
+                    </div>
+                    {/* Aspect buttons (8-point cardinal) */}
+                    <div style={{ display: "flex", gap: 2, flexWrap: "wrap" }}>
+                      {ASPECT_NAMES.map((a) => {
+                        const active = terrainFilter.aspects.includes(a);
+                        return (
+                          <button
+                            key={a}
+                            onClick={() => {
+                              const next = active
+                                ? terrainFilter.aspects.filter((x) => x !== a)
+                                : [...terrainFilter.aspects, a];
+                              onTerrainFilterChange({ ...terrainFilter, aspects: next });
+                            }}
+                            style={{
+                              width: 22,
+                              padding: "2px 0",
+                              borderRadius: 3,
+                              border: `1px solid ${active ? group.color : theme.divider}`,
+                              background: active ? group.color : "transparent",
+                              color: active ? "#fff" : theme.muted,
+                              fontSize: 9,
+                              fontWeight: active ? 700 : 400,
+                              cursor: "pointer",
+                              fontFamily: "inherit",
+                              lineHeight: 1.4,
+                            }}
+                          >
+                            {a}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {/* Preset row */}
+                    <div style={{ display: "flex", gap: 6, fontSize: 10 }}>
+                      <button
+                        onClick={() => onApplyWindPreset?.()}
+                        title="Auto-select the aspects leeward to the forecast wind at the map center"
+                        style={{
+                          background: "none",
+                          border: "none",
+                          padding: 0,
+                          color: theme.accent,
+                          textDecoration: "underline",
+                          cursor: "pointer",
+                          fontSize: 10,
+                          fontFamily: "inherit",
+                        }}
+                      >
+                        From wind
+                      </button>
+                      <span style={{ color: theme.muted }}>·</span>
+                      <button
+                        onClick={() => onTerrainFilterChange({ ...terrainFilter, aspects: [...ASPECT_NAMES] })}
+                        style={{
+                          background: "none",
+                          border: "none",
+                          padding: 0,
+                          color: theme.accent,
+                          textDecoration: "underline",
+                          cursor: "pointer",
+                          fontSize: 10,
+                          fontFamily: "inherit",
+                        }}
+                      >
+                        All
+                      </button>
+                    </div>
                   </div>
                 )}
                 {layer.id === "contours" && visible[layer.id] && (

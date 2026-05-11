@@ -109,6 +109,8 @@ export interface SlopeSample {
   distance_m: number;
   elevation_m: number | null;
   slope_deg: number | null;
+  aspect_deg?: number | null;
+  aspect?: string | null;
 }
 
 export interface ProfileSummary {
@@ -120,6 +122,11 @@ export interface ProfileSummary {
   elevation_loss_m: number | null;
   start_elevation_m: number | null;
   end_elevation_m: number | null;
+  min_elevation_m?: number | null;
+  max_elevation_m?: number | null;
+  slope_distribution?: Record<string, number>;
+  aspect_distribution?: Record<string, number>;
+  caic_zones?: string[];
 }
 
 export interface ProfileResponse {
