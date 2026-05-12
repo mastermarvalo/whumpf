@@ -32,8 +32,6 @@ _MAX_Z = 18
 router = APIRouter(prefix="/tiles", tags=["tiles"])
 logger = logging.getLogger("whumpf.tiles")
 
-_BUCKET = "dem-cogs"
-
 # Thread pool for blocking rasterio / PIL work — keeps asyncio event loop free.
 _POOL = ThreadPoolExecutor(max_workers=6)
 
@@ -41,7 +39,7 @@ _POOL = ThreadPoolExecutor(max_workers=6)
 # TCP connection on every slope tile request.
 _HTTP = httpx.AsyncClient(
     timeout=15.0,
-    limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
+    limits=httpx.Limits(max_keepalive_connections=20, max_connections=50),
 )
 
 # ── in-memory LRU tile caches ──────────────────────────────────────────────────
@@ -89,12 +87,6 @@ def _tile_mercator_bounds(z: int, x: int, y: int) -> tuple[float, float, float, 
     return xmin, ymin, xmax, ymax
 
 
-# ── slope colormap ─────────────────────────────────────────────────────────────
-
-def _s3(path: str) -> str:
-    return f"s3://{_BUCKET}/{path}"
-
-
 # CalTopo V1 slope colormap is pre-built as data/colormaps/caltopo_slope.npy and
 # registered with TiTiler via COLORMAP_DIRECTORY. Reference it by name to avoid
 # embedding ~2 KB of JSON in every tile request URL.
@@ -123,12 +115,18 @@ async def slope_tile(
                         headers={"Cache-Control": "public, max-age=86400"})
 
     settings = get_settings()
+    # vsicurl HTTP avoids GDAL's vsis3 driver, which breaks against MinIO
+    # when GDAL_HTTP_VERSION=2 is set (MinIO doesn't support h2c).
+    cog_url = (
+        f"/vsicurl/{settings.s3_endpoint}"
+        f"/{settings.s3_bucket_dem_cogs}/{region}/{cog_name}"
+    )
 
     async def _do() -> httpx.Response:
         r = await _HTTP.get(
             f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png",
             params={
-                "url": _s3(f"{region}/{cog_name}"),
+                "url": cog_url,
                 "rescale": "0,60",
                 "nodata": "-9999",
                 "colormap_name": "caltopo_slope",
