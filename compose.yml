@@ -166,6 +166,7 @@ services:
       MAIL_FROM: ${MAIL_FROM:-whumpf <no-reply@whumpf.local>}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
+      SKIP_EMAIL_VERIFICATION: ${SKIP_EMAIL_VERIFICATION:-false}
     volumes:
       - ./backend/app:/app/app
     ulimits:

@@ -82,6 +82,11 @@ class Settings(BaseSettings):
     # users.is_admin column is the other path; either grants admin.
     admin_emails: str = ""
 
+    # --- Registration -------------------------------------------------------
+    # Set to True to auto-verify email on registration (useful before a real
+    # mail provider is wired up). Flip back to False once MAIL_PROVIDER=resend.
+    skip_email_verification: bool = False
+
     @property
     def cors_origin_list(self) -> list[str]:
         return [o.strip() for o in self.cors_allow_origins.split(",") if o.strip()]

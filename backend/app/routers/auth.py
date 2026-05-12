@@ -93,21 +93,24 @@ async def register(
 
     settings = get_settings()
     user = User(email=email, hashed_password=hash_password(body.password))
-    token = _new_token()
-    user.email_verification_token = token
-    user.email_verification_token_expires_at = _now() + timedelta(
-        seconds=settings.email_verification_ttl_s,
-    )
+    if settings.skip_email_verification:
+        user.email_verified = True
+        user.email_verified_at = _now()
+    else:
+        token = _new_token()
+        user.email_verification_token = token
+        user.email_verification_token_expires_at = _now() + timedelta(
+            seconds=settings.email_verification_ttl_s,
+        )
     session.add(user)
     session.commit()
-    logger.info("New user registered: id=%s", user.id)
+    logger.info("New user registered: id=%s email_verified=%s", user.id, user.email_verified)
 
-    # Best-effort: failure to send the verification email shouldn't roll back
-    # account creation. The user can resend from the banner.
-    try:
-        await send_verification_email(to=user.email, token=token)
-    except Exception as exc:
-        logger.warning("Verification email send failed for user %s: %s", user.id, exc)
+    if not settings.skip_email_verification:
+        try:
+            await send_verification_email(to=user.email, token=token)
+        except Exception as exc:
+            logger.warning("Verification email send failed for user %s: %s", user.id, exc)
 
     access = create_access_token(user.email)
     set_auth_cookie(response, access)
