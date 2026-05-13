@@ -33,7 +33,7 @@ function rasterStyle(
 
 const RASTER_STYLES: Record<"topo" | "satellite", maplibregl.StyleSpecification> = {
   // Esri World Topo Map: contours, shaded relief, trails, water — no API key required.
-  topo:      rasterStyle([`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`], "Esri", undefined, "#e8dfc8"),
+  topo:      rasterStyle([`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`], "Esri", 17, "#e8dfc8"),
   // maxzoom: 17 — beyond that Esri returns a "not available yet" placeholder JPEG.
   // MapLibre overzooms the z17 tile instead of requesting z18+.
   satellite: rasterStyle([`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`], "Esri, DigitalGlobe", 17, "#12182b"),

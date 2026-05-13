@@ -295,6 +295,7 @@ export function Map({
       });
       if (terrain3dRef.current) {
         map.setTerrain({ source: "terrain-rgb", exaggeration: 0.5 });
+        map.setMaxPitch(60);
       }
       addSnotelLayers(map);
       if (snotelDataRef.current) setSnotelData(map, snotelDataRef.current);
