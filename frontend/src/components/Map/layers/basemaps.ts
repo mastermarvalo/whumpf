@@ -14,6 +14,7 @@ function rasterStyle(
   tiles: string[],
   attribution: string,
   maxzoom?: number,
+  background = "#e8dfc8",
 ): maplibregl.StyleSpecification {
   return {
     version: 8,
@@ -22,22 +23,26 @@ function rasterStyle(
     sources: {
       basemap: { type: "raster", tiles, tileSize: 256, attribution, ...(maxzoom ? { maxzoom } : {}) },
     },
-    layers: [{ id: "basemap", type: "raster", source: "basemap" }],
+    // background prevents black void on terrain mesh where tiles haven't loaded yet.
+    layers: [
+      { id: "background", type: "background", paint: { "background-color": background } },
+      { id: "basemap", type: "raster", source: "basemap" },
+    ],
   };
 }
 
 const RASTER_STYLES: Record<"topo" | "satellite", maplibregl.StyleSpecification> = {
   // Esri World Topo Map: contours, shaded relief, trails, water — no API key required.
-  topo:      rasterStyle([`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`], "Esri"),
+  topo:      rasterStyle([`${ESRI}/World_Topo_Map/MapServer/tile/{z}/{y}/{x}`], "Esri", undefined, "#e8dfc8"),
   // maxzoom: 17 — beyond that Esri returns a "not available yet" placeholder JPEG.
   // MapLibre overzooms the z17 tile instead of requesting z18+.
-  satellite: rasterStyle([`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`], "Esri, DigitalGlobe", 17),
+  satellite: rasterStyle([`${ESRI}/World_Imagery/MapServer/tile/{z}/{y}/{x}`], "Esri, DigitalGlobe", 17, "#12182b"),
 };
 
 // Source and layer IDs owned by each raster basemap — used for in-place swaps.
 const RASTER_BASEMAP_IDS: Record<"topo" | "satellite", { sources: string[]; layers: string[] }> = {
-  topo:      { sources: ["basemap"], layers: ["basemap"] },
-  satellite: { sources: ["basemap"], layers: ["basemap"] },
+  topo:      { sources: ["basemap"], layers: ["background", "basemap"] },
+  satellite: { sources: ["basemap"], layers: ["background", "basemap"] },
 };
 
 export function getMapStyle(basemap: BasemapId, dark: boolean): string | maplibregl.StyleSpecification {
