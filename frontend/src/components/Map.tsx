@@ -313,7 +313,7 @@ export function Map({
       updateMeasureSource(map, measurePtsRef.current);
       // Terrain-rgb source: always loaded, never removed — setTerrain() is the only toggle.
       if (!map.getSource("terrain-rgb")) {
-        map.addSource("terrain-rgb", getTerrainSource(region.id));
+        map.addSource("terrain-rgb", getTerrainSource(region.id, region.bbox));
       }
       // MapLibre v5: sky is a style-level property, not a layer.
       map.setSky({
@@ -325,7 +325,7 @@ export function Map({
       });
       if (terrain3dRef.current) {
         map.setTerrain({ source: "terrain-rgb", exaggeration: 0.75 });
-        map.setMaxPitch(60);
+        map.setMaxPitch(55);
       }
       addSnotelLayers(map);
       if (snotelDataRef.current) setSnotelData(map, snotelDataRef.current);
@@ -619,7 +619,7 @@ export function Map({
     if (!map || !map.getSource("terrain-rgb")) return;
     if (terrain3d) {
       map.setTerrain({ source: "terrain-rgb", exaggeration: 0.75 });
-      map.setMaxPitch(60);
+      map.setMaxPitch(55);
       if (map.getPitch() < 20) map.easeTo({ pitch: 45, duration: 600 });
     } else {
       map.setTerrain(null);
@@ -632,7 +632,7 @@ export function Map({
   const adjustPitch = useCallback((delta: number) => {
     const map = mapRef.current;
     if (!map) return;
-    map.easeTo({ pitch: Math.max(0, Math.min(60, map.getPitch() + delta)), duration: 250 });
+    map.easeTo({ pitch: Math.max(0, Math.min(55, map.getPitch() + delta)), duration: 250 });
   }, []);
   const adjustBearing = useCallback((delta: number) => {
     const map = mapRef.current;

@@ -65,7 +65,10 @@ export interface TerrainFilterSettings {
   slopeMax: number;
 }
 
-export function getTerrainSource(regionId: string): maplibregl.RasterDEMSourceSpecification {
+export function getTerrainSource(
+  regionId: string,
+  bbox: [number, number, number, number],
+): maplibregl.RasterDEMSourceSpecification {
   // Uses the API on-the-fly renderer until Martin MBTiles are built and deployed.
   // Switch tiles URL to MARTIN_URL once terrain_rgb.mbtiles is in /data/martin-tiles/.
   return {
@@ -74,7 +77,10 @@ export function getTerrainSource(regionId: string): maplibregl.RasterDEMSourceSp
     tileSize: 256,
     encoding: "terrarium",
     minzoom: 5,
-    maxzoom: 16,
+    maxzoom: 14,
+    // bounds prevents MapLibre from generating terrain mesh outside the DEM coverage
+    // area, which causes stretched geometry at the tile edges on the left/right sides.
+    bounds: bbox,
   };
 }
 
