@@ -285,11 +285,16 @@ export function Map({
       if (!map.getSource("terrain-rgb")) {
         map.addSource("terrain-rgb", getTerrainSource(region.id));
       }
+      // MapLibre v5: sky is a style-level property, not a layer.
+      map.setSky({
+        "sky-color": "#87ceeb",
+        "horizon-color": "#ffffff",
+        "fog-color": "#d0e8ff",
+        "fog-ground-blend": 0.5,
+        "sky-horizon-blend": 0.8,
+      });
       if (terrain3dRef.current) {
         map.setTerrain({ source: "terrain-rgb", exaggeration: 0.5 });
-        if (!map.getLayer("sky")) {
-          map.addLayer({ id: "sky", type: "sky", paint: { "sky-type": "atmosphere" } } as unknown as maplibregl.LayerSpecification);
-        }
       }
       addSnotelLayers(map);
       if (snotelDataRef.current) setSnotelData(map, snotelDataRef.current);
@@ -577,21 +582,17 @@ export function Map({
     map.setLayoutProperty("terrain-filter", "visibility", slopeFilterMode ? "visible" : "none");
   }, [slopeFilterMode]);
 
-  // 3D terrain toggle — setTerrain on/off + sky layer; never removes the source.
+  // 3D terrain toggle — setTerrain on/off; never removes the source.
   useEffect(() => {
     const map = mapRef.current;
     if (!map || !map.getSource("terrain-rgb")) return;
     if (terrain3d) {
       map.setTerrain({ source: "terrain-rgb", exaggeration: 0.5 });
       map.setMaxPitch(60);
-      if (!map.getLayer("sky")) {
-        map.addLayer({ id: "sky", type: "sky", paint: { "sky-type": "atmosphere" } } as unknown as maplibregl.LayerSpecification);
-      }
       if (map.getPitch() < 20) map.easeTo({ pitch: 45, duration: 600 });
     } else {
       map.setTerrain(null);
       map.setMaxPitch(85);
-      if (map.getLayer("sky")) map.removeLayer("sky");
       map.easeTo({ pitch: 0, duration: 400 });
     }
   }, [terrain3d]);
