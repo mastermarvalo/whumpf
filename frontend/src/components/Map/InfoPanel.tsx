@@ -1,7 +1,6 @@
 import type { ForecastPeriod, PointData, Units } from "./types";
 import type { Theme } from "./theme";
-import { aspectCompass } from "./utils";
-import { Z } from "./zIndex";
+import { aspectCompass, mobilePanelStyle, panelShared, fmtTempF, fmtWindSpeed } from "./utils";
 import { DragHandle, useDraggable } from "./useDraggable";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 
@@ -40,35 +39,20 @@ export function InfoPanel({
       : `${elevM.toFixed(0)} m`
     : "—";
 
-  const baseStyle = isMobile ? {
-    position: "fixed" as const,
-    bottom: mobileBottom,
-    left: 8,
-    right: 8,
-    background: theme.panel,
-    borderRadius: 12,
-    padding: "12px 16px",
-    fontFamily: "ui-sans-serif, system-ui, sans-serif",
-    fontSize: 14,
-    color: theme.text,
-    boxShadow: "0 2px 16px rgba(0,0,0,0.28)",
-    zIndex: Z.FLOATING_PANEL,
-  } : {
-    position: "fixed" as const,
-    bottom: 36,
-    left: "50%",
-    transform: "translateX(-50%)",
-    background: theme.panel,
-    borderRadius: 8,
-    padding: "6px 16px 10px",
-    fontFamily: "ui-sans-serif, system-ui, sans-serif",
-    fontSize: 13,
-    color: theme.text,
-    boxShadow: "0 2px 12px rgba(0,0,0,0.24)",
-    zIndex: Z.FLOATING_PANEL,
-    maxWidth: "calc(100vw - 40px)",
-    minWidth: 320,
-  };
+  const baseStyle = isMobile
+    ? mobilePanelStyle(mobileBottom, theme, { padding: "12px 16px", fontSize: 14 })
+    : {
+        ...panelShared(theme),
+        bottom: 36,
+        left: "50%",
+        transform: "translateX(-50%)",
+        borderRadius: 8,
+        padding: "6px 16px 10px",
+        fontSize: 13,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.24)",
+        maxWidth: "calc(100vw - 40px)",
+        minWidth: 320,
+      };
 
   return (
     <div
@@ -105,12 +89,7 @@ export function InfoPanel({
                 : "—"}
             </span>
             {data.tempF != null && (
-              <span>
-                <b>Temp</b>{" "}
-                {imp
-                  ? `${Math.round(data.tempF)}°F`
-                  : `${Math.round((data.tempF - 32) * 5 / 9)}°C`}
-              </span>
+              <span><b>Temp</b> {fmtTempF(data.tempF, units)}</span>
             )}
             {data.snowDepthIn != null && data.snowDepthIn > 0 && (
               <span>
@@ -122,11 +101,7 @@ export function InfoPanel({
             )}
             {!forecastLoading && forecast && forecast.length > 0 && (
               <span>
-                <b>Wind</b>{" "}
-                {imp
-                  ? forecast[0].windSpeed
-                  : forecast[0].windSpeed.replace(/\d+/g, (n) => String(Math.round(Number(n) * 1.60934))).replace("mph", "km/h")
-                }{" "}{forecast[0].windDirection}
+                <b>Wind</b> {fmtWindSpeed(forecast[0].windSpeed, units)} {forecast[0].windDirection}
               </span>
             )}
             <span style={{ color: theme.muted, fontSize: 11 }}>
@@ -167,21 +142,14 @@ export function InfoPanel({
             }}
           >
             {forecast.slice(0, 8).map((p, i) => {
-              const tempVal = p.temperature;
-              const tempStr = imp
-                ? `${tempVal}°F`
-                : `${((tempVal - 32) * 5 / 9).toFixed(0)}°C`;
-              const windStr = imp
-                ? p.windSpeed
-                : p.windSpeed.replace(/\d+/g, (n) => String(Math.round(Number(n) * 1.60934))).replace("mph", "km/h");
               const precip = p.probabilityOfPrecipitation?.value;
               return (
                 <div key={i} style={{ fontSize: 11 }}>
                   <div style={{ fontWeight: 700, color: theme.muted, marginBottom: 2 }}>
                     {p.name}
                   </div>
-                  <div style={{ fontWeight: 600 }}>{tempStr}</div>
-                  <div style={{ color: theme.muted }}>{windStr} {p.windDirection}</div>
+                  <div style={{ fontWeight: 600 }}>{fmtTempF(p.temperature, units)}</div>
+                  <div style={{ color: theme.muted }}>{fmtWindSpeed(p.windSpeed, units)} {p.windDirection}</div>
                   {precip != null && (
                     <div style={{ color: "#4a90d9" }}>{precip}% precip</div>
                   )}

@@ -2,8 +2,9 @@ import { useState } from "react";
 import type { CSSProperties } from "react";
 import type { Theme } from "./theme";
 import type { TerrainFilterSettings } from "./layers/basemaps";
-import { Z } from "./zIndex";
+import { mobilePanelStyle, panelShared } from "./utils";
 import { DragHandle, useDraggable } from "./useDraggable";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 
 // ── dual-thumb range slider ────────────────────────────────────────────────────
 // Two stacked <input type="range"> with a custom track drawn behind them.
@@ -267,33 +268,22 @@ const ALL_ASPECTS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 export function SlopeFilterPanel({ filter, onChange, onApplyWindPreset, onClose, theme, mobile, mobileBottom }: Props) {
   const [windMode, setWindMode] = useState(false);
   const { panelRef, handleProps, panelEventProps, dragStyle } = useDraggable(mobile);
-  const panelStyle: CSSProperties = mobile ? {
-    position: "fixed",
-    bottom: mobileBottom,
-    left: 8, right: 8,
-    zIndex: Z.FLOATING_PANEL,
-    background: theme.panel,
-    borderRadius: 12,
-    padding: "12px 14px",
-    fontFamily: "ui-sans-serif, system-ui, sans-serif",
-    fontSize: 13,
-    color: theme.text,
-    boxShadow: "0 2px 16px rgba(0,0,0,0.28)",
-  } : {
-    position: "fixed",
-    bottom: 36,
-    left: "50%",
-    transform: "translateX(-50%)",
-    zIndex: Z.FLOATING_PANEL,
-    background: theme.panel,
-    borderRadius: 10,
-    padding: "12px 14px",
-    fontFamily: "ui-sans-serif, system-ui, sans-serif",
-    fontSize: 13,
-    color: theme.text,
-    boxShadow: "0 2px 12px rgba(0,0,0,0.28)",
-    width: 300,
-  };
+
+  useEscapeKey(onClose);
+
+  const panelStyle: CSSProperties = mobile
+    ? mobilePanelStyle(mobileBottom, theme, { padding: "12px 14px" })
+    : {
+        ...panelShared(theme),
+        bottom: 36,
+        left: "50%",
+        transform: "translateX(-50%)",
+        borderRadius: 10,
+        padding: "12px 14px",
+        fontSize: 13,
+        boxShadow: "0 2px 12px rgba(0,0,0,0.28)",
+        width: 300,
+      };
 
   const setAspects = (aspects: string[]) => { setWindMode(false); onChange({ ...filter, aspects }); };
 

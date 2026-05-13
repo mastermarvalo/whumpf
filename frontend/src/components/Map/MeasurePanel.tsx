@@ -1,9 +1,8 @@
 import { type CSSProperties, type ReactNode } from "react";
 import type { ProfileResponse, ProfileSummary, Units } from "./types";
 import type { Theme } from "./theme";
-import { slopeColor } from "./utils";
+import { slopeColor, mobilePanelStyle, panelShared } from "./utils";
 import { ProfileChart } from "./ProfileChart";
-import { Z } from "./zIndex";
 import { DragHandle, useDraggable } from "./useDraggable";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 
@@ -212,35 +211,20 @@ export function MeasurePanel({
 
   const hasChart = !loading && profile != null;
 
-  const panelStyle: CSSProperties = mobile ? {
-    position: "fixed",
-    bottom: mobileBottom,
-    left: 8,
-    right: 8,
-    background: theme.panel,
-    borderRadius: 12,
-    padding: "12px 16px",
-    fontFamily: "ui-sans-serif, system-ui, sans-serif",
-    fontSize: 13,
-    color: theme.text,
-    boxShadow: "0 2px 16px rgba(0,0,0,0.28)",
-    zIndex: Z.FLOATING_PANEL,
-  } : {
-    position: "fixed",
-    bottom: 36,
-    left: "50%",
-    transform: "translateX(-50%)",
-    background: theme.panel,
-    borderRadius: 8,
-    padding: hasChart ? "10px 14px 8px" : "9px 16px",
-    fontFamily: "ui-sans-serif, system-ui, sans-serif",
-    fontSize: 13,
-    color: theme.text,
-    boxShadow: "0 2px 10px rgba(0,0,0,0.22)",
-    zIndex: Z.FLOATING_PANEL,
-    width: hasChart ? 360 : undefined,
-    whiteSpace: hasChart ? undefined : "nowrap",
-  };
+  const panelStyle: CSSProperties = mobile
+    ? mobilePanelStyle(mobileBottom, theme, { padding: "12px 16px" })
+    : {
+        ...panelShared(theme),
+        bottom: 36,
+        left: "50%",
+        transform: "translateX(-50%)",
+        borderRadius: 8,
+        padding: hasChart ? "10px 14px 8px" : "9px 16px",
+        fontSize: 13,
+        boxShadow: "0 2px 10px rgba(0,0,0,0.22)",
+        width: hasChart ? 360 : undefined,
+        whiteSpace: hasChart ? undefined : "nowrap",
+      };
 
   return (
     <div ref={panelRef} role="dialog" aria-label="Slope profile" style={{ ...panelStyle, ...dragStyle }} {...panelEventProps}>

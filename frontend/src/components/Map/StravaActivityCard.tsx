@@ -3,7 +3,7 @@ import { apiFetch } from "../../auth";
 import { API_URL } from "./constants";
 import type { ActivityCardProps, Units } from "./types";
 import type { Theme } from "./theme";
-import { Z } from "./zIndex";
+import { mobilePanelStyle, panelShared } from "./utils";
 import { DragHandle, useDraggable } from "./useDraggable";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 
@@ -77,30 +77,16 @@ export function StravaActivityCard({
 
   const sportLabel = act.sport_type.replace(/([A-Z])/g, " $1").trim();
 
-  const baseCardStyle = isMobile ? {
-    position: "fixed" as const,
-    bottom: mobileBottom,
-    left: 8,
-    right: 8,
-    background: theme.panel,
-    borderRadius: 12,
-    boxShadow: "0 4px 24px rgba(0,0,0,0.28)",
-    fontFamily: "ui-sans-serif, system-ui, sans-serif",
-    zIndex: Z.FLOATING_PANEL,
-    color: theme.text,
-    overflow: "hidden" as const,
-  } : {
-    position: "fixed" as const,
-    bottom: 80,
-    right: 10,
-    width: 300,
-    background: theme.panel,
-    borderRadius: 10,
-    boxShadow: "0 4px 24px rgba(0,0,0,0.28)",
-    fontFamily: "ui-sans-serif, system-ui, sans-serif",
-    zIndex: Z.FLOATING_PANEL,
-    color: theme.text,
-  };
+  const baseCardStyle = isMobile
+    ? mobilePanelStyle(mobileBottom, theme, { boxShadow: "0 4px 24px rgba(0,0,0,0.28)", overflow: "hidden" })
+    : {
+        ...panelShared(theme),
+        bottom: 80,
+        right: 10,
+        width: 300,
+        borderRadius: 10,
+        boxShadow: "0 4px 24px rgba(0,0,0,0.28)",
+      };
 
   return (
     <div
