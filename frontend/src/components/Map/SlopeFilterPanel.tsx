@@ -3,7 +3,7 @@ import type { CSSProperties } from "react";
 import type { Theme } from "./theme";
 import type { TerrainFilterSettings } from "./layers/basemaps";
 import { Z } from "./zIndex";
-import { useDraggable } from "./useDraggable";
+import { DragHandle, useDraggable } from "./useDraggable";
 
 // ── dual-thumb range slider ────────────────────────────────────────────────────
 // Two stacked <input type="range"> with a custom track drawn behind them.
@@ -302,12 +302,7 @@ export function SlopeFilterPanel({ filter, onChange, onApplyWindPreset, onClose,
       <style>{DUAL_RANGE_CSS}</style>
       <div ref={panelRef} role="dialog" aria-label="Slope filter" style={{ ...panelStyle, ...dragStyle }} {...panelEventProps}>
 
-        {/* Drag grip (desktop only) */}
-        {!mobile && (
-          <div {...handleProps} style={{ ...handleProps.style, display: "flex", justifyContent: "center", padding: "0 0 8px" }}>
-            <div style={{ width: 32, height: 3, borderRadius: 2, background: theme.divider, opacity: 0.6 }} />
-          </div>
-        )}
+        <DragHandle mobile={mobile} handleProps={handleProps} theme={theme} />
 
         {/* ── Header ── */}
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>

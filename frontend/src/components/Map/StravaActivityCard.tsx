@@ -4,7 +4,8 @@ import { API_URL } from "./constants";
 import type { ActivityCardProps, Units } from "./types";
 import type { Theme } from "./theme";
 import { Z } from "./zIndex";
-import { useDraggable } from "./useDraggable";
+import { DragHandle, useDraggable } from "./useDraggable";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 
 export function StravaActivityCard({
   activities,
@@ -32,13 +33,7 @@ export function StravaActivityCard({
   const descCache = useRef<Record<number, string | null>>({});
   const [description, setDescription] = useState<string | null | "loading">("loading");
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useEscapeKey(onClose);
 
   useEffect(() => {
     if (act.id in descCache.current) {
@@ -115,12 +110,7 @@ export function StravaActivityCard({
       style={{ ...baseCardStyle, ...dragStyle }}
       {...panelEventProps}
     >
-      {/* Drag grip (desktop only) — above photo */}
-      {!isMobile && (
-        <div {...handleProps} style={{ ...handleProps.style, display: "flex", justifyContent: "center", padding: "6px 0 4px", background: theme.panel }}>
-          <div style={{ width: 32, height: 3, borderRadius: 2, background: theme.divider, opacity: 0.6 }} />
-        </div>
-      )}
+      <DragHandle mobile={isMobile} handleProps={handleProps} theme={theme} />
       {act.photo_url && (
         <img
           src={act.photo_url}

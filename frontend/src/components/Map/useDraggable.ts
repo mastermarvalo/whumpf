@@ -1,6 +1,20 @@
 import React, { useRef, useState, useCallback } from "react";
 import type { CSSProperties, PointerEvent } from "react";
 
+export function DragHandle({ mobile, handleProps, theme }: {
+  mobile: boolean;
+  handleProps: { onPointerDown: (e: PointerEvent<HTMLElement>) => void; style: CSSProperties };
+  theme: { divider: string };
+}) {
+  if (mobile) return null;
+  return React.createElement("div", {
+    ...handleProps,
+    style: { ...handleProps.style, display: "flex", justifyContent: "center", padding: "2px 0 7px" },
+  }, React.createElement("div", {
+    style: { width: 32, height: 3, borderRadius: 2, background: theme.divider, opacity: 0.6 },
+  }));
+}
+
 interface DragResult {
   panelRef: React.MutableRefObject<HTMLDivElement | null>;
   handleProps: {

@@ -1,9 +1,9 @@
-import { useEffect } from "react";
 import type { ForecastPeriod, PointData, Units } from "./types";
 import type { Theme } from "./theme";
 import { aspectCompass } from "./utils";
 import { Z } from "./zIndex";
-import { useDraggable } from "./useDraggable";
+import { DragHandle, useDraggable } from "./useDraggable";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 
 export function InfoPanel({
   data,
@@ -27,13 +27,7 @@ export function InfoPanel({
   const isMobile = mobile ?? false;
   const { panelRef, handleProps, panelEventProps, dragStyle } = useDraggable(isMobile);
 
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
-  }, [onClose]);
+  useEscapeKey(onClose);
 
   const imp = units === "imperial";
   const fmt = (n: number | undefined, dec = 0) =>
@@ -84,12 +78,7 @@ export function InfoPanel({
       style={{ ...baseStyle, ...dragStyle }}
       {...panelEventProps}
     >
-      {/* Drag grip (desktop only) */}
-      {!isMobile && (
-        <div {...handleProps} style={{ ...handleProps.style, display: "flex", justifyContent: "center", padding: "2px 0 7px", margin: "0 -16px" }}>
-          <div style={{ width: 32, height: 3, borderRadius: 2, background: theme.divider, opacity: 0.6 }} />
-        </div>
-      )}
+      <DragHandle mobile={isMobile} handleProps={handleProps} theme={theme} />
 
       {/* Location name */}
       {(data.locationName || data.loading) && (

@@ -1172,10 +1172,13 @@ export function Map({
         />
       )}
 
-      {/* 3D camera controls — button cluster below MapLibre's NavigationControl */}
-      {terrain3d && !isMobile && (
+      {/* 3D camera controls — desktop: fixed top-right; mobile: fixed above nav bar */}
+      {terrain3d && (
         <div style={{
-          position: "fixed", top: 130, right: 10,
+          position: "fixed",
+          ...(isMobile
+            ? { bottom: MOBILE_NAV_H + 8, right: 10 }
+            : { top: 130, right: 10 }),
           zIndex: Z.FLY_OUT,
           display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
           background: theme.panel,
@@ -1208,7 +1211,7 @@ export function Map({
         <MobileNav
           theme={theme}
           layersOpen={mobilePanelOpen}
-          toolsActive={measureMode || slopeFilterMode || mobileToolsOpen}
+          toolsActive={measureMode || slopeFilterMode || terrain3d || mobileToolsOpen}
           onLayersToggle={() => { setMobilePanelOpen((o) => !o); setMobileToolsOpen(false); }}
           onToolsToggle={() => { setMobileToolsOpen((o) => !o); setMobilePanelOpen(false); }}
         />
@@ -1270,6 +1273,31 @@ export function Map({
                 <div>Slope Filter</div>
                 <div style={{ fontSize: 11, color: theme.muted, fontWeight: 400, marginTop: 1 }}>
                   Highlight terrain by angle and aspect
+                </div>
+              </div>
+            </button>
+            {/* 3D Terrain */}
+            <button
+              onClick={() => { setTerrain3d((t) => !t); setMobileToolsOpen(false); }}
+              aria-pressed={terrain3d}
+              style={{
+                display: "flex", alignItems: "center", gap: 12, width: "100%",
+                background: terrain3d ? "rgba(30,120,255,0.10)" : "transparent",
+                color: terrain3d ? "#4a9eff" : theme.text,
+                border: `1px solid ${terrain3d ? "#4a9eff" : theme.divider}`,
+                borderRadius: 10, padding: "13px 14px", cursor: "pointer",
+                fontSize: 14, fontWeight: 500, fontFamily: "inherit", textAlign: "left",
+                marginBottom: 8,
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M1 10 L4 4 L7 8 L10 5 L13 10 Z"/>
+                <path d="M1 10 L13 10" opacity="0.4"/>
+              </svg>
+              <div>
+                <div>3D Terrain</div>
+                <div style={{ fontSize: 11, color: theme.muted, fontWeight: 400, marginTop: 1 }}>
+                  {terrain3d ? "Tap tilt/rotate buttons to adjust view" : "Enable 3D terrain view"}
                 </div>
               </div>
             </button>
