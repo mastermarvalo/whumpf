@@ -1,5 +1,5 @@
 import maplibregl from "maplibre-gl";
-import { API_URL, MARTIN_URL, MINIO_BUCKET, TITILER_URL } from "../constants";
+import { API_URL, MINIO_BUCKET, TITILER_URL } from "../constants";
 import type { BasemapId } from "../types";
 
 const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
@@ -65,14 +65,16 @@ export interface TerrainFilterSettings {
   slopeMax: number;
 }
 
-export function getTerrainSource(_regionId: string): maplibregl.RasterDEMSourceSpecification {
+export function getTerrainSource(regionId: string): maplibregl.RasterDEMSourceSpecification {
+  // Uses the API on-the-fly renderer until Martin MBTiles are built and deployed.
+  // Switch tiles URL to MARTIN_URL once terrain_rgb.mbtiles is in /data/martin-tiles/.
   return {
     type: "raster-dem",
-    tiles: [`${MARTIN_URL}/terrain_rgb/{z}/{x}/{y}`],
+    tiles: [`${API_URL}/tiles/terrain_rgb/{z}/{x}/{y}?region=${regionId}`],
     tileSize: 256,
     encoding: "terrarium",
     minzoom: 5,
-    maxzoom: 14,
+    maxzoom: 16,
   };
 }
 

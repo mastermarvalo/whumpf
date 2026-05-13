@@ -285,6 +285,7 @@ export function Map({
       center: initialUrlState.center ?? region.center,
       zoom: initialUrlState.zoom ?? region.default_zoom,
       renderWorldCopies: false,
+      maxTileCacheSize: 500,
     });
 
     map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
@@ -643,6 +644,28 @@ export function Map({
     if (!map) return;
     map.easeTo({ bearing: 0, pitch: 45, duration: 400 });
   }, []);
+
+  // Keyboard camera controls when 3D terrain is active.
+  // Captured before MapLibre so Shift+Arrow doesn't also trigger its fast-pan.
+  useEffect(() => {
+    if (!terrain3d) return;
+    const handler = (e: KeyboardEvent) => {
+      if (!e.shiftKey) return;
+      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
+      const t = e.target as HTMLElement;
+      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+      e.preventDefault();
+      e.stopPropagation();
+      switch (e.key) {
+        case "ArrowLeft":  adjustBearing(-15); break;
+        case "ArrowRight": adjustBearing(15);  break;
+        case "ArrowUp":    adjustPitch(10);    break;
+        case "ArrowDown":  adjustPitch(-10);   break;
+      }
+    };
+    window.addEventListener("keydown", handler, { capture: true });
+    return () => window.removeEventListener("keydown", handler, { capture: true });
+  }, [terrain3d, adjustBearing, adjustPitch]);
 
   // Sync opacity state → MapLibre.
   useEffect(() => {
@@ -1100,34 +1123,31 @@ export function Map({
         />
       )}
 
-      {/* 3D camera controls — visible when terrain is on, desktop only */}
+      {/* 3D camera controls — button cluster below MapLibre's NavigationControl */}
       {terrain3d && !isMobile && (
         <div style={{
-          position: "fixed", top: 104, right: 10,
-          zIndex: Z.MAP_OVERLAY,
+          position: "fixed", top: 130, right: 10,
+          zIndex: Z.FLY_OUT,
           display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
           background: theme.panel,
           borderRadius: 8, padding: 4,
           boxShadow: "0 2px 12px rgba(0,0,0,0.18)",
         }}>
-          {/* Tilt up */}
-          <CamBtn title="Tilt up" theme={theme} onClick={() => adjustPitch(10)}>
+          <CamBtn title="Tilt up  (Shift+↑)" theme={theme} onClick={() => adjustPitch(10)}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="2,8 6,4 10,8"/></svg>
           </CamBtn>
-          {/* Rotate left | Reset north+pitch | Rotate right */}
           <div style={{ display: "flex", gap: 2 }}>
-            <CamBtn title="Rotate left 22°" theme={theme} onClick={() => adjustBearing(-22.5)}>
+            <CamBtn title="Rotate left  (Shift+←)" theme={theme} onClick={() => adjustBearing(-22.5)}>
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 2a5 5 0 1 0 2 4"/><polyline points="11,1 11,4 8,4"/></svg>
             </CamBtn>
-            <CamBtn title="Reset north, 45° pitch" theme={theme} onClick={resetCameraView}>
+            <CamBtn title="Reset north + 45° pitch" theme={theme} onClick={resetCameraView}>
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polygon points="6,1 7.5,5.5 6,4.5 4.5,5.5"/><polygon points="6,11 7.5,6.5 6,7.5 4.5,6.5" fill="currentColor" stroke="none" opacity="0.4"/></svg>
             </CamBtn>
-            <CamBtn title="Rotate right 22°" theme={theme} onClick={() => adjustBearing(22.5)}>
+            <CamBtn title="Rotate right  (Shift+→)" theme={theme} onClick={() => adjustBearing(22.5)}>
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2a5 5 0 1 1-2 4"/><polyline points="1,1 1,4 4,4"/></svg>
             </CamBtn>
           </div>
-          {/* Tilt down */}
-          <CamBtn title="Tilt down" theme={theme} onClick={() => adjustPitch(-10)}>
+          <CamBtn title="Tilt down  (Shift+↓)" theme={theme} onClick={() => adjustPitch(-10)}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="2,4 6,8 10,4"/></svg>
           </CamBtn>
         </div>
