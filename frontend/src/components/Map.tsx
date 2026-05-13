@@ -326,7 +326,7 @@ export function Map({
       if (terrain3dRef.current) {
         map.setTerrain({ source: "terrain-rgb", exaggeration: 1 });
         map.setMaxPitch(55);
-        map.setMaxZoom(14);
+        map.setMaxZoom(17);
       }
       addSnotelLayers(map);
       if (snotelDataRef.current) setSnotelData(map, snotelDataRef.current);
@@ -621,7 +621,7 @@ export function Map({
     if (terrain3d) {
       map.setTerrain({ source: "terrain-rgb", exaggeration: 1 });
       map.setMaxPitch(55);
-      map.setMaxZoom(14);
+      map.setMaxZoom(17);
       if (map.getPitch() < 20) map.easeTo({ pitch: 45, duration: 600 });
     } else {
       map.setTerrain(null);
@@ -656,7 +656,7 @@ export function Map({
     if (!map) return;
     // Stop moving forward past z14 in 3D — beyond that the near clip plane
     // cuts into the terrain mesh and makes it look flat/broken.
-    if (fwd > 0 && terrain3d && map.getZoom() >= 14) return;
+    if (fwd > 0 && terrain3d && map.getZoom() >= 17) return;
     const cp = map.project(map.getCenter());
     const speed = 4;
     map.jumpTo({ center: map.unproject([cp.x + right * speed, cp.y - fwd * speed]) });
