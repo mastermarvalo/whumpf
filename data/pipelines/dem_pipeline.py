@@ -868,6 +868,11 @@ def main() -> None:
                              "Useful for limiting hires output to mountain terrain while "
                              "keeping the full bbox for the 10m dem.tif baseline. "
                              "Defaults to the same bbox as --bbox.")
+    parser.add_argument("--skip-hires-upload", action="store_true",
+                        help="Skip uploading dem_hires.tif to MinIO (161 GB+). "
+                             "Derivatives (slope_hires, hillshade_hires, aspect_hires) "
+                             "are still uploaded. Use when disk is tight and "
+                             "terrain_rgb_pipeline will read dem_hires.tif locally.")
     parser.add_argument("--test", action="store_true",
                         help="Smoke-test: small bbox near Silverton (~2 min)")
     args = parser.parse_args()
@@ -1100,12 +1105,18 @@ def main() -> None:
         (f"{prefix}/aspect.tif",    aspect_path),
     ]
     if dem_hires_path.exists():
-        cog_files += [
-            (f"{prefix}/dem_hires.tif",       dem_hires_path),
+        hires_uploads: list[tuple[str, Path]] = []
+        if not args.skip_hires_upload:
+            hires_uploads.append((f"{prefix}/dem_hires.tif", dem_hires_path))
+        else:
+            logger.info("  --skip-hires-upload: skipping dem_hires.tif (%.0f GB)",
+                        dem_hires_path.stat().st_size / 1e9)
+        hires_uploads += [
             (f"{prefix}/hillshade_hires.tif", hs_hires_path),
             (f"{prefix}/slope_hires.tif",     slope_hires_path),
             (f"{prefix}/aspect_hires.tif",    aspect_hires_path),
         ]
+        cog_files += hires_uploads
     upload_cogs(
         cog_files,
         endpoint=minio_ep,

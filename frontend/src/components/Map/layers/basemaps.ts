@@ -1,5 +1,5 @@
 import maplibregl from "maplibre-gl";
-import { API_URL, MINIO_BUCKET, TITILER_URL } from "../constants";
+import { API_URL, MARTIN_URL, MINIO_BUCKET, TITILER_URL } from "../constants";
 import type { BasemapId } from "../types";
 
 const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
@@ -65,22 +65,16 @@ export interface TerrainFilterSettings {
   slopeMax: number;
 }
 
-export function getTerrainSource(
-  regionId: string,
-  bbox: [number, number, number, number],
-): maplibregl.RasterDEMSourceSpecification {
-  // Uses the API on-the-fly renderer until Martin MBTiles are built and deployed.
-  // Switch tiles URL to MARTIN_URL once terrain_rgb.mbtiles is in /data/martin-tiles/.
+export function getTerrainSource(): maplibregl.RasterDEMSourceSpecification {
   return {
     type: "raster-dem",
-    tiles: [`${API_URL}/tiles/terrain_rgb/{z}/{x}/{y}?region=${regionId}`],
+    tiles: [`${MARTIN_URL}/terrain_rgb_hires/{z}/{x}/{y}`],
     tileSize: 256,
     encoding: "terrarium",
     minzoom: 5,
-    maxzoom: 14,
-    // bounds prevents MapLibre from generating terrain mesh outside the DEM coverage
-    // area, which causes stretched geometry at the tile edges on the left/right sides.
-    bounds: bbox,
+    maxzoom: 16,
+    bounds: [-109.06, 37.0, -105.5, 41.0],
+    attribution: "Terrain © Whumpf / USGS 3DEP 1m",
   };
 }
 

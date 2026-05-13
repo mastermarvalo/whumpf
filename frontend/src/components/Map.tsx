@@ -313,7 +313,7 @@ export function Map({
       updateMeasureSource(map, measurePtsRef.current);
       // Terrain-rgb source: always loaded, never removed — setTerrain() is the only toggle.
       if (!map.getSource("terrain-rgb")) {
-        map.addSource("terrain-rgb", getTerrainSource(region.id, region.bbox));
+        map.addSource("terrain-rgb", getTerrainSource());
       }
       // MapLibre v5: sky is a style-level property, not a layer.
       map.setSky({
@@ -324,7 +324,7 @@ export function Map({
         "sky-horizon-blend": 0.8,
       });
       if (terrain3dRef.current) {
-        map.setTerrain({ source: "terrain-rgb", exaggeration: 0.75 });
+        map.setTerrain({ source: "terrain-rgb", exaggeration: 1 });
         map.setMaxPitch(55);
       }
       addSnotelLayers(map);
@@ -618,7 +618,7 @@ export function Map({
     const map = mapRef.current;
     if (!map || !map.getSource("terrain-rgb")) return;
     if (terrain3d) {
-      map.setTerrain({ source: "terrain-rgb", exaggeration: 0.75 });
+      map.setTerrain({ source: "terrain-rgb", exaggeration: 1 });
       map.setMaxPitch(55);
       if (map.getPitch() < 20) map.easeTo({ pitch: 45, duration: 600 });
     } else {
@@ -666,6 +666,53 @@ export function Map({
     window.addEventListener("keydown", handler, { capture: true });
     return () => window.removeEventListener("keydown", handler, { capture: true });
   }, [terrain3d, adjustBearing, adjustPitch]);
+
+  // WASD fly-through: move the map center in screen space along bearing direction.
+  // project/unproject handles perspective correctly at any pitch and zoom level.
+  // Speed in px/frame scales naturally with zoom (1px = more ground at lower zoom).
+  const flyCamera = useCallback((fwd: number, right: number) => {
+    const map = mapRef.current;
+    if (!map) return;
+    const cp = map.project(map.getCenter());
+    const speed = 2;
+    map.jumpTo({ center: map.unproject([cp.x + right * speed, cp.y - fwd * speed]) });
+  }, []);
+
+  useEffect(() => {
+    if (!terrain3d) return;
+    const pressed = new Set<string>();
+    let raf = 0;
+    const tick = () => {
+      let fwd = 0, right = 0;
+      if (pressed.has("w")) fwd += 1;
+      if (pressed.has("s")) fwd -= 1;
+      if (pressed.has("d")) right += 1;
+      if (pressed.has("a")) right -= 1;
+      if (fwd !== 0 || right !== 0) flyCamera(fwd, right);
+      raf = requestAnimationFrame(tick);
+    };
+    const onDown = (e: KeyboardEvent) => {
+      const t = e.target as HTMLElement;
+      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
+      const k = e.key.toLowerCase();
+      if (!["w", "a", "s", "d"].includes(k)) return;
+      e.preventDefault();
+      const wasEmpty = pressed.size === 0;
+      pressed.add(k);
+      if (wasEmpty) raf = requestAnimationFrame(tick);
+    };
+    const onUp = (e: KeyboardEvent) => {
+      pressed.delete(e.key.toLowerCase());
+      if (pressed.size === 0) { cancelAnimationFrame(raf); raf = 0; }
+    };
+    window.addEventListener("keydown", onDown);
+    window.addEventListener("keyup", onUp);
+    return () => {
+      window.removeEventListener("keydown", onDown);
+      window.removeEventListener("keyup", onUp);
+      cancelAnimationFrame(raf);
+    };
+  }, [terrain3d, flyCamera]);
 
   // Sync opacity state → MapLibre.
   useEffect(() => {
@@ -1150,6 +1197,7 @@ export function Map({
           <CamBtn title="Tilt down  (Shift+↓)" theme={theme} onClick={() => adjustPitch(-10)}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="2,4 6,8 10,4"/></svg>
           </CamBtn>
+          <div style={{ fontSize: 9, opacity: 0.45, marginTop: 2, letterSpacing: "0.03em", color: theme.text }}>WASD fly</div>
         </div>
       )}
 

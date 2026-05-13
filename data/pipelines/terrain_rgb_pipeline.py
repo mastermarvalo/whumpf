@@ -235,6 +235,12 @@ def main() -> None:
                         help="Working directory  (default: system temp)")
     parser.add_argument("--skip-hires",   action="store_true",
                         help="Skip hires MBTiles even if dem_hires.tif exists in MinIO")
+    parser.add_argument("--local-hires",  default=None, metavar="PATH",
+                        help="Use a local dem_hires.tif instead of downloading from MinIO. "
+                             "Skips the 161 GB download when the file is already on disk.")
+    parser.add_argument("--martin-dir",   default=None, metavar="PATH",
+                        help="Copy finished MBTiles into this directory so Martin "
+                             "can serve them immediately (e.g. /data/martin-tiles).")
     parser.add_argument("--min-z",        type=int, default=5,
                         help="Min zoom  (default: 5)")
     parser.add_argument("--max-z",        type=int, default=14,
@@ -276,15 +282,22 @@ def main() -> None:
 
         hires_available = False
         if not args.skip_hires:
-            try:
-                step(f"Downloading s3://{MINIO_BUCKET}/{prefix}/dem_hires.tif")
-                s3.download_file(MINIO_BUCKET, f"{prefix}/dem_hires.tif", str(dem_hires_local))
+            if args.local_hires:
+                dem_hires_local = Path(args.local_hires)
+                if not dem_hires_local.exists():
+                    sys.exit(f"ERROR: --local-hires path not found: {dem_hires_local}")
+                step(f"Using local dem_hires.tif: {dem_hires_local}")
                 hires_available = True
-            except ClientError as exc:
-                if exc.response["Error"]["Code"] in ("404", "NoSuchKey"):
-                    logger.info("  dem_hires.tif not in MinIO — skipping hires MBTiles")
-                else:
-                    raise
+            else:
+                try:
+                    step(f"Downloading s3://{MINIO_BUCKET}/{prefix}/dem_hires.tif")
+                    s3.download_file(MINIO_BUCKET, f"{prefix}/dem_hires.tif", str(dem_hires_local))
+                    hires_available = True
+                except ClientError as exc:
+                    if exc.response["Error"]["Code"] in ("404", "NoSuchKey"):
+                        logger.info("  dem_hires.tif not in MinIO — skipping hires MBTiles")
+                    else:
+                        raise
 
         rgb_path = workdir / "terrain_rgb.mbtiles"
         build_terrain_rgb(dem_local, rgb_path,
@@ -299,6 +312,16 @@ def main() -> None:
 
         upload_files(upload_list, endpoint=minio_ep,
                      access_key=minio_user, secret_key=minio_pass, bucket=MINIO_BUCKET)
+
+        if args.martin_dir:
+            import shutil
+            martin_dir = Path(args.martin_dir)
+            martin_dir.mkdir(parents=True, exist_ok=True)
+            for _key, local_path in upload_list:
+                dest = martin_dir / local_path.name
+                step(f"Copying {local_path.name} → {dest}")
+                shutil.copy2(str(local_path), str(dest))
+
         step("Done.")
 
     finally:
