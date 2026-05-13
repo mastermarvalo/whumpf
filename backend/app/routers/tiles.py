@@ -33,7 +33,9 @@ router = APIRouter(prefix="/tiles", tags=["tiles"])
 logger = logging.getLogger("whumpf.tiles")
 
 # Thread pool for blocking rasterio / PIL work — keeps asyncio event loop free.
-_POOL = ThreadPoolExecutor(max_workers=6)
+# 2 workers: enough for terrain + slope concurrency without saturating a 6-core
+# machine that may be running heavy pipeline jobs alongside the API.
+_POOL = ThreadPoolExecutor(max_workers=2)
 
 # Persistent HTTP client — reuses connections to TiTiler instead of opening a new
 # TCP connection on every slope tile request.
@@ -54,6 +56,12 @@ _SLOPE_CACHE_MAX   = 512   # ~13 MB ceiling
 _CONTOUR_CACHE_MAX = 1024  # ~15 MB ceiling
 _FILTER_CACHE_MAX  = 512   # ~10 MB ceiling — outputs are mostly transparent
 _TERRAIN_CACHE_MAX = 1024  # ~30 KB/tile (256×256 RGB PNG) → ~30 MB ceiling
+
+# In-flight dedup for terrain tiles — if two requests for the same tile arrive
+# before the first render completes, the second waits on the same Future instead
+# of launching a duplicate render.  asyncio is single-threaded per uvicorn worker
+# so this dict needs no lock.
+_TERRAIN_IN_FLIGHT: dict[tuple, "asyncio.Future[bytes | None]"] = {}
 
 
 def _cache_get(store: "OrderedDict[tuple, bytes]", key: tuple) -> bytes | None:
@@ -599,6 +607,15 @@ async def terrain_rgb_tile(
         return Response(content=cached, media_type="image/png",
                         headers={"Cache-Control": "public, max-age=86400"})
 
+    # If this tile is already being rendered, wait on the existing Future instead
+    # of launching a duplicate render (prevents N×CPU burn for burst requests).
+    if cache_key in _TERRAIN_IN_FLIGHT:
+        png = await asyncio.shield(_TERRAIN_IN_FLIGHT[cache_key])
+        if png is None:
+            return Response(status_code=204)
+        return Response(content=png, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
     settings = get_settings()
     xmin, ymin, xmax, ymax = _tile_mercator_bounds(z, x, y)
 
@@ -607,10 +624,16 @@ async def terrain_rgb_tile(
     fallback_url = _build_dem_url(settings, region, hires=False) if use_hires else None
 
     loop = asyncio.get_event_loop()
-    png = await loop.run_in_executor(
+    fut: asyncio.Future[bytes | None] = loop.run_in_executor(
         _POOL, _render_terrain_rgb_with_fallback,
         dem_url, fallback_url, xmin, ymin, xmax, ymax,
     )
+    _TERRAIN_IN_FLIGHT[cache_key] = fut
+    try:
+        png = await fut
+    finally:
+        _TERRAIN_IN_FLIGHT.pop(cache_key, None)
+
     if png is None:
         return Response(status_code=204)
 
