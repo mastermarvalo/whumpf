@@ -1,5 +1,5 @@
 import maplibregl from "maplibre-gl";
-import { API_URL, MINIO_BUCKET, TITILER_URL } from "../constants";
+import { API_URL, MARTIN_URL, MINIO_BUCKET, TITILER_URL } from "../constants";
 import type { BasemapId } from "../types";
 
 const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
@@ -60,14 +60,14 @@ export interface TerrainFilterSettings {
   slopeMax: number;
 }
 
-export function getTerrainSource(regionId: string): maplibregl.RasterDEMSourceSpecification {
+export function getTerrainSource(_regionId: string): maplibregl.RasterDEMSourceSpecification {
   return {
     type: "raster-dem",
-    tiles: [`${API_URL}/tiles/terrain_rgb/{z}/{x}/{y}?region=${regionId}`],
+    tiles: [`${MARTIN_URL}/terrain_rgb/{z}/{x}/{y}`],
     tileSize: 256,
     encoding: "terrarium",
-    minzoom: 6,
-    maxzoom: 16,
+    minzoom: 5,
+    maxzoom: 14,
   };
 }
 

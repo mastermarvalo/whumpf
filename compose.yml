@@ -124,8 +124,11 @@ services:
     container_name: whumpf-martin
     network_mode: host
     restart: unless-stopped
+    command: ["/data/martin-tiles"]
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-whumpf}:${POSTGRES_PASSWORD}@localhost:5432/${POSTGRES_DB:-whumpf}
+    volumes:
+      - /data/martin-tiles:/data/martin-tiles:ro
     depends_on:
       postgis:
         condition: service_healthy
