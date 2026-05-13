@@ -496,15 +496,7 @@ export function Map({
     });
 
     // Track whether we're at hires zoom — only re-renders when crossing z13.
-    // When 3D terrain is active, progressively reduce max pitch as zoom increases
-    // so the camera can never go underground on high terrain.
-    map.on("zoom", () => {
-      const z = map.getZoom();
-      setAboveHiresZoom(z >= 13);
-      if (terrain3dRef.current) {
-        map.setMaxPitch(z < 13 ? 60 : z < 15 ? 50 : z < 17 ? 40 : 30);
-      }
-    });
+    map.on("zoom", () => setAboveHiresZoom(map.getZoom() >= 13));
 
     // Sync viewport into the URL so the page is always shareable. Debounced
     // because moveend fires on every pan/zoom interaction.
@@ -591,8 +583,7 @@ export function Map({
     if (!map || !map.getSource("terrain-rgb")) return;
     if (terrain3d) {
       map.setTerrain({ source: "terrain-rgb", exaggeration: 0.5 });
-      const z = map.getZoom();
-      map.setMaxPitch(z < 13 ? 60 : z < 15 ? 50 : z < 17 ? 40 : 30);
+      map.setMaxPitch(60);
       if (!map.getLayer("sky")) {
         map.addLayer({ id: "sky", type: "sky", paint: { "sky-type": "atmosphere" } } as unknown as maplibregl.LayerSpecification);
       }
