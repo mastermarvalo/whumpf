@@ -49,9 +49,11 @@ _HTTP = httpx.AsyncClient(
 _SLOPE_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
 _CONTOUR_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
 _FILTER_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
+_TERRAIN_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
 _SLOPE_CACHE_MAX   = 512   # ~13 MB ceiling
 _CONTOUR_CACHE_MAX = 1024  # ~15 MB ceiling
 _FILTER_CACHE_MAX  = 512   # ~10 MB ceiling — outputs are mostly transparent
+_TERRAIN_CACHE_MAX = 1024  # ~30 KB/tile (256×256 RGB PNG) → ~30 MB ceiling
 
 
 def _cache_get(store: "OrderedDict[tuple, bytes]", key: tuple) -> bytes | None:
@@ -503,4 +505,118 @@ async def terrain_filter_tile(
         content=png,
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=3600"},
+    )
+
+
+# ── terrain-rgb tiles ──────────────────────────────────────────────────────────
+# Serves terrarium-encoded RGB tiles for MapLibre's raster-dem terrain source.
+# Encodes DEM COG data on-the-fly: elevation → R/G/B per terrarium spec
+#   elevation = (R * 256 + G + B / 256) - 32768
+
+_TERRAIN_PX  = 256  # MapLibre requests exactly 256×256 terrain tiles.
+_TERRAIN_BUF = 1    # 1-px border overlap — prevents seams from independent bilinear resampling.
+
+
+def _render_terrain_rgb(
+    dem_url: str,
+    xmin: float, ymin: float, xmax: float, ymax: float,
+) -> bytes | None:
+    """Blocking: read DEM window and encode as terrarium-RGB PNG.
+
+    Renders at (_TERRAIN_PX + 2*_TERRAIN_BUF)² then crops to _TERRAIN_PX².
+    The extra border pixels ensure bilinear resampling at tile edges uses
+    data from the neighbouring tile's extent, eliminating seam artifacts.
+    """
+    buf   = _TERRAIN_BUF
+    total = _TERRAIN_PX + 2 * buf
+    pw = (xmax - xmin) / _TERRAIN_PX  # mercator units per pixel
+    ph = (ymax - ymin) / _TERRAIN_PX
+    xmin_b, ymin_b = xmin - buf * pw, ymin - buf * ph
+    xmax_b, ymax_b = xmax + buf * pw, ymax + buf * ph
+
+    data = np.full((total, total), np.nan, dtype=np.float32)
+    dst_transform = from_bounds(xmin_b, ymin_b, xmax_b, ymax_b, total, total)
+    try:
+        with rasterio.Env(**_COG_ENV):
+            with rasterio.open(dem_url) as src:
+                reproject(
+                    source=rasterio.band(src, 1),
+                    destination=data,
+                    src_transform=src.transform,
+                    src_crs=src.crs,
+                    src_nodata=src.nodata,
+                    dst_transform=dst_transform,
+                    dst_crs=_WM_CRS,
+                    dst_nodata=np.nan,
+                    resampling=Resampling.bilinear,
+                )
+    except Exception as exc:
+        logger.debug("terrain_rgb DEM read failed: %s", exc)
+        return None
+
+    # Crop border pixels back to 256×256.
+    data = data[buf:buf + _TERRAIN_PX, buf:buf + _TERRAIN_PX]
+
+    elev    = np.where(np.isnan(data), 0.0, data).astype(np.float64)
+    val     = np.clip(elev + 32768.0, 0.0, 65535.0)
+    int_val = np.floor(val).astype(np.uint32)
+    r = (int_val >> 8).astype(np.uint8)
+    g = (int_val & 0xFF).astype(np.uint8)
+    b = np.floor((val - np.floor(val)) * 256.0).astype(np.uint8)
+
+    img = np.stack([r, g, b], axis=-1)
+    out = io.BytesIO()
+    Image.fromarray(img, mode="RGB").save(out, format="PNG", compress_level=1)
+    return out.getvalue()
+
+
+def _render_terrain_rgb_with_fallback(
+    dem_url: str, fallback_url: str | None,
+    xmin: float, ymin: float, xmax: float, ymax: float,
+) -> bytes | None:
+    """Try dem_url; on None result retry with fallback_url."""
+    result = _render_terrain_rgb(dem_url, xmin, ymin, xmax, ymax)
+    if result is None and fallback_url:
+        result = _render_terrain_rgb(fallback_url, xmin, ymin, xmax, ymax)
+    return result
+
+
+@router.get("/terrain_rgb/{z}/{x}/{y}")
+async def terrain_rgb_tile(
+    z: int, x: int, y: int,
+    region: str = "colorado",
+) -> Response:
+    """Terrarium-encoded RGB tile for MapLibre 3D terrain.
+
+    z≤12 → 10m DEM; z≥13 → 1m hires with 10m fallback.
+    """
+    validate_region(region)
+    if z < 0 or z > _MAX_Z or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
+        raise HTTPException(400, "tile coordinates out of range")
+
+    cache_key = (z, x, y, region)
+    if cached := _cache_get(_TERRAIN_CACHE, cache_key):
+        return Response(content=cached, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+    settings = get_settings()
+    xmin, ymin, xmax, ymax = _tile_mercator_bounds(z, x, y)
+
+    use_hires    = z >= 13
+    dem_url      = _build_dem_url(settings, region, hires=use_hires)
+    fallback_url = _build_dem_url(settings, region, hires=False) if use_hires else None
+
+    loop = asyncio.get_event_loop()
+    png = await loop.run_in_executor(
+        _POOL, _render_terrain_rgb_with_fallback,
+        dem_url, fallback_url, xmin, ymin, xmax, ymax,
+    )
+    if png is None:
+        return Response(status_code=204)
+
+    _cache_put(_TERRAIN_CACHE, cache_key, png, _TERRAIN_CACHE_MAX)
+    return Response(
+        content=png,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
     )

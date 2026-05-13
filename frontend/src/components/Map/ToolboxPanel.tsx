@@ -8,17 +8,21 @@ import { Z } from "./zIndex";
 export function ToolboxPanel({
   measureActive,
   slopeFilterActive,
+  terrain3dActive,
   layerPanelCollapsed,
   theme,
   onMeasureToggle,
   onSlopeFilterToggle,
+  onTerrain3dToggle,
 }: {
   measureActive: boolean;
   slopeFilterActive: boolean;
+  terrain3dActive: boolean;
   layerPanelCollapsed: boolean;
   theme: Theme;
   onMeasureToggle: () => void;
   onSlopeFilterToggle: () => void;
+  onTerrain3dToggle: () => void;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -38,7 +42,7 @@ export function ToolboxPanel({
     setOpen(false);
   }
 
-  const hasActive = measureActive || slopeFilterActive;
+  const hasActive = measureActive || slopeFilterActive || terrain3dActive;
   // Hugs the top row. Collapsed: right of the 36px hamburger (10+36+4=50).
   // Expanded: right of the panel (box-sizing:border-box, so right edge = 10+210=220, +8 gap = 228).
   const leftPos = layerPanelCollapsed ? 50 : 228;
@@ -156,6 +160,37 @@ export function ToolboxPanel({
               <path d="M4.5 9.5 L7 7 L9.5 9.5"/>
             </svg>
             Slope Filter
+          </button>
+
+          {/* 3D Terrain */}
+          <button
+            onClick={() => activateTool(onTerrain3dToggle)}
+            title={terrain3dActive ? "Switch to 2D" : "Enable 3D terrain"}
+            aria-label="Toggle 3D terrain"
+            aria-pressed={terrain3dActive}
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 9,
+              background: terrain3dActive ? "rgba(56,132,220,0.15)" : "transparent",
+              color: terrain3dActive ? "#3884dc" : theme.text,
+              border: `1px solid ${terrain3dActive ? "#3884dc" : "transparent"}`,
+              borderRadius: 6,
+              padding: "7px 10px",
+              cursor: "pointer",
+              fontSize: 12,
+              fontWeight: 500,
+              textAlign: "left",
+              width: "100%",
+            }}
+          >
+            {/* Layers icon */}
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M1 4.5 L7 1.5 L13 4.5 L7 7.5 Z"/>
+              <path d="M1 9 L7 12 L13 9"/>
+              <path d="M1 6.5 L7 9.5 L13 6.5"/>
+            </svg>
+            {terrain3dActive ? "2D" : "3D"} Terrain
           </button>
 
           {/* Copy share link */}

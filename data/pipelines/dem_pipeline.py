@@ -539,9 +539,10 @@ def _build_vrt(paths: list[Path], vrt_path: Path,
     """
     step(f"Building VRT from {len(paths)} file(s) → {vrt_path.name} ...")
     cmd = ["gdalbuildvrt", "-r", "bilinear", "-allow_projection_difference"]
-    if clip_bounds:
-        w, s, e, n = clip_bounds
-        cmd += ["-te", str(w), str(s), str(e), str(n)]
+    # Do NOT pass -te here: gdalbuildvrt 3.4 has no -te_srs, so WGS84 bounds
+    # are misinterpreted as UTM coordinates when tiles are in a projected CRS,
+    # producing an empty VRT and all-nodata output.  gdalwarp clips correctly
+    # via its own -te/-te_srs EPSG:4326 flags.
     cmd += [str(vrt_path)] + [str(p) for p in paths]
     logger.info("  gdalbuildvrt ... [%d files]", len(paths))
     subprocess.run(cmd, check=True)

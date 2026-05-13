@@ -60,6 +60,17 @@ export interface TerrainFilterSettings {
   slopeMax: number;
 }
 
+export function getTerrainSource(regionId: string): maplibregl.RasterDEMSourceSpecification {
+  return {
+    type: "raster-dem",
+    tiles: [`${API_URL}/tiles/terrain_rgb/{z}/{x}/{y}?region=${regionId}`],
+    tileSize: 256,
+    encoding: "terrarium",
+    minzoom: 6,
+    maxzoom: 16,
+  };
+}
+
 export function getTerrainFilterUrl(regionId: string, s: TerrainFilterSettings): string {
   const p = new URLSearchParams({
     region: regionId,

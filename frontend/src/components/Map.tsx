@@ -23,6 +23,7 @@ import {
   cogS3,
   getMapStyle,
   getTerrainFilterUrl,
+  getTerrainSource,
   swapRasterBasemap,
   type TerrainFilterSettings,
 } from "./Map/layers/basemaps";
@@ -170,6 +171,8 @@ export function Map({
   const [measureMode, setMeasureMode] = useState(false);
   const [slopeFilterMode, setSlopeFilterMode] = useState(false);
   const slopeFilterModeRef = useRef(false);
+  const [terrain3d, setTerrain3d] = useState(false);
+  const terrain3dRef = useRef(false);
   const [measurePts, setMeasurePts] = useState<[number, number][]>([]);
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
@@ -228,6 +231,7 @@ export function Map({
   useEffect(() => { terrainOrderRef.current = terrainOrder; }, [terrainOrder]);
   useEffect(() => { mapTimeStepRef.current = mapTimeStep; }, [mapTimeStep]);
   useEffect(() => { slopeFilterModeRef.current = slopeFilterMode; }, [slopeFilterMode]);
+  useEffect(() => { terrain3dRef.current = terrain3d; }, [terrain3d]);
 
   const snotelDataRef = useRef<object | null>(null);
   // RainViewer radar frames — fetched async, used by the time injection effect.
@@ -277,6 +281,16 @@ export function Map({
       setTrailsVisibility(map, visibleRef.current["trails"] ?? false);
       addMeasureLayers(map);
       updateMeasureSource(map, measurePtsRef.current);
+      // Terrain-rgb source: always loaded, never removed — setTerrain() is the only toggle.
+      if (!map.getSource("terrain-rgb")) {
+        map.addSource("terrain-rgb", getTerrainSource(region.id));
+      }
+      if (terrain3dRef.current) {
+        map.setTerrain({ source: "terrain-rgb", exaggeration: 1.0 });
+        if (!map.getLayer("sky")) {
+          map.addLayer({ id: "sky", type: "sky", paint: { "sky-type": "atmosphere" } } as unknown as maplibregl.LayerSpecification);
+        }
+      }
       addSnotelLayers(map);
       if (snotelDataRef.current) setSnotelData(map, snotelDataRef.current);
       setSnotelVisibility(map, visibleRef.current["snotel"] ?? false);
@@ -562,6 +576,23 @@ export function Map({
     if (!map || !map.getLayer("terrain-filter")) return;
     map.setLayoutProperty("terrain-filter", "visibility", slopeFilterMode ? "visible" : "none");
   }, [slopeFilterMode]);
+
+  // 3D terrain toggle — setTerrain on/off + sky layer; never removes the source.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !map.getSource("terrain-rgb")) return;
+    if (terrain3d) {
+      map.setTerrain({ source: "terrain-rgb", exaggeration: 1.0 });
+      if (!map.getLayer("sky")) {
+        map.addLayer({ id: "sky", type: "sky", paint: { "sky-type": "atmosphere" } } as unknown as maplibregl.LayerSpecification);
+      }
+      if (map.getPitch() < 20) map.easeTo({ pitch: 55, duration: 600 });
+    } else {
+      map.setTerrain(null);
+      if (map.getLayer("sky")) map.removeLayer("sky");
+      map.easeTo({ pitch: 0, duration: 400 });
+    }
+  }, [terrain3d]);
 
   // Sync opacity state → MapLibre.
   useEffect(() => {
@@ -1010,10 +1041,12 @@ export function Map({
         <ToolboxPanel
           measureActive={measureMode}
           slopeFilterActive={slopeFilterMode}
+          terrain3dActive={terrain3d}
           layerPanelCollapsed={layerPanelCollapsed}
           theme={theme}
           onMeasureToggle={() => { setMeasureMode((m) => !m); setSlopeFilterMode(false); }}
           onSlopeFilterToggle={() => { setSlopeFilterMode((m) => !m); setMeasureMode(false); }}
+          onTerrain3dToggle={() => setTerrain3d((t) => !t)}
         />
       )}
 
