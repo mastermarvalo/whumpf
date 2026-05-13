@@ -623,6 +623,125 @@ def _estimate_raster_gb(west: float, south: float, east: float, north: float,
 
 # ── derivatives ────────────────────────────────────────────────────────────────
 
+def compute_derivative(
+    dem_path: Path,
+    out_path: Path,
+    what: str,
+    res_x: float,
+    res_y: float,
+    nodata=None,
+    strip_height: int = 2048,
+    overlap: int = 32,
+    azimuth: float = 315.0,
+    altitude: float = 45.0,
+) -> Path:
+    """Compute one derivative (slope|hillshade|aspect) from a DEM in horizontal strips.
+
+    Writes to a .tmp.tif alongside out_path, builds overviews in-place, then
+    renames to out_path (no full COG copy, saving ~100 GB peak disk per file).
+    """
+    assert what in ("slope", "hillshade", "aspect"), f"unknown derivative: {what}"
+    step(f"Computing {what} ({out_path.name}) ...")
+
+    sun_zenith  = float(np.radians(90.0 - altitude))
+    sun_azimuth = float(np.radians(360.0 - azimuth + 90.0))
+
+    common = dict(driver="GTiff", tiled=True, blockxsize=512, blockysize=512,
+                  compress="deflate", BIGTIFF="YES")
+    tmp = str(out_path) + ".tmp.tif"
+
+    dtype   = "uint8"   if what == "hillshade" else "float32"
+    nodata_ = 0         if what == "hillshade" else -9999.0
+
+    with rasterio.open(dem_path) as dem_ds:
+        height = dem_ds.height
+        width  = dem_ds.width
+        nd     = nodata if nodata is not None else dem_ds.nodata
+        prof   = dict(width=width, height=height, count=1,
+                      crs=dem_ds.crs, transform=dem_ds.transform,
+                      dtype=dtype, nodata=nodata_)
+
+        n_strips = (height + strip_height - 1) // strip_height
+        strip_mb = (strip_height + 2 * overlap) * width * 4 / 1e6
+        logger.info("  DEM %d × %d  strip_height=%d  %d strips  ~%.0f MB RAM/strip",
+                    width, height, strip_height, n_strips, strip_mb)
+
+        with rasterio.open(tmp, "w", **{**prof, **common}) as out_ds:
+            t_run = time.time()
+            for i in range(n_strips):
+                t_strip    = time.time()
+                r_start    = i * strip_height
+                r_end      = min(r_start + strip_height, height)
+                read_start = max(0, r_start - overlap)
+                read_end   = min(height, r_end + overlap)
+                top_pad    = r_start - read_start
+
+                win = Window(col_off=0, row_off=read_start,
+                             width=width, height=read_end - read_start)
+                d = dem_ds.read(1, window=win).astype(np.float32)
+                if nd is not None:
+                    d[d == nd] = np.nan
+
+                dy_arr, dx = np.gradient(d, res_y, res_x)
+                dy_arr *= -1
+                del d
+
+                s     = top_pad
+                e_r   = s + (r_end - r_start)
+                dx_i  = dx[s:e_r].copy()
+                dy_i  = dy_arr[s:e_r].copy()
+                del dx, dy_arr
+
+                mag        = np.sqrt(dx_i**2 + dy_i**2)
+                slope_rad  = np.arctan(mag)
+                del mag
+                aspect_rad = np.arctan2(dy_i, dx_i)
+                del dx_i, dy_i
+
+                if what == "slope":
+                    arr = np.degrees(slope_rad).astype(np.float32)
+                    np.nan_to_num(arr, nan=-9999.0, copy=False)
+                elif what == "hillshade":
+                    shade = (
+                        np.cos(sun_zenith) * np.cos(slope_rad)
+                        + np.sin(sun_zenith) * np.sin(slope_rad)
+                        * np.cos(sun_azimuth - aspect_rad)
+                    )
+                    np.clip(shade, 0.0, 1.0, out=shade)
+                    shade *= 255.0
+                    np.nan_to_num(shade, nan=0.0, copy=False)
+                    arr = shade.astype(np.uint8)
+                    del shade
+                else:  # aspect
+                    arr = (np.degrees(aspect_rad) % 360.0).astype(np.float32)
+                    np.nan_to_num(arr, nan=-9999.0, copy=False)
+
+                del slope_rad, aspect_rad
+
+                out_win = Window(col_off=0, row_off=r_start,
+                                 width=width, height=r_end - r_start)
+                out_ds.write(arr[np.newaxis], window=out_win)
+                del arr
+
+                elapsed_total = time.time() - t_run
+                strip_s       = time.time() - t_strip
+                done_frac     = (i + 1) / n_strips
+                eta_s         = elapsed_total / done_frac - elapsed_total if done_frac > 0 else 0
+                logger.info("  strip %d/%d  rows %d–%d  %.1fs/strip  elapsed %s  ETA %s",
+                            i + 1, n_strips, r_start, r_end - 1, strip_s,
+                            _fmt_duration(elapsed_total), _fmt_duration(eta_s))
+
+    step(f"Building overviews for {out_path.name} ...")
+    with rasterio.open(tmp, "r+") as ds:
+        ds.build_overviews([2, 4, 8, 16, 32, 64], Resampling.average)
+        ds.update_tags(ns="rio_overview", resampling="average")
+    # Rename instead of rio_copy to avoid a full duplicate on disk (~100 GB for hires).
+    # The result is a tiled GeoTIFF with internal overviews — valid for TiTiler/MinIO.
+    os.rename(tmp, str(out_path))
+    logger.info("  → %s  (%.1f GB)", out_path.name, out_path.stat().st_size / 1e9)
+    return out_path
+
+
 def compute_derivatives_windowed(
     dem_path: Path,
     cog_dir: Path,
@@ -635,133 +754,18 @@ def compute_derivatives_windowed(
     altitude: float = 45.0,
     suffix: str = "",
 ) -> tuple[Path, Path, Path]:
+    """Compute hillshade, slope, and aspect sequentially (one DEM pass each).
+
+    Derivatives are computed one at a time so peak disk usage is one file at
+    a time rather than three simultaneously.  suffix="_hires" for 1m outputs.
     """
-    Compute hillshade, slope, and aspect in horizontal strips so peak RAM
-    stays manageable regardless of DEM size.
-
-    Each strip is padded with `overlap` rows above and below for accurate
-    np.gradient values at boundaries.  Only interior rows are written.
-
-    suffix: appended before .tif in output filenames — use "_hires" for the
-    1m priority-stack outputs so they don't collide with the 10m baseline.
-    """
-    step(f"Computing hillshade / slope / aspect{' (hires)' if suffix else ''} (windowed) ...")
-
-    hs_path     = cog_dir / f"hillshade{suffix}.tif"
-    slope_path  = cog_dir / f"slope{suffix}.tif"
-    aspect_path = cog_dir / f"aspect{suffix}.tif"
-
-    sun_zenith  = float(np.radians(90.0 - altitude))
-    sun_azimuth = float(np.radians(360.0 - azimuth + 90.0))
-
-    common = dict(driver="GTiff", tiled=True, blockxsize=512, blockysize=512,
-                  compress="deflate", BIGTIFF="YES")
-    hs_tmp     = str(hs_path)     + ".tmp.tif"
-    slope_tmp  = str(slope_path)  + ".tmp.tif"
-    aspect_tmp = str(aspect_path) + ".tmp.tif"
-
-    with rasterio.open(dem_path) as dem_ds:
-        height = dem_ds.height
-        width  = dem_ds.width
-        nd     = nodata if nodata is not None else dem_ds.nodata
-        base   = dict(width=width, height=height, count=1,
-                      crs=dem_ds.crs, transform=dem_ds.transform)
-
-        hs_prof    = {**base, "dtype": "uint8",   "nodata": 0}
-        slope_prof = {**base, "dtype": "float32", "nodata": -9999.0}
-        asp_prof   = {**base, "dtype": "float32", "nodata": -9999.0}
-
-        n_strips = (height + strip_height - 1) // strip_height
-        # RAM hint: one strip (with overlap, as float32)
-        strip_mb = (strip_height + 2 * overlap) * width * 4 / 1e6
-        logger.info("  DEM %d × %d  strip_height=%d  %d strips  ~%.0f MB RAM/strip",
-                    width, height, strip_height, n_strips, strip_mb)
-
-        with (
-            rasterio.open(hs_tmp,     "w", **{**hs_prof,    **common}) as hs_ds,
-            rasterio.open(slope_tmp,  "w", **{**slope_prof, **common}) as sl_ds,
-            rasterio.open(aspect_tmp, "w", **{**asp_prof,   **common}) as as_ds,
-        ):
-            t_run = time.time()
-            for i in range(n_strips):
-                t_strip = time.time()
-                r_start  = i * strip_height
-                r_end    = min(r_start + strip_height, height)
-
-                read_start = max(0, r_start - overlap)
-                read_end   = min(height, r_end + overlap)
-                top_pad    = r_start - read_start
-
-                win = Window(col_off=0, row_off=read_start,
-                             width=width, height=read_end - read_start)
-                d = dem_ds.read(1, window=win).astype(np.float32)
-
-                if nd is not None:
-                    d[d == nd] = np.nan
-
-                dy_arr, dx = np.gradient(d, res_y, res_x)
-                dy_arr *= -1
-                del d
-
-                s    = top_pad
-                e_r  = s + (r_end - r_start)
-                dx_i  = dx[s:e_r].copy()
-                dy_i  = dy_arr[s:e_r].copy()
-                del dx, dy_arr
-
-                mag       = np.sqrt(dx_i**2 + dy_i**2)
-                slope_rad = np.arctan(mag)
-                del mag
-                aspect_rad = np.arctan2(dy_i, dx_i)
-                del dx_i, dy_i
-
-                shade = (
-                    np.cos(sun_zenith) * np.cos(slope_rad)
-                    + np.sin(sun_zenith) * np.sin(slope_rad) * np.cos(sun_azimuth - aspect_rad)
-                )
-                np.clip(shade, 0.0, 1.0, out=shade)
-                shade *= 255.0
-                np.nan_to_num(shade, nan=0.0, copy=False)
-                hs_strip = shade.astype(np.uint8)
-                del shade
-
-                slope_deg = np.degrees(slope_rad)
-                del slope_rad
-                np.nan_to_num(slope_deg, nan=-9999.0, copy=False)
-
-                aspect_deg = np.degrees(aspect_rad) % 360.0
-                del aspect_rad
-                np.nan_to_num(aspect_deg, nan=-9999.0, copy=False)
-
-                out_win = Window(col_off=0, row_off=r_start,
-                                 width=width, height=r_end - r_start)
-                hs_ds.write(hs_strip[np.newaxis],                      window=out_win)
-                sl_ds.write(slope_deg[np.newaxis].astype(np.float32),  window=out_win)
-                as_ds.write(aspect_deg[np.newaxis].astype(np.float32), window=out_win)
-                del hs_strip, slope_deg, aspect_deg
-
-                # Progress with elapsed and ETA
-                elapsed_total = time.time() - t_run
-                strip_s       = time.time() - t_strip
-                done_frac     = (i + 1) / n_strips
-                eta_s         = elapsed_total / done_frac - elapsed_total if done_frac > 0 else 0
-                logger.info("  strip %d/%d  rows %d–%d  %.1fs/strip  elapsed %s  ETA %s",
-                            i + 1, n_strips, r_start, r_end - 1, strip_s,
-                            _fmt_duration(elapsed_total), _fmt_duration(eta_s))
-
-    # Build overviews and finalise each file as a proper COG.
-    for tmp, out in [(hs_tmp, hs_path), (slope_tmp, slope_path), (aspect_tmp, aspect_path)]:
-        step(f"Finalizing {out.name} ...")
-        with rasterio.open(tmp, "r+") as ds:
-            ds.build_overviews([2, 4, 8, 16, 32, 64], Resampling.average)
-            ds.update_tags(ns="rio_overview", resampling="average")
-        rio_copy(tmp, str(out), copy_src_overviews=True,
-                 driver="GTiff", tiled=True, blockxsize=512, blockysize=512,
-                 compress="deflate", BIGTIFF="YES")
-        os.remove(tmp)
-        logger.info("  → %s  (%.0f MB)", out.name, out.stat().st_size / 1e6)
-
-    return hs_path, slope_path, aspect_path
+    kwargs = dict(res_x=res_x, res_y=res_y, nodata=nodata,
+                  strip_height=strip_height, overlap=overlap,
+                  azimuth=azimuth, altitude=altitude)
+    hs    = compute_derivative(dem_path, cog_dir / f"hillshade{suffix}.tif", "hillshade", **kwargs)
+    slope = compute_derivative(dem_path, cog_dir / f"slope{suffix}.tif",     "slope",     **kwargs)
+    asp   = compute_derivative(dem_path, cog_dir / f"aspect{suffix}.tif",    "aspect",    **kwargs)
+    return hs, slope, asp
 
 
 def _fmt_duration(seconds: float) -> str:
@@ -1075,29 +1079,44 @@ def main() -> None:
             nodata=nodata, strip_height=strip_height,
         )
 
-    # ── 3b. hires derivatives (priority stack, when dem_hires.tif was produced) ─
-    hs_hires_path     = cog_dir / "hillshade_hires.tif"
-    slope_hires_path  = cog_dir / "slope_hires.tif"
-    aspect_hires_path = cog_dir / "aspect_hires.tif"
-
-    if dem_hires_path.exists():
-        if hs_hires_path.exists() and slope_hires_path.exists() and aspect_hires_path.exists():
-            step("Hires derivative COGs already exist — skipping computation.")
-        else:
-            with rasterio.open(dem_hires_path) as _ds:
-                hires_tf    = _ds.transform
-                hires_res_x = abs(hires_tf.a)
-                hires_res_y = abs(hires_tf.e)
-                hires_nodata = _ds.nodata
-            compute_derivatives_windowed(
-                dem_hires_path, cog_dir,
-                hires_res_x, hires_res_y,
-                nodata=hires_nodata, strip_height=512,
-                suffix="_hires",
-            )
-
-    # ── 6. upload ─────────────────────────────────────────────────────────────
     prefix = args.region.rstrip("/")
+
+    # ── 3b. hires derivatives — computed, uploaded, and deleted one at a time ────
+    # Each file is ~100 GB; computing all three simultaneously would require
+    # ~300 GB of free disk.  Instead: compute one → upload → delete → next.
+    if dem_hires_path.exists():
+        with rasterio.open(dem_hires_path) as _ds:
+            hires_tf     = _ds.transform
+            hires_res_x  = abs(hires_tf.a)
+            hires_res_y  = abs(hires_tf.e)
+            hires_nodata = _ds.nodata
+
+        for what, fname in [
+            ("slope",     "slope_hires.tif"),
+            ("hillshade", "hillshade_hires.tif"),
+            ("aspect",    "aspect_hires.tif"),
+        ]:
+            out_path = cog_dir / fname
+            if out_path.exists():
+                step(f"{fname} already exists — skipping computation.")
+            else:
+                compute_derivative(
+                    dem_hires_path, out_path, what,
+                    hires_res_x, hires_res_y,
+                    nodata=hires_nodata, strip_height=512,
+                )
+            upload_cogs(
+                [(f"{prefix}/{fname}", out_path)],
+                endpoint=minio_ep, access_key=minio_user,
+                secret_key=minio_pass, bucket=MINIO_BUCKET,
+            )
+            out_path.unlink()
+            logger.info("  Deleted local %s to free disk space.", fname)
+
+    # ── 6. upload low-res COGs ────────────────────────────────────────────────
+    # Hires derivatives were already uploaded (and deleted) one at a time in
+    # step 3b.  Only dem_hires.tif itself is deferred here (it's 161 GB and
+    # skipped by default via --skip-hires-upload).
     cog_files: list[tuple[str, Path]] = [
         (f"{prefix}/dem.tif",       dem_path),
         (f"{prefix}/hillshade.tif", hs_path),
@@ -1105,18 +1124,11 @@ def main() -> None:
         (f"{prefix}/aspect.tif",    aspect_path),
     ]
     if dem_hires_path.exists():
-        hires_uploads: list[tuple[str, Path]] = []
         if not args.skip_hires_upload:
-            hires_uploads.append((f"{prefix}/dem_hires.tif", dem_hires_path))
+            cog_files.append((f"{prefix}/dem_hires.tif", dem_hires_path))
         else:
-            logger.info("  --skip-hires-upload: skipping dem_hires.tif (%.0f GB)",
+            logger.info("  --skip-hires-upload: skipping dem_hires.tif (%.1f GB)",
                         dem_hires_path.stat().st_size / 1e9)
-        hires_uploads += [
-            (f"{prefix}/hillshade_hires.tif", hs_hires_path),
-            (f"{prefix}/slope_hires.tif",     slope_hires_path),
-            (f"{prefix}/aspect_hires.tif",    aspect_hires_path),
-        ]
-        cog_files += hires_uploads
     upload_cogs(
         cog_files,
         endpoint=minio_ep,
