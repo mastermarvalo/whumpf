@@ -645,74 +645,70 @@ export function Map({
     map.easeTo({ bearing: 0, pitch: 45, duration: 400 });
   }, []);
 
-  // Keyboard camera controls when 3D terrain is active.
-  // Captured before MapLibre so Shift+Arrow doesn't also trigger its fast-pan.
-  useEffect(() => {
-    if (!terrain3d) return;
-    const handler = (e: KeyboardEvent) => {
-      if (!e.shiftKey) return;
-      if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(e.key)) return;
-      const t = e.target as HTMLElement;
-      if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
-      e.preventDefault();
-      e.stopPropagation();
-      switch (e.key) {
-        case "ArrowLeft":  adjustBearing(-15); break;
-        case "ArrowRight": adjustBearing(15);  break;
-        case "ArrowUp":    adjustPitch(10);    break;
-        case "ArrowDown":  adjustPitch(-10);   break;
-      }
-    };
-    window.addEventListener("keydown", handler, { capture: true });
-    return () => window.removeEventListener("keydown", handler, { capture: true });
-  }, [terrain3d, adjustBearing, adjustPitch]);
-
-  // WASD fly-through: move the map center in screen space along bearing direction.
-  // project/unproject handles perspective correctly at any pitch and zoom level.
-  // Speed in px/frame scales naturally with zoom (1px = more ground at lower zoom).
+  // Arrow key camera navigation — always active (not gated on terrain3d).
+  // Plain arrows: fly forward/back/strafe. Shift+arrows: tilt/rotate (3D only).
+  // Both captured before MapLibre so default pan behaviour is fully replaced.
   const flyCamera = useCallback((fwd: number, right: number) => {
     const map = mapRef.current;
     if (!map) return;
     const cp = map.project(map.getCenter());
-    const speed = 2;
+    const speed = 4;
     map.jumpTo({ center: map.unproject([cp.x + right * speed, cp.y - fwd * speed]) });
   }, []);
 
   useEffect(() => {
-    if (!terrain3d) return;
     const pressed = new Set<string>();
     let raf = 0;
+    const ARROW_KEYS = ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"];
+    const WASD_KEYS  = ["w", "a", "s", "d"];
+
     const tick = () => {
       let fwd = 0, right = 0;
-      if (pressed.has("w")) fwd += 1;
-      if (pressed.has("s")) fwd -= 1;
-      if (pressed.has("d")) right += 1;
-      if (pressed.has("a")) right -= 1;
+      if (pressed.has("ArrowUp")    || pressed.has("w")) fwd   += 1;
+      if (pressed.has("ArrowDown")  || pressed.has("s")) fwd   -= 1;
+      if (pressed.has("ArrowRight") || pressed.has("d")) right += 1;
+      if (pressed.has("ArrowLeft")  || pressed.has("a")) right -= 1;
       if (fwd !== 0 || right !== 0) flyCamera(fwd, right);
       raf = requestAnimationFrame(tick);
     };
+
     const onDown = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
-      const k = e.key.toLowerCase();
-      if (!["w", "a", "s", "d"].includes(k)) return;
+      const isArrow = ARROW_KEYS.includes(e.key);
+      const isWasd  = WASD_KEYS.includes(e.key.toLowerCase());
+      if (!isArrow && !isWasd) return;
       e.preventDefault();
+      e.stopPropagation();
+      if (isArrow && e.shiftKey && terrain3d) {
+        switch (e.key) {
+          case "ArrowLeft":  adjustBearing(-15); break;
+          case "ArrowRight": adjustBearing(15);  break;
+          case "ArrowUp":    adjustPitch(10);    break;
+          case "ArrowDown":  adjustPitch(-10);   break;
+        }
+        return;
+      }
+      const key = isWasd ? e.key.toLowerCase() : e.key;
       const wasEmpty = pressed.size === 0;
-      pressed.add(k);
+      pressed.add(key);
       if (wasEmpty) raf = requestAnimationFrame(tick);
     };
+
     const onUp = (e: KeyboardEvent) => {
+      pressed.delete(e.key);
       pressed.delete(e.key.toLowerCase());
       if (pressed.size === 0) { cancelAnimationFrame(raf); raf = 0; }
     };
-    window.addEventListener("keydown", onDown);
-    window.addEventListener("keyup", onUp);
+
+    window.addEventListener("keydown", onDown, { capture: true });
+    window.addEventListener("keyup", onUp, { capture: true });
     return () => {
-      window.removeEventListener("keydown", onDown);
-      window.removeEventListener("keyup", onUp);
+      window.removeEventListener("keydown", onDown, { capture: true });
+      window.removeEventListener("keyup", onUp, { capture: true });
       cancelAnimationFrame(raf);
     };
-  }, [terrain3d, flyCamera]);
+  }, [terrain3d, flyCamera, adjustBearing, adjustPitch]);
 
   // Sync opacity state → MapLibre.
   useEffect(() => {
