@@ -90,6 +90,35 @@ import { ToolboxPanel } from "./Map/ToolboxPanel";
 import { MobileSheet } from "./Map/MobileSheet";
 import { MobileNav } from "./Map/MobileNav";
 
+function CamBtn({ title, theme, onClick, children }: {
+  title: string;
+  theme: { panel: string; text: string };
+  onClick: () => void;
+  children: React.ReactNode;
+}) {
+  return (
+    <button
+      title={title}
+      aria-label={title}
+      onClick={onClick}
+      style={{
+        width: 28, height: 28,
+        background: "transparent",
+        color: theme.text,
+        border: "1px solid transparent",
+        borderRadius: 5,
+        cursor: "pointer",
+        display: "flex", alignItems: "center", justifyContent: "center",
+        padding: 0,
+      }}
+      onMouseEnter={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "rgba(128,128,128,0.15)"; }}
+      onMouseLeave={(e) => { (e.currentTarget as HTMLButtonElement).style.background = "transparent"; }}
+    >
+      {children}
+    </button>
+  );
+}
+
 function useIsMobile() {
   const [mobile, setMobile] = useState(() => window.innerWidth < 640);
   useEffect(() => {
@@ -294,7 +323,7 @@ export function Map({
         "sky-horizon-blend": 0.8,
       });
       if (terrain3dRef.current) {
-        map.setTerrain({ source: "terrain-rgb", exaggeration: 0.5 });
+        map.setTerrain({ source: "terrain-rgb", exaggeration: 0.75 });
         map.setMaxPitch(60);
       }
       addSnotelLayers(map);
@@ -588,7 +617,7 @@ export function Map({
     const map = mapRef.current;
     if (!map || !map.getSource("terrain-rgb")) return;
     if (terrain3d) {
-      map.setTerrain({ source: "terrain-rgb", exaggeration: 0.5 });
+      map.setTerrain({ source: "terrain-rgb", exaggeration: 0.75 });
       map.setMaxPitch(60);
       if (map.getPitch() < 20) map.easeTo({ pitch: 45, duration: 600 });
     } else {
@@ -597,6 +626,23 @@ export function Map({
       map.easeTo({ pitch: 0, duration: 400 });
     }
   }, [terrain3d]);
+
+  // 3D camera controls — pitch, bearing, and reset-north.
+  const adjustPitch = useCallback((delta: number) => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.easeTo({ pitch: Math.max(0, Math.min(60, map.getPitch() + delta)), duration: 250 });
+  }, []);
+  const adjustBearing = useCallback((delta: number) => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.easeTo({ bearing: map.getBearing() + delta, duration: 250 });
+  }, []);
+  const resetCameraView = useCallback(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    map.easeTo({ bearing: 0, pitch: 45, duration: 400 });
+  }, []);
 
   // Sync opacity state → MapLibre.
   useEffect(() => {
@@ -1052,6 +1098,39 @@ export function Map({
           onSlopeFilterToggle={() => { setSlopeFilterMode((m) => !m); setMeasureMode(false); }}
           onTerrain3dToggle={() => setTerrain3d((t) => !t)}
         />
+      )}
+
+      {/* 3D camera controls — visible when terrain is on, desktop only */}
+      {terrain3d && !isMobile && (
+        <div style={{
+          position: "fixed", top: 104, right: 10,
+          zIndex: Z.MAP_OVERLAY,
+          display: "flex", flexDirection: "column", alignItems: "center", gap: 2,
+          background: theme.panel,
+          borderRadius: 8, padding: 4,
+          boxShadow: "0 2px 12px rgba(0,0,0,0.18)",
+        }}>
+          {/* Tilt up */}
+          <CamBtn title="Tilt up" theme={theme} onClick={() => adjustPitch(10)}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="2,8 6,4 10,8"/></svg>
+          </CamBtn>
+          {/* Rotate left | Reset north+pitch | Rotate right */}
+          <div style={{ display: "flex", gap: 2 }}>
+            <CamBtn title="Rotate left 22°" theme={theme} onClick={() => adjustBearing(-22.5)}>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 2a5 5 0 1 0 2 4"/><polyline points="11,1 11,4 8,4"/></svg>
+            </CamBtn>
+            <CamBtn title="Reset north, 45° pitch" theme={theme} onClick={resetCameraView}>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polygon points="6,1 7.5,5.5 6,4.5 4.5,5.5"/><polygon points="6,11 7.5,6.5 6,7.5 4.5,6.5" fill="currentColor" stroke="none" opacity="0.4"/></svg>
+            </CamBtn>
+            <CamBtn title="Rotate right 22°" theme={theme} onClick={() => adjustBearing(22.5)}>
+              <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2a5 5 0 1 1-2 4"/><polyline points="1,1 1,4 4,4"/></svg>
+            </CamBtn>
+          </div>
+          {/* Tilt down */}
+          <CamBtn title="Tilt down" theme={theme} onClick={() => adjustPitch(-10)}>
+            <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="2,4 6,8 10,4"/></svg>
+          </CamBtn>
+        </div>
       )}
 
       {/* Mobile bottom nav */}
