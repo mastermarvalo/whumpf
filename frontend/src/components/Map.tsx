@@ -582,13 +582,15 @@ export function Map({
     const map = mapRef.current;
     if (!map || !map.getSource("terrain-rgb")) return;
     if (terrain3d) {
-      map.setTerrain({ source: "terrain-rgb", exaggeration: 1.0 });
+      map.setTerrain({ source: "terrain-rgb", exaggeration: 0.75 });
+      map.setMaxPitch(70);
       if (!map.getLayer("sky")) {
         map.addLayer({ id: "sky", type: "sky", paint: { "sky-type": "atmosphere" } } as unknown as maplibregl.LayerSpecification);
       }
-      if (map.getPitch() < 20) map.easeTo({ pitch: 55, duration: 600 });
+      if (map.getPitch() < 20) map.easeTo({ pitch: 45, duration: 600 });
     } else {
       map.setTerrain(null);
+      map.setMaxPitch(85);
       if (map.getLayer("sky")) map.removeLayer("sky");
       map.easeTo({ pitch: 0, duration: 400 });
     }
