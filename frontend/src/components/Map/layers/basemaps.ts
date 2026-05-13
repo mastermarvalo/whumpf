@@ -1,5 +1,5 @@
 import maplibregl from "maplibre-gl";
-import { API_URL, MARTIN_URL, MINIO_BUCKET, TITILER_URL } from "../constants";
+import { API_URL, MINIO_BUCKET, TITILER_URL } from "../constants";
 import type { BasemapId } from "../types";
 
 const ESRI = "https://server.arcgisonline.com/ArcGIS/rest/services";
@@ -65,16 +65,17 @@ export interface TerrainFilterSettings {
   slopeMax: number;
 }
 
+// Using AWS global 10m tiles until Martin terrain_rgb_hires.mbtiles is deployed.
+// Switch to MARTIN_URL once terrain pipeline completes — see project_terrain_migration.md.
 export function getTerrainSource(): maplibregl.RasterDEMSourceSpecification {
   return {
     type: "raster-dem",
-    tiles: [`${MARTIN_URL}/terrain_rgb_hires/{z}/{x}/{y}`],
+    tiles: ["https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png"],
     tileSize: 256,
     encoding: "terrarium",
     minzoom: 5,
-    maxzoom: 16,
-    bounds: [-109.06, 37.0, -105.5, 41.0],
-    attribution: "Terrain © Whumpf / USGS 3DEP 1m",
+    maxzoom: 14,
+    attribution: "Terrain © Mapzen/AWS",
   };
 }
 
