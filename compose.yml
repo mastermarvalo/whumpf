@@ -108,6 +108,12 @@ services:
       CPL_VSIL_CURL_USE_HEAD: "FALSE"
       GDAL_HTTP_MULTIPLEX: "YES"
       GDAL_HTTP_VERSION: "2"
+      # Cache vsicurl HTTP range-request data so concurrent workers don't
+      # re-fetch the same blocks of the non-COG hires TIFFs from MinIO.
+      VSI_CACHE: "TRUE"
+      VSI_CACHE_SIZE: "10000000"
+      CPL_VSIL_CURL_CACHE_SIZE: "400000000"
+      GDAL_CACHEMAX: "1024"
       TITILER_DEFAULT_ATTRIBUTION: "Whumpf / USGS 3DEP"
       COLORMAP_DIRECTORY: /colormaps
     volumes:
