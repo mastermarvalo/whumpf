@@ -68,7 +68,7 @@ export interface TerrainFilterSettings {
 export function getTerrainSource(martinUrl: string): maplibregl.RasterDEMSourceSpecification {
   return {
     type: "raster-dem",
-    tiles: [`${martinUrl}/terrain_rgb/{z}/{x}/{y}`],
+    tiles: [`${martinUrl}/terrain_rgb_hires/{z}/{x}/{y}`],
     tileSize: 256,
     encoding: "terrarium",
     minzoom: 5,
