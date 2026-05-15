@@ -41,7 +41,7 @@ export function InfoPanel({
     ? mobilePanelStyle(mobileBottom, theme, { padding: "12px 16px", fontSize: 14 })
     : {
         ...panelShared(theme),
-        bottom: 36,
+        top: 56,
         right: 10,
         borderRadius: 10,
         padding: "10px 14px",
