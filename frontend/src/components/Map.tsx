@@ -711,7 +711,7 @@ export function Map({
       if (!isArrow && !isWasd) return;
       e.preventDefault();
       e.stopPropagation();
-      if ((e.ctrlKey || e.shiftKey) && terrain3d) {
+      if (e.shiftKey && terrain3d) {
         const k = isWasd ? e.key.toLowerCase() : e.key;
         if (k === "ArrowUp"    || k === "w") adjustPitch(10);
         if (k === "ArrowDown"  || k === "s") adjustPitch(-10);
@@ -1207,21 +1207,21 @@ export function Map({
           borderRadius: 8, padding: 4,
           boxShadow: "0 2px 12px rgba(0,0,0,0.18)",
         }}>
-          <CamBtn title="Tilt up  (Ctrl/Shift+↑/W)" theme={theme} onClick={() => adjustPitch(10)}>
+          <CamBtn title="Tilt up  (Shift+↑/W)" theme={theme} onClick={() => adjustPitch(10)}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="2,8 6,4 10,8"/></svg>
           </CamBtn>
           <div style={{ display: "flex", gap: 2 }}>
-            <CamBtn title="Rotate left  (Ctrl/Shift+←/A)" theme={theme} onClick={() => adjustBearing(-22.5)}>
+            <CamBtn title="Rotate left  (Shift+←/A)" theme={theme} onClick={() => adjustBearing(-22.5)}>
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 2a5 5 0 1 0 2 4"/><polyline points="11,1 11,4 8,4"/></svg>
             </CamBtn>
             <CamBtn title="Reset north + pitch" theme={theme} onClick={resetCameraView}>
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polygon points="6,1 7.5,5.5 6,4.5 4.5,5.5"/><polygon points="6,11 7.5,6.5 6,7.5 4.5,6.5" fill="currentColor" stroke="none" opacity="0.4"/></svg>
             </CamBtn>
-            <CamBtn title="Rotate right  (Ctrl/Shift+→/D)" theme={theme} onClick={() => adjustBearing(22.5)}>
+            <CamBtn title="Rotate right  (Shift+→/D)" theme={theme} onClick={() => adjustBearing(22.5)}>
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2a5 5 0 1 1-2 4"/><polyline points="1,1 1,4 4,4"/></svg>
             </CamBtn>
           </div>
-          <CamBtn title="Tilt down  (Ctrl/Shift+↓/S)" theme={theme} onClick={() => adjustPitch(-10)}>
+          <CamBtn title="Tilt down  (Shift+↓/S)" theme={theme} onClick={() => adjustPitch(-10)}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="2,4 6,8 10,4"/></svg>
           </CamBtn>
           <div style={{ fontSize: 9, opacity: 0.45, marginTop: 2, letterSpacing: "0.03em", color: theme.text }}>WASD fly</div>
@@ -1252,7 +1252,7 @@ export function Map({
             whiteSpace: "nowrap",
           }}
         >
-          WASD / arrows to fly · Ctrl to tilt &amp; spin
+          WASD / arrows to fly · Ctrl+drag or Shift+arrows to tilt &amp; spin
         </div>
       )}
 
