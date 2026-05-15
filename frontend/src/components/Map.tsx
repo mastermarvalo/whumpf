@@ -620,9 +620,9 @@ export function Map({
     if (!map || !map.getSource("terrain-rgb")) return;
     if (terrain3d) {
       map.setTerrain({ source: "terrain-rgb", exaggeration: 1 });
-      map.setMaxPitch(55);
+      map.setMaxPitch(75);
       map.setMaxZoom(17);
-      if (map.getPitch() < 20) map.easeTo({ pitch: 45, duration: 600 });
+      if (map.getPitch() < 20) map.easeTo({ pitch: 60, duration: 600 });
     } else {
       map.setTerrain(null);
       map.setMaxPitch(85);
@@ -635,7 +635,7 @@ export function Map({
   const adjustPitch = useCallback((delta: number) => {
     const map = mapRef.current;
     if (!map) return;
-    map.easeTo({ pitch: Math.max(0, Math.min(55, map.getPitch() + delta)), duration: 250 });
+    map.easeTo({ pitch: Math.max(0, Math.min(75, map.getPitch() + delta)), duration: 250 });
   }, []);
   const adjustBearing = useCallback((delta: number) => {
     const map = mapRef.current;
@@ -645,7 +645,7 @@ export function Map({
   const resetCameraView = useCallback(() => {
     const map = mapRef.current;
     if (!map) return;
-    map.easeTo({ bearing: 0, pitch: 45, duration: 400 });
+    map.easeTo({ bearing: 0, pitch: 60, duration: 400 });
   }, []);
 
   // Arrow key camera navigation — always active (not gated on terrain3d).
