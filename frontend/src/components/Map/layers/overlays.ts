@@ -226,6 +226,7 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
           opacity: 0.75,
           defaultVisible: false,
           noSlider: true,
+          sourceMaxzoom: 10,
           legend: {
             gradient: "linear-gradient(to right, #00d0d0, #20e080, #80e020, #c0e000, #e0e000)",
             stops: ["0°F", "32°F", "50°F", "70°F", "90°F"],
@@ -238,6 +239,7 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
           opacity: 0.75,
           defaultVisible: false,
           noSlider: true,
+          sourceMaxzoom: 10,
           legend: {
             gradient: "linear-gradient(to right, #00d0d0, #20e080, #80e020, #c0e000, #e0e000)",
             stops: ["0°F", "32°F", "50°F", "70°F", "90°F"],
@@ -252,6 +254,7 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
           noSlider: true,
           timeEnabled: true,
           timeFmt: "rainviewer",
+          // RainViewer has a proper tile pyramid to z18 — no sourceMaxzoom cap needed.
           legend: {
             gradient: "linear-gradient(to right, #00cc00, #ffff00, #ff6600, #cc0000, #cc00cc)",
             stops: ["15 dBZ", "30", "45", "55", "65+"],
@@ -264,7 +267,7 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
           opacity: 0.75,
           defaultVisible: false,
           noSlider: true,
-          // ArcGIS ImageServer is NOT time-aware (timeInfo: null) — static current-frame layer.
+          sourceMaxzoom: 10,
           legend: {
             gradient: "linear-gradient(to right, #00e0e0, #00c0e0, #0080d0, #0040b0, #002080)",
             stops: ["0.01\"", "0.1\"", "0.25\"", "0.5\"", "1\"+"],
@@ -277,7 +280,7 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
           opacity: 0.75,
           defaultVisible: false,
           noSlider: true,
-          // ArcGIS MapServer is NOT time-aware (timeInfo: null) — static daily layer.
+          sourceMaxzoom: 10,
           legend: {
             gradient: "linear-gradient(to right, #60c0c0, #60a0c0, #4060c0, #2020c0, #101080)",
             stops: ["Trace", "6\"", "24\"", "48\"", "72\"+"],
@@ -321,10 +324,12 @@ export function addOverlayLayers(
       tiles,
       tileSize: 256,
       bounds,
-      minzoom: layer.sourceMinzoom ?? 6,
+      minzoom: layer.sourceMinzoom ?? 2,
       // Cap at z12 when a hires companion takes over at z13 — MapLibre overzooms the z12
       // tile instead of requesting new z13+ tiles from the base (10m) source.
-      maxzoom: layer.hiresTiles ? 12 : 16,
+      // sourceMaxzoom overrides this — used to cap ArcGIS weather services that return
+      // blank tiles above their native resolution.
+      maxzoom: layer.sourceMaxzoom ?? (layer.hiresTiles ? 12 : 16),
       attribution: "USGS 3DEP",
     });
     map.addLayer(

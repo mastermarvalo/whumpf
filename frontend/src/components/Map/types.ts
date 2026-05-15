@@ -45,6 +45,10 @@ export interface ActiveLayer {
   // Minimum zoom at which the tile source starts loading (default: 6).
   // Set higher for hires layers so MapLibre skips requests at overview zoom levels.
   sourceMinzoom?: number;
+  // Maximum zoom for the tile source (default: 16 or 12 when hiresTiles present).
+  // Set lower for coarse ArcGIS services that return blank tiles above their native resolution.
+  // MapLibre will overzoom the last valid tile instead of requesting blank ones.
+  sourceMaxzoom?: number;
   // Extra MapLibre raster paint properties merged in at layer creation (e.g. saturation, resampling).
   blendPaint?: { "raster-saturation"?: number; "raster-resampling"?: "linear" | "nearest" };
   // 1m hires tile URLs — if set, a companion `${id}-hires` layer is added at minzoom 13.

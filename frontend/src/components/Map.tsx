@@ -203,6 +203,7 @@ export function Map({
   const slopeFilterModeRef = useRef(false);
   const [terrain3d, setTerrain3d] = useState(false);
   const terrain3dRef = useRef(false);
+  const [show3dHint, setShow3dHint] = useState(false);
   const [measurePts, setMeasurePts] = useState<[number, number][]>([]);
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
@@ -647,6 +648,14 @@ export function Map({
     }
   }, [terrain3d]);
 
+  // Show keyboard-controls hint whenever 3D is enabled; auto-dismiss after 6s.
+  useEffect(() => {
+    if (!terrain3d) return;
+    setShow3dHint(true);
+    const t = setTimeout(() => setShow3dHint(false), 6000);
+    return () => clearTimeout(t);
+  }, [terrain3d]);
+
   // 3D camera controls — pitch, bearing, and reset-north.
   const adjustPitch = useCallback((delta: number) => {
     const map = mapRef.current;
@@ -665,7 +674,7 @@ export function Map({
   }, []);
 
   // Arrow key camera navigation — always active (not gated on terrain3d).
-  // Plain arrows: fly forward/back/strafe. Shift+arrows: tilt/rotate (3D only).
+  // Plain: fly. Ctrl or Shift + arrows/WASD: tilt/rotate in 3D mode.
   // Both captured before MapLibre so default pan behaviour is fully replaced.
   const flyCamera = useCallback((fwd: number, right: number) => {
     const map = mapRef.current;
@@ -702,13 +711,12 @@ export function Map({
       if (!isArrow && !isWasd) return;
       e.preventDefault();
       e.stopPropagation();
-      if (isArrow && e.shiftKey && terrain3d) {
-        switch (e.key) {
-          case "ArrowLeft":  adjustBearing(-15); break;
-          case "ArrowRight": adjustBearing(15);  break;
-          case "ArrowUp":    adjustPitch(10);    break;
-          case "ArrowDown":  adjustPitch(-10);   break;
-        }
+      if ((e.ctrlKey || e.shiftKey) && terrain3d) {
+        const k = isWasd ? e.key.toLowerCase() : e.key;
+        if (k === "ArrowUp"    || k === "w") adjustPitch(10);
+        if (k === "ArrowDown"  || k === "s") adjustPitch(-10);
+        if (k === "ArrowLeft"  || k === "a") adjustBearing(-15);
+        if (k === "ArrowRight" || k === "d") adjustBearing(15);
         return;
       }
       const key = isWasd ? e.key.toLowerCase() : e.key;
@@ -1199,24 +1207,52 @@ export function Map({
           borderRadius: 8, padding: 4,
           boxShadow: "0 2px 12px rgba(0,0,0,0.18)",
         }}>
-          <CamBtn title="Tilt up  (Shift+↑)" theme={theme} onClick={() => adjustPitch(10)}>
+          <CamBtn title="Tilt up  (Ctrl/Shift+↑/W)" theme={theme} onClick={() => adjustPitch(10)}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="2,8 6,4 10,8"/></svg>
           </CamBtn>
           <div style={{ display: "flex", gap: 2 }}>
-            <CamBtn title="Rotate left  (Shift+←)" theme={theme} onClick={() => adjustBearing(-22.5)}>
+            <CamBtn title="Rotate left  (Ctrl/Shift+←/A)" theme={theme} onClick={() => adjustBearing(-22.5)}>
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M9 2a5 5 0 1 0 2 4"/><polyline points="11,1 11,4 8,4"/></svg>
             </CamBtn>
-            <CamBtn title="Reset north + 45° pitch" theme={theme} onClick={resetCameraView}>
+            <CamBtn title="Reset north + pitch" theme={theme} onClick={resetCameraView}>
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><polygon points="6,1 7.5,5.5 6,4.5 4.5,5.5"/><polygon points="6,11 7.5,6.5 6,7.5 4.5,6.5" fill="currentColor" stroke="none" opacity="0.4"/></svg>
             </CamBtn>
-            <CamBtn title="Rotate right  (Shift+→)" theme={theme} onClick={() => adjustBearing(22.5)}>
+            <CamBtn title="Rotate right  (Ctrl/Shift+→/D)" theme={theme} onClick={() => adjustBearing(22.5)}>
               <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M3 2a5 5 0 1 1-2 4"/><polyline points="1,1 1,4 4,4"/></svg>
             </CamBtn>
           </div>
-          <CamBtn title="Tilt down  (Shift+↓)" theme={theme} onClick={() => adjustPitch(-10)}>
+          <CamBtn title="Tilt down  (Ctrl/Shift+↓/S)" theme={theme} onClick={() => adjustPitch(-10)}>
             <svg width="12" height="12" viewBox="0 0 12 12" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="2,4 6,8 10,4"/></svg>
           </CamBtn>
           <div style={{ fontSize: 9, opacity: 0.45, marginTop: 2, letterSpacing: "0.03em", color: theme.text }}>WASD fly</div>
+        </div>
+      )}
+
+      {/* 3D keyboard-controls hint — shown for 6s when 3D is first enabled */}
+      {show3dHint && !isMobile && (
+        <div
+          role="status"
+          style={{
+            position: "fixed",
+            bottom: 28,
+            left: "50%",
+            transform: "translateX(-50%)",
+            zIndex: Z.MAP_OVERLAY,
+            background: theme.panel,
+            color: theme.text,
+            padding: "6px 14px",
+            borderRadius: 16,
+            fontSize: 12,
+            fontFamily: "ui-sans-serif, system-ui, sans-serif",
+            boxShadow: "0 2px 8px rgba(0,0,0,0.25)",
+            border: `1px solid ${theme.divider}`,
+            userSelect: "none",
+            pointerEvents: "none",
+            opacity: 0.92,
+            whiteSpace: "nowrap",
+          }}
+        >
+          WASD / arrows to fly · Ctrl to tilt &amp; spin
         </div>
       )}
 
