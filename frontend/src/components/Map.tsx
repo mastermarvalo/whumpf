@@ -215,6 +215,7 @@ export function Map({
   });
   const terrainFilterRef = useRef(terrainFilter);
   useEffect(() => { terrainFilterRef.current = terrainFilter; }, [terrainFilter]);
+  const [mapBearing, setMapBearing] = useState(0);
   const [terrainOrder, setTerrainOrder] = useState<string[]>(() => {
     try {
       const stored = localStorage.getItem("whumpf:terrain-order");
@@ -523,6 +524,7 @@ export function Map({
 
     // Track whether we're at hires zoom — only re-renders when crossing z13.
     map.on("zoom", () => setAboveHiresZoom(map.getZoom() >= 13));
+    map.on("rotate", () => setMapBearing(map.getBearing()));
 
     // Sync viewport into the URL so the page is always shareable. Debounced
     // because moveend fires on every pan/zoom interaction.
@@ -664,24 +666,30 @@ export function Map({
     const WASD_KEYS  = ["w", "a", "s", "d"];
 
     const tick = () => {
+      const map = mapRef.current;
       let fwd = 0, right = 0;
       if (pressed.has("ArrowUp")    || pressed.has("w")) fwd   += 1;
       if (pressed.has("ArrowDown")  || pressed.has("s")) fwd   -= 1;
       if (pressed.has("ArrowRight") || pressed.has("d")) right += 1;
       if (pressed.has("ArrowLeft")  || pressed.has("a")) right -= 1;
       if (fwd !== 0 || right !== 0) flyCamera(fwd, right);
+      if (map && terrain3d) {
+        if (pressed.has("space-up"))   map.jumpTo({ zoom: Math.min(20, map.getZoom() - 0.025) });
+        if (pressed.has("space-down")) map.jumpTo({ zoom: Math.max(1,  map.getZoom() + 0.025) });
+      }
       raf = requestAnimationFrame(tick);
     };
 
     const onDown = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable) return;
-      const isArrow = ARROW_KEYS.includes(e.key);
-      const isWasd  = WASD_KEYS.includes(e.key.toLowerCase());
-      if (!isArrow && !isWasd) return;
+      const isArrow  = ARROW_KEYS.includes(e.key);
+      const isWasd   = WASD_KEYS.includes(e.key.toLowerCase());
+      const isSpace  = e.key === " " && terrain3d;
+      if (!isArrow && !isWasd && !isSpace) return;
       e.preventDefault();
       e.stopPropagation();
-      if (e.shiftKey && terrain3d) {
+      if (e.shiftKey && terrain3d && !isSpace) {
         const k = isWasd ? e.key.toLowerCase() : e.key;
         if (k === "ArrowUp"    || k === "w") adjustPitch(10);
         if (k === "ArrowDown"  || k === "s") adjustPitch(-10);
@@ -689,7 +697,9 @@ export function Map({
         if (k === "ArrowRight" || k === "d") adjustBearing(15);
         return;
       }
-      const key = isWasd ? e.key.toLowerCase() : e.key;
+      const key = isSpace
+        ? (e.ctrlKey ? "space-down" : "space-up")
+        : (isWasd ? e.key.toLowerCase() : e.key);
       const wasEmpty = pressed.size === 0;
       pressed.add(key);
       if (wasEmpty) raf = requestAnimationFrame(tick);
@@ -698,6 +708,7 @@ export function Map({
     const onUp = (e: KeyboardEvent) => {
       pressed.delete(e.key);
       pressed.delete(e.key.toLowerCase());
+      if (e.key === " ") { pressed.delete("space-up"); pressed.delete("space-down"); }
       if (pressed.size === 0) { cancelAnimationFrame(raf); raf = 0; }
     };
 
@@ -1446,6 +1457,39 @@ export function Map({
           }}
         >
           1m
+        </div>
+      )}
+
+      {/* Compass rose — bottom-left; rotates with map bearing; click to reset north */}
+      {!isMobile && (
+        <div
+          title="Click to reset north"
+          onClick={() => mapRef.current?.easeTo({ bearing: 0, duration: 400 })}
+          style={{
+            position: "fixed",
+            bottom: 52,
+            left: 10,
+            zIndex: Z.MAP_OVERLAY,
+            width: 36,
+            height: 36,
+            cursor: "pointer",
+            userSelect: "none",
+          }}
+        >
+          <svg
+            width="36" height="36" viewBox="0 0 36 36"
+            style={{ transform: `rotate(${-mapBearing}deg)`, transition: "transform 80ms linear" }}
+          >
+            <circle cx="18" cy="18" r="16" fill={theme.panel} stroke={theme.divider} strokeWidth="1.2"/>
+            {/* N needle — red */}
+            <path d="M18 4 L21.5 18 L18 22 L14.5 18 Z" fill="#d7191c"/>
+            {/* S needle — muted */}
+            <path d="M18 32 L21.5 18 L18 14 L14.5 18 Z" fill={theme.muted} opacity="0.55"/>
+            {/* Centre dot */}
+            <circle cx="18" cy="18" r="2" fill={theme.panel} stroke={theme.divider} strokeWidth="1"/>
+            {/* N label */}
+            <text x="18" y="3.5" textAnchor="middle" fontSize="4.5" fontWeight="800" fill="#d7191c" fontFamily="ui-sans-serif,system-ui,sans-serif">N</text>
+          </svg>
         </div>
       )}
 
