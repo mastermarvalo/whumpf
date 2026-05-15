@@ -14,7 +14,7 @@ const _AGS = "bboxSR=3857&imageSR=3857&size=256,256&f=image&format=png32&transpa
 // RainViewer radar: proper XYZ tiles, ~2h of past frames + up to 3h nowcast.
 // The path token (/v2/radar/<hash>) is fetched fresh in Map.tsx and set via
 // setTiles() — the URL here is only used if RainViewer hasn't loaded yet.
-const RV_HOST = "https://tilecache.rainviewer.com";
+export const RV_HOST = "https://tilecache.rainviewer.com";
 export const RV_TILE_SUFFIX = "/256/2/1_1/{z}/{x}/{y}.png"; // color=2 (universal blue), smooth+snow=1_1
 
 const WEATHER_SOURCES = {

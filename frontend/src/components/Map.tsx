@@ -30,6 +30,7 @@ import {
 import {
   HIRES_LAYER_IDS,
   TERRAIN_LAYER_IDS,
+  RV_HOST,
   RV_TILE_SUFFIX,
   addOverlayLayers,
   applyTerrainOrder,
@@ -297,6 +298,21 @@ export function Map({
       addOverlayLayers(map, overlayLayers, region.bbox, visibleRef.current, opacityRef.current, {
         "terrain-filter": [getTerrainFilterUrl(region.id, terrainFilterRef.current)],
       });
+      // If RainViewer frames were fetched before the style finished loading, apply them now
+      // so precip-radar doesn't show the stale fallback URL on first use.
+      const rvFrames = rainViewerRef.current;
+      if (rvFrames.length > 0) {
+        const rvSrc = map.getSource("precip-radar") as maplibregl.RasterTileSource | undefined;
+        if (rvSrc) {
+          const targetSec = mapTimeStepRef.current === NOW_STEP
+            ? Date.now() / 1000
+            : stepToDate(mapTimeStepRef.current).getTime() / 1000;
+          const nearest = rvFrames.reduce((best, f) =>
+            Math.abs(f.time - targetSec) < Math.abs(best.time - targetSec) ? f : best
+          );
+          rvSrc.setTiles([`${RV_HOST}${nearest.path}${RV_TILE_SUFFIX}`]);
+        }
+      }
       applyTerrainOrder(map, terrainOrderRef.current);
       // terrain-filter visibility is driven by the Slope Filter tool, not the layer panel.
       if (map.getLayer("terrain-filter"))
@@ -325,7 +341,7 @@ export function Map({
       });
       if (terrain3dRef.current) {
         map.setTerrain({ source: "terrain-rgb", exaggeration: 1 });
-        map.setMaxPitch(55);
+        map.setMaxPitch(75);
         map.setMaxZoom(17);
       }
       addSnotelLayers(map);
@@ -938,7 +954,6 @@ export function Map({
   // fresh. The ref is read by the time injection effect; no state update needed.
   useEffect(() => {
     const RV_API = "https://api.rainviewer.com/public/weather-maps.json";
-    const RV_HOST = "https://tilecache.rainviewer.com";
 
     async function fetchFrames() {
       try {
@@ -1003,7 +1018,6 @@ export function Map({
     const map = mapRef.current;
     if (!map || !map.isStyleLoaded()) return;
     const mapTime = mapTimeStep === NOW_STEP ? null : stepToDate(mapTimeStep);
-    const RV_HOST = "https://tilecache.rainviewer.com";
 
     for (const layer of overlayLayers) {
       if (!layer.timeEnabled || !layer.timeFmt) continue;
