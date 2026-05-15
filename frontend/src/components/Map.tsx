@@ -1471,14 +1471,14 @@ export function Map({
             bottom: 52,
             left: 10,
             zIndex: Z.MAP_OVERLAY,
-            width: 36,
-            height: 36,
+            width: 72,
+            height: 72,
             cursor: "pointer",
             userSelect: "none",
           }}
         >
           <svg
-            width="36" height="36" viewBox="0 0 36 36"
+            width="72" height="72" viewBox="0 0 36 36"
             style={{ transform: `rotate(${-mapBearing}deg)`, transition: "transform 80ms linear" }}
           >
             <circle cx="18" cy="18" r="16" fill={theme.panel} stroke={theme.divider} strokeWidth="1.2"/>
