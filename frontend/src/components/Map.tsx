@@ -1188,8 +1188,8 @@ export function Map({
           terrain3dActive={terrain3d}
           layerPanelCollapsed={layerPanelCollapsed}
           theme={theme}
-          onMeasureToggle={() => { setMeasureMode((m) => !m); setSlopeFilterMode(false); }}
-          onSlopeFilterToggle={() => { setSlopeFilterMode((m) => !m); setMeasureMode(false); }}
+          onMeasureToggle={() => setMeasureMode((m) => !m)}
+          onSlopeFilterToggle={() => setSlopeFilterMode((m) => !m)}
           onTerrain3dToggle={() => setTerrain3d((t) => !t)}
         />
       )}
@@ -1276,7 +1276,7 @@ export function Map({
             </div>
             {/* Measure Slope */}
             <button
-              onClick={() => { setMeasureMode((m) => !m); setSlopeFilterMode(false); setMobileToolsOpen(false); }}
+              onClick={() => { setMeasureMode((m) => !m); setMobileToolsOpen(false); }}
               aria-pressed={measureMode}
               style={{
                 display: "flex", alignItems: "center", gap: 12, width: "100%",
@@ -1303,7 +1303,7 @@ export function Map({
             </button>
             {/* Slope Filter */}
             <button
-              onClick={() => { setSlopeFilterMode((m) => !m); setMeasureMode(false); setMobileToolsOpen(false); }}
+              onClick={() => { setSlopeFilterMode((m) => !m); setMobileToolsOpen(false); }}
               aria-pressed={slopeFilterMode}
               style={{
                 display: "flex", alignItems: "center", gap: 12, width: "100%",
