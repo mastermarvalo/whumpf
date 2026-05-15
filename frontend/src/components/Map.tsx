@@ -160,7 +160,8 @@ export function Map({
     }
     try {
       const stored = localStorage.getItem("whumpf:layer-visible");
-      return stored ? { ...defaults, ...JSON.parse(stored) } : defaults;
+      // terrain-filter is owned by slopeFilterMode — never restore it from localStorage.
+      return stored ? { ...defaults, ...JSON.parse(stored), "terrain-filter": false } : defaults;
     } catch { return defaults; }
   });
   const [opacity, setOpacity] = useState<Record<string, number>>(() => {
