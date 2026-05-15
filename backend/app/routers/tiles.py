@@ -565,6 +565,9 @@ def _render_terrain_rgb(
     # Crop border pixels back to 256×256.
     data = data[buf:buf + _TERRAIN_PX, buf:buf + _TERRAIN_PX]
 
+    if np.all(np.isnan(data)):
+        return None  # no valid pixels — let fallback handle it
+
     elev    = np.where(np.isnan(data), 0.0, data).astype(np.float64)
     val     = np.clip(elev + 32768.0, 0.0, 65535.0)
     int_val = np.floor(val).astype(np.uint32)
