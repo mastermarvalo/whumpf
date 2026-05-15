@@ -5,7 +5,7 @@ import { useFetchWithRetry } from "../hooks/useFetchWithRetry";
 import { showToast } from "./Toast";
 import type { StravaStatus, UserSummary } from "../App";
 
-import { API_URL, TITILER_URL, MARTIN_URL } from "./Map/constants";
+import { API_URL, TITILER_URL } from "./Map/constants";
 import { THEMES, MOBILE_NAV_H } from "./Map/theme";
 import { Z } from "./Map/zIndex";
 import type {
@@ -304,7 +304,7 @@ export function Map({
       updateMeasureSource(map, measurePtsRef.current);
       // Terrain-rgb source: always loaded, never removed — setTerrain() is the only toggle.
       if (!map.getSource("terrain-rgb")) {
-        map.addSource("terrain-rgb", getTerrainSource(MARTIN_URL));
+        map.addSource("terrain-rgb", getTerrainSource());
       }
       // MapLibre v5: sky is a style-level property, not a layer.
       map.setSky({
@@ -654,7 +654,7 @@ export function Map({
     if (!map) return;
     // Stop moving forward past z14 in 3D — beyond that the near clip plane
     // cuts into the terrain mesh and makes it look flat/broken.
-    if (fwd > 0 && terrain3d && map.getZoom() >= 17) return;
+    if (fwd > 0 && terrain3d && map.getZoom() >= 14) return;
     const cp = map.project(map.getCenter());
     const speed = 4;
     map.jumpTo({ center: map.unproject([cp.x + right * speed, cp.y - fwd * speed]) });
@@ -675,7 +675,7 @@ export function Map({
       if (pressed.has("ArrowLeft")  || pressed.has("a")) right -= 1;
       if (fwd !== 0 || right !== 0) flyCamera(fwd, right);
       if (map && terrain3d) {
-        if (pressed.has("space-up"))   map.jumpTo({ zoom: Math.min(20, map.getZoom() - 0.025) });
+        if (pressed.has("space-up"))   map.jumpTo({ zoom: Math.min(14, map.getZoom() - 0.025) });
         if (pressed.has("space-down")) map.jumpTo({ zoom: Math.max(1,  map.getZoom() + 0.025) });
       }
       raf = requestAnimationFrame(tick);

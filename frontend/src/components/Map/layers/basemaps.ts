@@ -65,16 +65,16 @@ export interface TerrainFilterSettings {
   slopeMax: number;
 }
 
-export function getTerrainSource(martinUrl: string): maplibregl.RasterDEMSourceSpecification {
+export function getTerrainSource(): maplibregl.RasterDEMSourceSpecification {
   return {
     type: "raster-dem",
-    tiles: [`${martinUrl}/terrain_rgb_hires/{z}/{x}/{y}`],
+    tiles: [`${API_URL}/tiles/terrain_rgb/{z}/{x}/{y}`],
     tileSize: 256,
     encoding: "terrarium",
     minzoom: 5,
-    maxzoom: 17,
-    bounds: [-109.06, 37.0, -105.5, 41.0],
-    attribution: "Terrain © USGS 3DEP 1m",
+    maxzoom: 14,
+    bounds: [-109.06, 37.0, -102.05, 41.0],
+    attribution: "Terrain © USGS 3DEP",
   };
 }
 
