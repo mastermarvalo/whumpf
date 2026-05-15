@@ -579,8 +579,39 @@ export function Map({
       showToast(`Basemap tiles returned ${status} — try a different basemap.`, "error");
     });
 
+    // Custom Shift+drag handler for tilt (pitch) and spin (bearing).
+    // MapLibre's built-in DragRotateHandler hardcodes Ctrl; capture mousedown
+    // before MapLibre sees it so the pan handler never activates.
+    const canvas = map.getCanvas();
+    let shiftDrag: { x: number; y: number; bearing: number; pitch: number } | null = null;
+
+    const onShiftDown = (e: MouseEvent) => {
+      if (!e.shiftKey || e.button !== 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      shiftDrag = { x: e.clientX, y: e.clientY, bearing: map.getBearing(), pitch: map.getPitch() };
+    };
+    const onShiftMove = (e: MouseEvent) => {
+      if (!shiftDrag) return;
+      map.jumpTo({
+        bearing: shiftDrag.bearing + (e.clientX - shiftDrag.x) * 0.4,
+        pitch: Math.max(0, Math.min(75, shiftDrag.pitch - (e.clientY - shiftDrag.y) * 0.3)),
+      });
+    };
+    const onShiftUp = () => { shiftDrag = null; };
+
+    canvas.addEventListener("mousedown", onShiftDown, { capture: true });
+    window.addEventListener("mousemove", onShiftMove);
+    window.addEventListener("mouseup", onShiftUp);
+
     mapRef.current = map;
-    return () => { map.remove(); mapRef.current = null; };
+    return () => {
+      canvas.removeEventListener("mousedown", onShiftDown, { capture: true });
+      window.removeEventListener("mousemove", onShiftMove);
+      window.removeEventListener("mouseup", onShiftUp);
+      map.remove();
+      mapRef.current = null;
+    };
   }, []);
 
   // Switch basemap on change. Raster→raster swaps only the basemap source/layer in place so
@@ -1252,7 +1283,7 @@ export function Map({
             whiteSpace: "nowrap",
           }}
         >
-          WASD / arrows to fly · Ctrl+drag or Shift+arrows to tilt &amp; spin
+          WASD / arrows to fly · Shift+drag or Shift+arrows to tilt &amp; spin
         </div>
       )}
 
