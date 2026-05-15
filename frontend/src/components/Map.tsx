@@ -588,6 +588,9 @@ export function Map({
     const map = mapRef.current;
     if (!map) return;
     for (const [id, isVis] of Object.entries(visible)) {
+      // terrain-filter visibility is owned by slopeFilterMode, not this state.
+      // Letting it through would re-show stale localStorage values on every toggle.
+      if (id === "terrain-filter") continue;
       if (map.getLayer(id))
         map.setLayoutProperty(id, "visibility", isVis ? "visible" : "none");
       if (map.getLayer(`${id}-hires`))
@@ -873,7 +876,9 @@ export function Map({
     const t = setTimeout(() => {
       try {
         localStorage.setItem("whumpf:basemap", basemap);
-        localStorage.setItem("whumpf:layer-visible", JSON.stringify(visible));
+        // Exclude terrain-filter: its visibility is owned by slopeFilterMode, not visible state.
+        const { "terrain-filter": _tf, ...persistVisible } = visible;
+        localStorage.setItem("whumpf:layer-visible", JSON.stringify(persistVisible));
         localStorage.setItem("whumpf:layer-opacity", JSON.stringify(opacity));
         localStorage.setItem("whumpf:terrain-order", JSON.stringify(terrainOrder));
         localStorage.setItem("whumpf:terrain-filter", JSON.stringify(terrainFilter));
