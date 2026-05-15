@@ -1,4 +1,4 @@
-import { useEffect, useCallback, useState } from "react";
+import { useEffect, useCallback, useRef, useState } from "react";
 import type { Theme } from "./theme";
 import { Z } from "./zIndex";
 
@@ -9,6 +9,8 @@ const STEP_MIN  = 10;
 const PAST_MIN  = 120;
 export const TOTAL_STEPS = PAST_MIN / STEP_MIN; // 12
 export const NOW_STEP    = TOTAL_STEPS;          // 12 (rightmost)
+
+const PLAY_INTERVAL_MS = 700; // ms per frame during autoplay
 
 /** Convert a slider step index to an absolute Date (snapped to 10-min boundary). */
 export function stepToDate(step: number): Date {
@@ -54,6 +56,10 @@ export function TimeSlider({
   theme, mobile, mobileBottom, layerPanelCollapsed,
 }: Props) {
   const [localStep, setLocalStep] = useState(step);
+  const [playing, setPlaying] = useState(false);
+  // Ref so the interval callback always reads the current step without a stale closure.
+  const localStepRef = useRef(localStep);
+  localStepRef.current = localStep;
 
   useEffect(() => { setLocalStep(step); }, [step]);
 
@@ -62,11 +68,23 @@ export function TimeSlider({
     onChange(s);
   }, [onChange]);
 
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) =>
+  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setPlaying(false);
     setLocalStep(Number(e.target.value));
+  };
 
   const handleCommit = (e: React.SyntheticEvent<HTMLInputElement>) =>
     commit(Number((e.target as HTMLInputElement).value));
+
+  // Autoplay: advance one step per interval, looping from NOW back to 0.
+  useEffect(() => {
+    if (!playing) return;
+    const id = setInterval(() => {
+      const next = localStepRef.current >= NOW_STEP ? 0 : localStepRef.current + 1;
+      commit(next);
+    }, PLAY_INTERVAL_MS);
+    return () => clearInterval(id);
+  }, [playing, commit]);
 
   const leftPx   = mobile ? 8 : layerPanelCollapsed ? 56 : 228;
   const bottomPx = mobile ? mobileBottom + 8 : 36;
@@ -103,13 +121,44 @@ export function TimeSlider({
       >
         {/* Header row */}
         <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {/* Play / Pause button */}
+          <button
+            onClick={() => setPlaying((p) => !p)}
+            title={playing ? "Pause" : "Play radar loop"}
+            style={{
+              fontSize: 13,
+              color: playing ? theme.accent : theme.muted,
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              padding: "0 2px",
+              lineHeight: 1,
+              flexShrink: 0,
+              display: "flex",
+              alignItems: "center",
+            }}
+          >
+            {playing ? (
+              // Pause icon (two bars)
+              <svg width="11" height="12" viewBox="0 0 11 12" fill="currentColor">
+                <rect x="0" y="0" width="4" height="12" rx="1"/>
+                <rect x="7" y="0" width="4" height="12" rx="1"/>
+              </svg>
+            ) : (
+              // Play icon (triangle)
+              <svg width="11" height="12" viewBox="0 0 11 12" fill="currentColor">
+                <polygon points="0,0 11,6 0,12"/>
+              </svg>
+            )}
+          </button>
+
           <span style={{ fontSize: 10, color: theme.muted, letterSpacing: "0.06em", textTransform: "uppercase", flexShrink: 0 }}>
             Radar
           </span>
           <span style={{ flex: 1, fontSize: 12, color: localStep === NOW_STEP ? theme.accent : theme.text, fontWeight: 600, textAlign: "center" }}>
             {formatStep(localStep)}
           </span>
-          {localStep !== NOW_STEP && (
+          {localStep !== NOW_STEP && !playing && (
             <button
               onClick={() => commit(NOW_STEP)}
               style={{ fontSize: 11, color: theme.accent, background: "none", border: `1px solid ${theme.accent}`, borderRadius: 6, padding: "1px 7px", cursor: "pointer", fontFamily: "inherit", flexShrink: 0 }}
