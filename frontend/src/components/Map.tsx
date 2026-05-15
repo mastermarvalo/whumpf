@@ -5,7 +5,7 @@ import { useFetchWithRetry } from "../hooks/useFetchWithRetry";
 import { showToast } from "./Toast";
 import type { StravaStatus, UserSummary } from "../App";
 
-import { API_URL, TITILER_URL } from "./Map/constants";
+import { API_URL, TITILER_URL, MARTIN_URL } from "./Map/constants";
 import { THEMES, MOBILE_NAV_H } from "./Map/theme";
 import { Z } from "./Map/zIndex";
 import type {
@@ -304,7 +304,7 @@ export function Map({
       updateMeasureSource(map, measurePtsRef.current);
       // Terrain-rgb source: always loaded, never removed — setTerrain() is the only toggle.
       if (!map.getSource("terrain-rgb")) {
-        map.addSource("terrain-rgb", getTerrainSource());
+        map.addSource("terrain-rgb", getTerrainSource(MARTIN_URL));
       }
       // MapLibre v5: sky is a style-level property, not a layer.
       map.setSky({

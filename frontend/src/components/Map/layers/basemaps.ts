@@ -65,17 +65,16 @@ export interface TerrainFilterSettings {
   slopeMax: number;
 }
 
-// Using AWS global 10m tiles until Martin terrain_rgb_hires.mbtiles is deployed.
-// Switch to MARTIN_URL once terrain pipeline completes — see project_terrain_migration.md.
-export function getTerrainSource(): maplibregl.RasterDEMSourceSpecification {
+export function getTerrainSource(martinUrl: string): maplibregl.RasterDEMSourceSpecification {
   return {
     type: "raster-dem",
-    tiles: ["https://elevation-tiles-prod.s3.amazonaws.com/terrarium/{z}/{x}/{y}.png"],
+    tiles: [`${martinUrl}/terrain_rgb/{z}/{x}/{y}`],
     tileSize: 256,
     encoding: "terrarium",
     minzoom: 5,
-    maxzoom: 14,
-    attribution: "Terrain © Mapzen/AWS",
+    maxzoom: 17,
+    bounds: [-109.06, 37.0, -105.5, 41.0],
+    attribution: "Terrain © USGS 3DEP 1m",
   };
 }
 
