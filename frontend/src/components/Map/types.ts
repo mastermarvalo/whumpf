@@ -90,12 +90,16 @@ export type ActivityCardProps = {
 
 export interface ForecastPeriod {
   name: string;
+  startTime?: string;
+  endTime?: string;
+  isDaytime?: boolean;
   temperature: number;
   temperatureUnit: string;
   windSpeed: string;
   windDirection: string;
   shortForecast: string;
   probabilityOfPrecipitation?: { value: number | null };
+  precipIn?: number;
 }
 
 export interface SpotData {
