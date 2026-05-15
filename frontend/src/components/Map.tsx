@@ -290,7 +290,6 @@ export function Map({
       maxTileCacheSize: 500,
     });
 
-    map.addControl(new maplibregl.NavigationControl({ visualizePitch: true }), "top-right");
     map.addControl(new maplibregl.ScaleControl({ unit: "imperial" }), "bottom-left");
 
     // Single permanent handler for both initial load and every subsequent setStyle call.
@@ -1394,6 +1393,7 @@ export function Map({
           theme={theme}
           mobile={isMobile}
           mobileBottom={mobileBottom}
+          siblingActive={measureMode}
         />
       )}
       {measureMode && (
@@ -1405,6 +1405,7 @@ export function Map({
           theme={theme}
           mobile={isMobile}
           mobileBottom={mobileBottom}
+          siblingActive={slopeFilterMode}
           onClose={() => setMeasureMode(false)}
         />
       )}

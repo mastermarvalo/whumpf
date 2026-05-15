@@ -261,11 +261,12 @@ interface Props {
   theme: Theme;
   mobile: boolean;
   mobileBottom: number;
+  siblingActive?: boolean;
 }
 
 const ALL_ASPECTS = ["N", "NE", "E", "SE", "S", "SW", "W", "NW"];
 
-export function SlopeFilterPanel({ filter, onChange, onApplyWindPreset, onClose, theme, mobile, mobileBottom }: Props) {
+export function SlopeFilterPanel({ filter, onChange, onApplyWindPreset, onClose, theme, mobile, mobileBottom, siblingActive }: Props) {
   const [windMode, setWindMode] = useState(false);
   const { panelRef, handleProps, panelEventProps, dragStyle } = useDraggable(mobile);
 
@@ -276,8 +277,9 @@ export function SlopeFilterPanel({ filter, onChange, onApplyWindPreset, onClose,
     : {
         ...panelShared(theme),
         bottom: 36,
-        left: "50%",
-        transform: "translateX(-50%)",
+        ...(siblingActive
+          ? { left: 8 }
+          : { left: "50%", transform: "translateX(-50%)" }),
         borderRadius: 10,
         padding: "12px 14px",
         fontSize: 13,

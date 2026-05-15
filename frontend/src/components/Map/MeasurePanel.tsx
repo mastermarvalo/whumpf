@@ -152,6 +152,7 @@ export function MeasurePanel({
   theme,
   mobile,
   mobileBottom,
+  siblingActive,
   onClose,
 }: {
   pts: [number, number][];
@@ -161,6 +162,7 @@ export function MeasurePanel({
   theme: Theme;
   mobile?: boolean;
   mobileBottom?: number;
+  siblingActive?: boolean;
   onClose: () => void;
 }) {
   const isMobile = mobile ?? false;
@@ -216,8 +218,9 @@ export function MeasurePanel({
     : {
         ...panelShared(theme),
         bottom: 36,
-        left: "50%",
-        transform: "translateX(-50%)",
+        ...(siblingActive
+          ? { right: 8, left: "auto" }
+          : { left: "50%", transform: "translateX(-50%)" }),
         borderRadius: 8,
         padding: hasChart ? "10px 14px 8px" : "9px 16px",
         fontSize: 13,
