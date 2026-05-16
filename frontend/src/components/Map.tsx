@@ -634,7 +634,7 @@ export function Map({
     return () => clearTimeout(t);
   }, [terrain3d]);
 
-  // 3D camera controls — pitch, bearing, and reset-north.
+  // 3D camera controls — pitch and bearing via WASD/arrows; north reset via compass rose.
   const adjustPitch = useCallback((delta: number) => {
     const map = mapRef.current;
     if (!map) return;

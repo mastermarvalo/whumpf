@@ -185,9 +185,10 @@ docker system df
 docker system prune --all --volumes   # nuclear — destroys stopped-container data
 ```
 
-The VM has 100 GB. DEM COGs for Colorado are ~3 GB; CONUS at 1/3 arc-second
-is ~180 GB and should live on the NAS share, not the VM disk, once the
-pipeline is built in Phase 2.
+The VM disk is 100 GB; DEM data lives on the separate `/data` mount.
+Current footprint: `dem.tif` (10m, full CO) ~4 GB, `dem_hires.tif` (1m,
+partial CO) ~161 GB, derived COGs (slope/aspect/hillshade) ~20 GB,
+MBTiles (10m + 1m partial) ~36 GB. Full 1m Colorado would be ~500+ GB.
 
 ### Podman version check
 

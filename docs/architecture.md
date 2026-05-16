@@ -11,18 +11,26 @@ This doc is the "big picture" reference. For the per-component rationale
 ```
 browser ──► MapLibre ──► fetch style.json (from frontend bundle)
                     │
-                    ├──► Martin         :3000/{source}/{z}/{x}/{y}.mvt
-                    │      └──► PostGIS (vector tables: zones, routes, lines)
+                    ├──► Martin         :3000/{source}/{z}/{x}/{y}.mvt   (future: PostGIS vector — CAIC zones, routes)
                     │
-                    └──► TiTiler        :8001/cog/tiles/{z}/{x}/{y}.png
-                           └──► MinIO → dem-cogs/{region}/hillshade.tif
-                                    via S3 + GDAL/rasterio
+                    ├──► TiTiler        :8001/cog/tiles/{z}/{x}/{y}.png
+                    │      └──► MinIO → dem-cogs/{region}/hillshade.tif  (slope, aspect, hillshade overlays)
+                    │                   via vsicurl HTTP + GDAL/rasterio
+                    │
+                    └──► FastAPI        :8000/tiles/*
+                           ├── /terrain_rgb/{z}/{x}/{y}   → 10m DEM; 1m hires w/ 10m fallback at z≥13
+                           ├── /contours/{z}/{x}/{y}      → zoom-adaptive contour lines from DEM COGs
+                           ├── /slope/{z}/{x}/{y}         → CalTopo-style slope angle colormap
+                           └── /terrain_filter/{z}/{x}/{y}→ aspect+slope filter overlay
+                                all read dem.tif / dem_hires.tif from MinIO via vsicurl
 ```
 
-MapLibre is the client-side WebGL renderer. It fetches a style document
-from the frontend and then pulls tiles directly from Martin (vector) and
-TiTiler (raster). The FastAPI backend is not in the hot path for tile
-rendering — this is intentional and keeps tile latency very low.
+MapLibre pulls tiles from three upstreams. TiTiler handles hillshade and
+other direct COG renders. The FastAPI `/tiles` router handles terrain-rgb,
+contours, slope, and the terrain filter — these need custom rendering logic
+(terrarium encoding, contourpy, CalTopo colormap) that TiTiler can't do
+natively. Martin is wired up but not yet serving production vector data
+(pending CAIC zone ingest and Strava activity import to PostGIS).
 
 ### User action (e.g., "draw line → simulate runout")
 
@@ -109,12 +117,12 @@ OnX, and Gaia all do under the hood.
 
 Mirrored from `whumpf-stack.md`:
 
-| Phase | Focus                                   | Key deliverable              |
-|-------|-----------------------------------------|------------------------------|
-| 0     | Infrastructure (this phase)             | Stack boots, healthchecks    |
-| 1     | Base map renders                        | MapLibre on OSM + PostGIS OK |
-| 2     | DEM pipeline                            | Hillshade visible in browser |
-| 3     | Vector data feeds                       | CAIC zones styled on map     |
-| 4     | Auth + Strava                           | Activity overlays            |
-| 5     | Simulation                              | Draw line → runout path      |
-| 6     | Multi-user                              | Authentik, trip sharing      |
+| Phase | Focus                                   | Key deliverable              | Status |
+|-------|-----------------------------------------|------------------------------|--------|
+| 0     | Infrastructure                          | Stack boots, healthchecks    | ✅ done |
+| 1     | Base map renders                        | MapLibre + 3D terrain        | ✅ done |
+| 2     | DEM pipeline                            | Slope/terrain/contours live  | ✅ done |
+| 3     | Vector data feeds                       | CAIC zones styled on map     | 🔄 partial (SNOTEL done; CAIC pending) |
+| 4     | Auth + Strava                           | Activity overlays            | 🔄 partial (auth + import done; map overlay pending) |
+| 5     | Simulation                              | Draw line → runout path      | ⬜ not started |
+| 6     | Multi-user                              | Authentik, trip sharing      | ⬜ not started |

@@ -234,34 +234,36 @@ whumpf/
 ## Build Phases
 
 ### Phase 0 — Infrastructure
-- [ ] Compose stack: PostGIS, MinIO, TiTiler, Martin, FastAPI skeleton
-- [ ] Network, volumes, healthchecks configured
-- [ ] NPM routing for all services
-- [ ] `.env` pattern established
+- [x] Compose stack: PostGIS, MinIO, TiTiler, Martin, FastAPI skeleton
+- [x] Network, volumes, healthchecks configured
+- [x] NPM routing for all services
+- [x] `.env` pattern established
 
 ### Phase 1 — Base Map
-- [ ] FastAPI health endpoint
-- [ ] PostGIS extensions loaded (`postgis`, `postgis_raster`)
-- [ ] React + MapLibre renders a map (OSM tiles as baseline)
-- [ ] Custom basemap style
+- [x] FastAPI health endpoint
+- [x] PostGIS extensions loaded (`postgis`, `postgis_raster`)
+- [x] React + MapLibre renders a map (streets/topo/satellite basemaps)
+- [x] Custom basemap style — 3D terrain, compass rose, layer panel
 
 ### Phase 2 — DEM Pipeline
-- [ ] 3DEP download script (Colorado first, CONUS later)
-- [ ] Mosaic → reproject → derivatives (slope, aspect, hillshade) → COG
-- [ ] Upload to MinIO
-- [ ] TiTiler serves COGs, visible in MapLibre
+- [x] 3DEP download script (Colorado 10m full state; 1m partial — San Juans)
+- [x] Mosaic → reproject → derivatives (slope, aspect, hillshade, terrain-rgb) → COG
+- [x] Upload to MinIO
+- [x] TiTiler serves slope/aspect/hillshade COGs; FastAPI `/tiles` serves terrain-rgb + contours
+- [x] Slope angle filter overlay (CalTopo-style), contour lines, terrain filter with aspect selector
+- [ ] Full 1m Colorado coverage (raw tiles downloaded; pipeline not yet run statewide)
 
 ### Phase 3 — Vector Data
+- [x] SNOTEL station points + live conditions overlay
 - [ ] CAIC zone ingest → PostGIS
 - [ ] Martin serves zones as MVT
 - [ ] Danger rating styled on map
-- [ ] SNOTEL station points + live data
 
 ### Phase 4 — Auth & User Data
-- [ ] FastAPI JWT auth
-- [ ] User model
-- [ ] Strava OAuth + activity import → PostGIS
-- [ ] Activity overlay on map
+- [x] FastAPI JWT auth
+- [x] User model
+- [x] Strava OAuth + activity import → PostGIS
+- [ ] Activity overlay on map (Strava data in DB; MapLibre rendering pending)
 
 ### Phase 5 — Simulation
 - [ ] Draw-line frontend tool
