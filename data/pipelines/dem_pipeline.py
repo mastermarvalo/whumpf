@@ -695,7 +695,9 @@ def compute_derivative(
                 mag        = np.sqrt(dx_i**2 + dy_i**2)
                 slope_rad  = np.arctan(mag)
                 del mag
-                aspect_rad = np.arctan2(dy_i, dx_i)
+                # Downhill direction in math convention (CCW from east).
+                # Negating both components flips from uphill gradient to downhill.
+                aspect_rad = np.arctan2(-dy_i, -dx_i)
                 del dx_i, dy_i
 
                 if what == "slope":
@@ -713,7 +715,8 @@ def compute_derivative(
                     arr = shade.astype(np.uint8)
                     del shade
                 else:  # aspect
-                    arr = (np.degrees(aspect_rad) % 360.0).astype(np.float32)
+                    # Convert math angle (CCW from east) to geographic (CW from north, 0=N).
+                    arr = ((90.0 - np.degrees(aspect_rad)) % 360.0).astype(np.float32)
                     np.nan_to_num(arr, nan=-9999.0, copy=False)
 
                 del slope_rad, aspect_rad
@@ -732,9 +735,12 @@ def compute_derivative(
                             _fmt_duration(elapsed_total), _fmt_duration(eta_s))
 
     step(f"Building overviews for {out_path.name} ...")
+    # Aspect is circular (0°/360° wrap at north) so averaging overviews produces
+    # wrong values near the wrap boundary.  Nearest preserves real values.
+    ov_resampling = Resampling.nearest if what == "aspect" else Resampling.average
     with rasterio.open(tmp, "r+") as ds:
-        ds.build_overviews([2, 4, 8, 16, 32, 64], Resampling.average)
-        ds.update_tags(ns="rio_overview", resampling="average")
+        ds.build_overviews([2, 4, 8, 16, 32, 64], ov_resampling)
+        ds.update_tags(ns="rio_overview", resampling=ov_resampling.name)
     # Rename instead of rio_copy to avoid a full duplicate on disk (~100 GB for hires).
     # The result is a tiled GeoTIFF with internal overviews — valid for TiTiler/MinIO.
     os.rename(tmp, str(out_path))
@@ -877,6 +883,11 @@ def main() -> None:
                              "Derivatives (slope_hires, hillshade_hires, aspect_hires) "
                              "are still uploaded. Use when disk is tight and "
                              "terrain_rgb_pipeline will read dem_hires.tif locally.")
+    parser.add_argument("--skip-hires-derivatives", action="store_true",
+                        help="Skip computing and uploading all hires derivatives "
+                             "(slope_hires, hillshade_hires, aspect_hires). Use when "
+                             "disk is too tight for the ~412 GB peak needed to compute "
+                             "and upload a hires derivative simultaneously.")
     parser.add_argument("--test", action="store_true",
                         help="Smoke-test: small bbox near Silverton (~2 min)")
     args = parser.parse_args()
@@ -1084,7 +1095,11 @@ def main() -> None:
     # ── 3b. hires derivatives — computed, uploaded, and deleted one at a time ────
     # Each file is ~100 GB; computing all three simultaneously would require
     # ~300 GB of free disk.  Instead: compute one → upload → delete → next.
-    if dem_hires_path.exists():
+    # Note: MinIO multipart staging adds another ~100 GB peak per file, so total
+    # peak disk per derivative is ~200 GB.  Use --skip-hires-derivatives when tight.
+    if args.skip_hires_derivatives:
+        step("--skip-hires-derivatives: skipping hires slope/hillshade/aspect.")
+    elif dem_hires_path.exists():
         with rasterio.open(dem_hires_path) as _ds:
             hires_tf     = _ds.transform
             hires_res_x  = abs(hires_tf.a)

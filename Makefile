@@ -87,13 +87,15 @@ DEM_HIRES_BBOX ?= -109.06,37.0,-105.5,41.0
 DEM_FLAGS    ?= --priority-stack
 DEM_HIRES_MAX_GB ?= 700
 
+PYTHON ?= .venv/bin/python
+
 .PHONY: dem-pipeline
 dem-pipeline:  ## run the DEM pipeline; override with DEM_BBOX=, DEM_HIRES_BBOX=, DEM_WORKDIR=, DEM_FLAGS=
-	python data/pipelines/dem_pipeline.py --workdir $(DEM_WORKDIR) --region colorado --bbox="$(DEM_BBOX)" --hires-bbox="$(DEM_HIRES_BBOX)" --hires-max-gb=$(DEM_HIRES_MAX_GB) $(DEM_FLAGS)
+	$(PYTHON) data/pipelines/dem_pipeline.py --workdir $(DEM_WORKDIR) --region colorado --bbox="$(DEM_BBOX)" --hires-bbox="$(DEM_HIRES_BBOX)" --hires-max-gb=$(DEM_HIRES_MAX_GB) $(DEM_FLAGS)
 
 .PHONY: dem-pipeline-test
 dem-pipeline-test:  ## quick smoke-test (0.5°×0.5° bbox near Silverton, ~2 min)
-	python data/pipelines/dem_pipeline.py --test --workdir $(DEM_WORKDIR) --region colorado
+	$(PYTHON) data/pipelines/dem_pipeline.py --test --workdir $(DEM_WORKDIR) --region colorado
 
 .PHONY: dem-clean-cogs
 dem-clean-cogs:  ## delete processed COGs so the next pipeline run recomputes from downloaded tiles

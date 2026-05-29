@@ -89,7 +89,6 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
           id: "hillshade",
           label: "Hillshade",
           tiles: cogTiles(`${regionId}/hillshade.tif`),
-          hiresTiles: cogTiles(`${regionId}/hillshade_hires.tif`),
           opacity: 0.7,
           defaultVisible: true,
         },
@@ -115,13 +114,6 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
           // don't seam at tile boundaries. width/height=512: 2:1 downscale in
           // MapLibre smooths the blocky 10m DEM cells.
           tiles: cogTiles(`${regionId}/aspect.tif`, {
-            colormap_name: "hsv",
-            rescale: "0,360",
-            nodata: "-9999",
-            buffer: "2",
-            tilesize: "512",
-          }),
-          hiresTiles: cogTiles(`${regionId}/aspect_hires.tif`, {
             colormap_name: "hsv",
             rescale: "0,360",
             nodata: "-9999",
