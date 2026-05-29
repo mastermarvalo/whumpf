@@ -40,6 +40,21 @@ services:
       retries: 10
 
   # ---------------------------------------------------------------------------
+  # Redis — :6379 (rate-limit store shared across all uvicorn workers)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7-alpine
+    container_name: whumpf-redis
+    network_mode: host
+    restart: unless-stopped
+    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
   # MinIO — :9000 (S3 API), :9001 (console)
   # ---------------------------------------------------------------------------
   minio:
@@ -176,6 +191,7 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       SKIP_EMAIL_VERIFICATION: ${SKIP_EMAIL_VERIFICATION:-false}
+      REDIS_URL: ${REDIS_URL:-redis://localhost:6379}
     volumes:
       - ./backend/app:/app/app
     ulimits:
@@ -186,6 +202,8 @@ services:
       postgis:
         condition: service_healthy
       minio:
+        condition: service_healthy
+      redis:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------

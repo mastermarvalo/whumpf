@@ -3,9 +3,8 @@
 Keyed by client IP. The shared `limiter` instance is wired into the FastAPI
 app at startup so it can hook the request lifecycle for headers and 429s.
 
-Single-process in-memory limiter is fine for a single uvicorn worker; for
-multi-worker / multi-instance deploys, swap to Redis backend (slowapi supports
-this via the `storage_uri` arg).
+When REDIS_URL is set, state is shared across all uvicorn workers via Redis.
+Without it, each worker has its own in-process counter (fine for dev/single-worker).
 """
 
 from __future__ import annotations
@@ -13,7 +12,12 @@ from __future__ import annotations
 from slowapi import Limiter
 from slowapi.util import get_remote_address
 
-# Trust the immediate peer's IP by default. When deployed behind a reverse
-# proxy (nginx, ALB), set `--forwarded-allow-ips=*` on uvicorn and slowapi
-# will pick up X-Forwarded-For via request.client automatically.
-limiter = Limiter(key_func=get_remote_address, default_limits=[])
+from app.config import get_settings
+
+_settings = get_settings()
+
+limiter = Limiter(
+    key_func=get_remote_address,
+    default_limits=[],
+    storage_uri=_settings.redis_url if _settings.redis_url else None,
+)

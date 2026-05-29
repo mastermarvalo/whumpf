@@ -77,6 +77,11 @@ class Settings(BaseSettings):
     email_verification_ttl_s: int = 24 * 3600
     password_reset_ttl_s: int = 3600
 
+    # --- Rate limiting -------------------------------------------------------
+    # Redis URL for cross-worker rate limit state. Defaults to in-process
+    # memory (fine for single-worker dev). Set to redis://localhost:6379 in prod.
+    redis_url: str = ""
+
     # --- Admin / status page ------------------------------------------------
     # CSV of email addresses that get admin powers automatically. The
     # users.is_admin column is the other path; either grants admin.

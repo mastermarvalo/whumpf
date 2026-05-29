@@ -26,6 +26,7 @@ dependencies = [
 
     # Rate limiting
     "slowapi>=0.1.9",
+    "limits[redis]>=3.0",
 
     # Retry helpers for outbound HTTP (Strava, AWDB, CAIC, TiTiler)
     "tenacity>=9.0",
