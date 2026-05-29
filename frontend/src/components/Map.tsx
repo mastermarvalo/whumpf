@@ -652,13 +652,9 @@ export function Map({
   const flyCamera = useCallback((fwd: number, right: number) => {
     const map = mapRef.current;
     if (!map) return;
-    // Stop moving forward past z14 in 3D — beyond that the near clip plane
-    // cuts into the terrain mesh and makes it look flat/broken.
-    if (fwd > 0 && terrain3d && map.getZoom() >= 14) return;
-    const cp = map.project(map.getCenter());
     const speed = 4;
-    map.jumpTo({ center: map.unproject([cp.x + right * speed, cp.y - fwd * speed]) });
-  }, [terrain3d]);
+    map.panBy([right * speed, -fwd * speed], { animate: false });
+  }, []);
 
   useEffect(() => {
     const pressed = new Set<string>();
