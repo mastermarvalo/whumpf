@@ -140,7 +140,11 @@ async def slope_tile(
                 "rescale": "0,60",
                 "nodata": "-9999",
                 "colormap_name": "caltopo_slope",
-                "buffer": 2,
+                # No buffer: TiTiler's `buffer` returns tilesize+2*buffer px of
+                # neighbouring data, which MapLibre raster sources squeeze back
+                # into the tile's own extent — drawing a duplicated strip of the
+                # neighbour's slope at every seam. tilesize 512 still gives the
+                # 2:1 downscale anti-aliasing.
                 "tilesize": 512,
             },
         )

@@ -147,3 +147,39 @@ export interface ProfileResponse {
   summary: ProfileSummary;
   samples: SlopeSample[];
 }
+
+// --- Saved routes (Phase A) --------------------------------------------------
+
+export type RouteVisibility = "private" | "shared" | "unlisted";
+
+/** GeoJSON LineString; coordinates are [lng, lat] or [lng, lat, z]. */
+export interface RouteGeometry {
+  type: "LineString";
+  coordinates: number[][];
+}
+
+/** List entry from GET /routes — no per-point samples. */
+export interface RouteListItem {
+  id: number;
+  owner_id: number;
+  name: string;
+  notes: string;
+  region: string;
+  visibility: RouteVisibility;
+  geometry: RouteGeometry;
+  summary: ProfileSummary;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Full route from GET /routes/{id} — includes the cached profile samples. */
+export interface RouteDetail extends RouteListItem {
+  samples: SlopeSample[];
+}
+
+export interface RouteCreatePayload {
+  name: string;
+  region: string;
+  geometry: RouteGeometry;
+  notes?: string;
+}

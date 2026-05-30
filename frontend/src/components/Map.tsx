@@ -15,6 +15,7 @@ import type {
   PointData,
   ProfileResponse,
   Region,
+  RouteListItem,
   Units,
 } from "./Map/types";
 import { fetchSpotData, fetchWindDirection, reverseGeocode } from "./Map/services";
@@ -78,11 +79,26 @@ import {
   fetchProfile,
   updateMeasureSource,
 } from "./Map/layers/measure";
+import {
+  ROUTE_VERTEX_STYLE,
+  addRouteLayers,
+  applyRouteHighlight,
+  createRoute,
+  deleteRoute,
+  fetchRoutes,
+  importStravaRoute,
+  lineStringFrom,
+  routesToGeoJSON,
+  setRouteData,
+  updateRouteDraftSource,
+} from "./Map/layers/routes";
 
 import { TimeSlider, NOW_STEP, stepToDate } from "./Map/TimeSlider";
 import { LayerPanel } from "./Map/LayerPanel";
 import { InfoPanel } from "./Map/InfoPanel";
 import { MeasurePanel } from "./Map/MeasurePanel";
+import { RouteBuilderPanel } from "./Map/RouteBuilderPanel";
+import { SavedRoutesPanel } from "./Map/SavedRoutesPanel";
 import { SlopeFilterPanel } from "./Map/SlopeFilterPanel";
 import { SearchBar } from "./Map/SearchBar";
 import { StravaActivityCard } from "./Map/StravaActivityCard";
@@ -181,6 +197,20 @@ export function Map({
   const [measurePts, setMeasurePts] = useState<[number, number][]>([]);
   const [profile, setProfile] = useState<ProfileResponse | null>(null);
   const [profileLoading, setProfileLoading] = useState(false);
+
+  // Route builder + saved routes (Phase A).
+  const [routeBuilderMode, setRouteBuilderMode] = useState(false);
+  const [routeVertices, setRouteVertices] = useState<[number, number][]>([]);
+  const [routeSaving, setRouteSaving] = useState(false);
+  const [savedRoutesOpen, setSavedRoutesOpen] = useState(false);
+  const [savedRoutes, setSavedRoutes] = useState<RouteListItem[]>([]);
+  const [savedRoutesLoading, setSavedRoutesLoading] = useState(false);
+  const [selectedRouteId, setSelectedRouteId] = useState<number | null>(null);
+  const routeBuilderModeRef = useRef(false);
+  const routeVerticesRef = useRef<[number, number][]>([]);
+  const routeMarkersRef = useRef<maplibregl.Marker[]>([]);
+  const savedRoutesRef = useRef<RouteListItem[]>([]);
+  const selectedRouteIdRef = useRef<number | null>(null);
   const [units, setUnits] = useState<Units>(() => initialUrlState.units ?? "imperial");
   const [forecast, setForecast] = useState<ForecastPeriod[] | null>(null);
   const [forecastLoading, setForecastLoading] = useState(false);
@@ -331,6 +361,10 @@ export function Map({
       addStravaLayers(map);
       if (stravaDataRef.current) setStravaData(map, stravaDataRef.current);
       applyStravaHighlight(map, selectedStravaIdRef.current);
+      addRouteLayers(map);
+      setRouteData(map, routesToGeoJSON(savedRoutesRef.current));
+      applyRouteHighlight(map, selectedRouteIdRef.current);
+      updateRouteDraftSource(map, routeVerticesRef.current);
       // Sync prevBasemapRef to whichever basemap was last requested.
       prevBasemapRef.current = basemapRef.current;
     });
@@ -470,6 +504,27 @@ export function Map({
 
       const onStrava = map.queryRenderedFeatures(e.point, { layers: ["strava-lines"] });
       if (onStrava.length > 0) return;
+
+      // Click a saved route line (when not drawing/measuring) → select it and
+      // open the saved-routes panel to its stored profile.
+      if (!routeBuilderModeRef.current && !measureModeRef.current) {
+        const onRoute = map.queryRenderedFeatures(e.point, { layers: ["route-lines"] });
+        if (onRoute.length > 0) {
+          const id = Number(onRoute[0].properties?.id);
+          if (!Number.isNaN(id)) {
+            setSelectedRouteId(id);
+            setSavedRoutesOpen(true);
+          }
+          return;
+        }
+      }
+
+      if (routeBuilderModeRef.current) {
+        const newPts: [number, number][] = [...routeVerticesRef.current, [lng, lat]];
+        routeVerticesRef.current = newPts;
+        setRouteVertices(newPts);
+        return;
+      }
 
       if (measureModeRef.current) {
         const pts = measurePtsRef.current;
@@ -769,6 +824,119 @@ export function Map({
         .catch(() => setProfileLoading(false));
     }
   }, [measurePts]);
+
+  // --- Route builder ---------------------------------------------------------
+  // Load the caller's saved routes once on mount.
+  const reloadRoutes = useCallback(() => {
+    setSavedRoutesLoading(true);
+    fetchRoutes()
+      .then((rs) => {
+        savedRoutesRef.current = rs;
+        setSavedRoutes(rs);
+        setRouteData(mapRef.current, routesToGeoJSON(rs));
+      })
+      .catch(() => showToast("Couldn't load saved routes.", "error"))
+      .finally(() => setSavedRoutesLoading(false));
+  }, []);
+
+  useEffect(() => { reloadRoutes(); }, [reloadRoutes]);
+
+  // Keep the saved-routes source + highlight in sync with state.
+  useEffect(() => {
+    savedRoutesRef.current = savedRoutes;
+    setRouteData(mapRef.current, routesToGeoJSON(savedRoutes));
+  }, [savedRoutes]);
+
+  useEffect(() => {
+    selectedRouteIdRef.current = selectedRouteId;
+    applyRouteHighlight(mapRef.current, selectedRouteId);
+    // Fly to the selected route so it's framed on screen.
+    const map = mapRef.current;
+    if (selectedRouteId == null || !map) return;
+    const route = savedRoutesRef.current.find((r) => r.id === selectedRouteId);
+    const coords = route?.geometry?.coordinates ?? [];
+    if (coords.length < 2) return;
+    const bounds = new maplibregl.LngLatBounds();
+    coords.forEach((c) => bounds.extend([c[0], c[1]]));
+    map.fitBounds(bounds, { padding: 80, maxZoom: 15, duration: 800 });
+  }, [selectedRouteId]);
+
+  // Cursor + cleanup when route-builder mode toggles.
+  useEffect(() => {
+    routeBuilderModeRef.current = routeBuilderMode;
+    const canvas = mapRef.current?.getCanvas();
+    if (canvas) canvas.style.cursor = routeBuilderMode ? "crosshair" : "";
+    if (!routeBuilderMode) {
+      routeMarkersRef.current.forEach((m) => m.remove());
+      routeMarkersRef.current = [];
+      setRouteVertices([]);
+      routeVerticesRef.current = [];
+      updateRouteDraftSource(mapRef.current, []);
+    }
+  }, [routeBuilderMode]);
+
+  // Markers + draft line when the drawn vertices change.
+  useEffect(() => {
+    routeVerticesRef.current = routeVertices;
+    const map = mapRef.current;
+    if (!map) return;
+    routeMarkersRef.current.forEach((m) => m.remove());
+    routeMarkersRef.current = routeVertices.map((pt, i) => {
+      const el = document.createElement("div");
+      el.textContent = String(i + 1);
+      el.style.cssText = ROUTE_VERTEX_STYLE;
+      return new maplibregl.Marker({ element: el }).setLngLat(pt).addTo(map);
+    });
+    updateRouteDraftSource(map, routeVertices);
+  }, [routeVertices]);
+
+  const handleSaveRoute = useCallback((name: string) => {
+    const pts = routeVerticesRef.current;
+    if (pts.length < 2 || !name) return;
+    setRouteSaving(true);
+    createRoute({ name, region: region.id, geometry: lineStringFrom(pts) })
+      .then((saved) => {
+        setRouteSaving(false);
+        setRouteBuilderMode(false);   // clears vertices/markers via the toggle effect
+        setSavedRoutes((prev) => [saved, ...prev]);
+        setSavedRoutesOpen(true);
+        setSelectedRouteId(saved.id);
+        showToast(`Saved “${saved.name}”.`, "success");
+      })
+      .catch(() => {
+        setRouteSaving(false);
+        showToast("Couldn't save route.", "error");
+      });
+  }, [region.id]);
+
+  const handleDeleteRoute = useCallback((id: number) => {
+    deleteRoute(id)
+      .then(() => {
+        setSavedRoutes((prev) => prev.filter((r) => r.id !== id));
+        setSelectedRouteId((cur) => (cur === id ? null : cur));
+      })
+      .catch(() => showToast("Couldn't delete route.", "error"));
+  }, []);
+
+  const handleImportStravaRoute = useCallback(async (activityId: number, name: string) => {
+    try {
+      const saved = await importStravaRoute(activityId, region.id);
+      // The endpoint is idempotent: if this activity was already imported it
+      // returns the existing route rather than creating a duplicate.
+      const alreadyImported = savedRoutesRef.current.some((r) => r.id === saved.id);
+      setSavedRoutes((prev) => [saved, ...prev.filter((r) => r.id !== saved.id)]);
+      setSavedRoutesOpen(true);
+      setSelectedRouteId(saved.id);   // opens its profile + flies to it
+      showToast(
+        alreadyImported
+          ? `“${saved.name}” is already saved — opening it.`
+          : `Imported “${saved.name}” as a route.`,
+        "success",
+      );
+    } catch {
+      showToast(`Couldn't import “${name}”.`, "error");
+    }
+  }, [region.id]);
 
   // Sync visibility immediately; fetch lazily via useFetchWithRetry below.
   const snotelVisible = visible["snotel"];
@@ -1166,11 +1334,15 @@ export function Map({
           measureActive={measureMode}
           slopeFilterActive={slopeFilterMode}
           terrain3dActive={terrain3d}
+          routeBuilderActive={routeBuilderMode}
+          savedRoutesActive={savedRoutesOpen}
           layerPanelCollapsed={layerPanelCollapsed}
           theme={theme}
-          onMeasureToggle={() => setMeasureMode((m) => !m)}
+          onMeasureToggle={() => { setRouteBuilderMode(false); setMeasureMode((m) => !m); }}
           onSlopeFilterToggle={() => setSlopeFilterMode((m) => !m)}
           onTerrain3dToggle={() => setTerrain3d((t) => !t)}
+          onRouteBuilderToggle={() => { setMeasureMode(false); setRouteBuilderMode((m) => !m); }}
+          onSavedRoutesToggle={() => setSavedRoutesOpen((o) => !o)}
         />
       )}
 
@@ -1357,7 +1529,37 @@ export function Map({
           onClose={() => setMeasureMode(false)}
         />
       )}
-      {!measureMode && point && (
+      {routeBuilderMode && (
+        <RouteBuilderPanel
+          vertices={routeVertices}
+          saving={routeSaving}
+          units={units}
+          theme={theme}
+          mobile={isMobile}
+          mobileBottom={mobileBottom}
+          siblingActive={slopeFilterMode}
+          onUndo={() => setRouteVertices((pts) => pts.slice(0, -1))}
+          onClear={() => setRouteVertices([])}
+          onSave={handleSaveRoute}
+          onClose={() => setRouteBuilderMode(false)}
+        />
+      )}
+      {savedRoutesOpen && (
+        <SavedRoutesPanel
+          routes={savedRoutes}
+          loading={savedRoutesLoading}
+          selectedId={selectedRouteId}
+          units={units}
+          theme={theme}
+          mobile={isMobile}
+          mobileBottom={mobileBottom}
+          siblingActive={slopeFilterMode}
+          onSelect={setSelectedRouteId}
+          onDelete={handleDeleteRoute}
+          onClose={() => { setSavedRoutesOpen(false); setSelectedRouteId(null); }}
+        />
+      )}
+      {!measureMode && !routeBuilderMode && point && (
         <InfoPanel
           data={point}
           forecast={forecast}
@@ -1375,6 +1577,7 @@ export function Map({
           index={stravaCard.index}
           onIndexChange={(i) => setStravaCard((c) => c ? { ...c, index: i } : null)}
           onClose={() => setStravaCard(null)}
+          onImportRoute={handleImportStravaRoute}
           units={units}
           theme={theme}
           mobile={isMobile}

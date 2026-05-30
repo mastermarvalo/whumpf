@@ -96,7 +96,6 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
           id: "slope",
           label: "Slope angle",
           // Served via API proxy which applies the CalTopo V1 colormap server-side.
-          // Backend adds buffer=2 so TiTiler has neighbour context at tile edges.
           tiles: [`${API_URL}/tiles/slope/{z}/{x}/{y}?region=${regionId}`],
           hiresTiles: [`${API_URL}/tiles/slope/{z}/{x}/{y}?region=${regionId}&hires=true`],
           opacity: 0.75,
@@ -110,14 +109,14 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
         {
           id: "aspect",
           label: "Aspect",
-          // buffer=2: TiTiler fetches extra pixels per edge so hue transitions
-          // don't seam at tile boundaries. width/height=512: 2:1 downscale in
-          // MapLibre smooths the blocky 10m DEM cells.
+          // No buffer: TiTiler's `buffer` bakes neighbouring pixels into each
+          // tile, which a MapLibre raster source then redraws inside the tile's
+          // own extent — duplicating a strip of the neighbour at every seam.
+          // tilesize=512: 2:1 downscale in MapLibre smooths the blocky 10m cells.
           tiles: cogTiles(`${regionId}/aspect.tif`, {
             colormap_name: "hsv",
             rescale: "0,360",
             nodata: "-9999",
-            buffer: "2",
             tilesize: "512",
           }),
           opacity: 0.7,

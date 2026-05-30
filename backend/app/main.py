@@ -19,7 +19,7 @@ from app.config import get_settings
 from app.db import get_engine
 from app.models import Base
 from app.rate_limit import limiter
-from app.routers import auth, avalanche, health, regions, snowpack, status as status_router, strava, terrain, tiles
+from app.routers import auth, avalanche, health, regions, routes, snowpack, status as status_router, strava, terrain, tiles
 from app.routers.avalanche import get_forecast, get_observations
 from app.services.snotel import fetch_stations_geojson
 
@@ -59,6 +59,9 @@ _SCHEMA_PATCHES: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS ix_users_password_reset_token ON users(password_reset_token)",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_regions VARCHAR(255) NOT NULL DEFAULT 'colorado'",
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE",
+    # routes table pre-dates source_strava_id (Strava-import dedupe).
+    "ALTER TABLE routes ADD COLUMN IF NOT EXISTS source_strava_id BIGINT",
+    "CREATE INDEX IF NOT EXISTS ix_routes_source_strava_id ON routes(source_strava_id)",
 )
 
 
@@ -96,7 +99,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=settings.cors_origin_list,
         allow_credentials=True,
-        allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
+        allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Requested-With"],
         max_age=600,
     )
@@ -115,6 +118,7 @@ def create_app() -> FastAPI:
     app.include_router(snowpack.router)
     app.include_router(avalanche.router)
     app.include_router(regions.router)
+    app.include_router(routes.router)
     app.include_router(status_router.router)
 
     logger.info("Whumpf API starting (env=%s, version=%s)", settings.whumpf_env, __version__)

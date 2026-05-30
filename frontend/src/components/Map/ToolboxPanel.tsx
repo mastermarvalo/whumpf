@@ -6,20 +6,28 @@ export function ToolboxPanel({
   measureActive,
   slopeFilterActive,
   terrain3dActive,
+  routeBuilderActive,
+  savedRoutesActive,
   layerPanelCollapsed,
   theme,
   onMeasureToggle,
   onSlopeFilterToggle,
   onTerrain3dToggle,
+  onRouteBuilderToggle,
+  onSavedRoutesToggle,
 }: {
   measureActive: boolean;
   slopeFilterActive: boolean;
   terrain3dActive: boolean;
+  routeBuilderActive: boolean;
+  savedRoutesActive: boolean;
   layerPanelCollapsed: boolean;
   theme: Theme;
   onMeasureToggle: () => void;
   onSlopeFilterToggle: () => void;
   onTerrain3dToggle: () => void;
+  onRouteBuilderToggle: () => void;
+  onSavedRoutesToggle: () => void;
 }) {
   async function copyShareLink() {
     try {
@@ -85,6 +93,36 @@ export function ToolboxPanel({
         <svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
           <path d="M1 13 L7 2 L13 13 Z"/>
           <path d="M4.5 9.5 L7 7 L9.5 9.5"/>
+        </svg>
+      </button>
+
+      {/* Draw route */}
+      <button
+        onClick={onRouteBuilderToggle}
+        title={routeBuilderActive ? "Exit route drawing" : "Draw route"}
+        aria-label="Draw route"
+        aria-pressed={routeBuilderActive}
+        style={tileStyle(routeBuilderActive, "#7b3fe4")}
+      >
+        <svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2 11 C4 11 4 4 7 4 C10 4 10 9 12 9"/>
+          <circle cx="2" cy="11" r="1.3" fill="currentColor" stroke="none"/>
+          <circle cx="12" cy="9" r="1.3" fill="currentColor" stroke="none"/>
+        </svg>
+      </button>
+
+      {/* Saved routes */}
+      <button
+        onClick={onSavedRoutesToggle}
+        title={savedRoutesActive ? "Hide saved routes" : "Saved routes"}
+        aria-label="Saved routes"
+        aria-pressed={savedRoutesActive}
+        style={tileStyle(savedRoutesActive, "#7b3fe4")}
+      >
+        <svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M2 3.5 L5 2.5 L9 4 L12 3 L12 10.5 L9 11.5 L5 10 L2 11 Z"/>
+          <path d="M5 2.5 L5 10"/>
+          <path d="M9 4 L9 11.5"/>
         </svg>
       </button>
 

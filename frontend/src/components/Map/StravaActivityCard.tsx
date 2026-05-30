@@ -12,6 +12,7 @@ export function StravaActivityCard({
   index,
   onIndexChange,
   onClose,
+  onImportRoute,
   units,
   theme,
   mobile,
@@ -21,6 +22,7 @@ export function StravaActivityCard({
   index: number;
   onIndexChange: (i: number) => void;
   onClose: () => void;
+  onImportRoute?: (activityId: number, name: string) => Promise<void>;
   units: Units;
   theme: Theme;
   mobile?: boolean;
@@ -32,6 +34,7 @@ export function StravaActivityCard({
   const act = activities[index];
   const descCache = useRef<Record<number, string | null>>({});
   const [description, setDescription] = useState<string | null | "loading">("loading");
+  const [importing, setImporting] = useState(false);
 
   useEscapeKey(onClose);
 
@@ -162,6 +165,27 @@ export function StravaActivityCard({
           <div style={{ fontSize: 12, lineHeight: 1.5, marginBottom: 6, maxHeight: 80, overflowY: "auto", color: theme.text }}>
             {description}
           </div>
+        )}
+
+        {onImportRoute && (
+          <button
+            onClick={async () => {
+              if (importing) return;
+              setImporting(true);
+              try { await onImportRoute(act.id, act.name); }
+              finally { setImporting(false); }
+            }}
+            disabled={importing}
+            style={{
+              width: "100%", marginBottom: 8, padding: "7px 10px",
+              fontSize: 12, fontWeight: 700, borderRadius: 6,
+              cursor: importing ? "default" : "pointer",
+              border: "none", background: "#7b3fe4", color: "#fff",
+              opacity: importing ? 0.7 : 1,
+            }}
+          >
+            {importing ? "Importing…" : "Save as route"}
+          </button>
         )}
 
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>

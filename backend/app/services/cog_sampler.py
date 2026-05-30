@@ -1,4 +1,4 @@
-"""Sample terrain COG files along a line segment."""
+"""Sample terrain COG files along a line segment or multi-vertex polyline."""
 
 from __future__ import annotations
 
@@ -22,27 +22,18 @@ class TerrainSample:
     aspect_deg: float | None
 
 
-def sample_profile(
-    start: tuple[float, float],
-    end: tuple[float, float],
+def _sample_coords(
+    coords_3857: list[tuple[float, float]],
+    distances: list[float],
     region: str,
     settings: Settings,
-    n: int = 64,
 ) -> list[TerrainSample]:
-    """Sample slope, elevation, and aspect along a line at n evenly-spaced points.
+    """Sample slope/dem/aspect COGs at the given Web-Mercator coords.
 
-    start/end are (longitude, latitude) in WGS84.
+    `coords_3857` and `distances` are parallel lists (cumulative distance in
+    metres along the path). Returns one TerrainSample per coord.
     """
-    start_lng, start_lat = start
-    end_lng, end_lat = end
-
-    _, _, total_m = _geod.inv(start_lng, start_lat, end_lng, end_lat)
-    distances = np.linspace(0.0, total_m, n)
-
-    lngs = np.linspace(start_lng, end_lng, n)
-    lats = np.linspace(start_lat, end_lat, n)
-    xs, ys = _to_3857.transform(lngs, lats)
-    coords = list(zip(xs.tolist(), ys.tolist()))
+    n = len(coords_3857)
 
     # dem-cogs bucket has anonymous download, so we read via HTTP/vsicurl
     # rather than the S3 driver (avoids rasterio 1.4+ credential restrictions).
@@ -69,7 +60,7 @@ def sample_profile(
             try:
                 with rasterio.open(f"/vsicurl/{base}/{name}{suffix}.tif") as ds:
                     nd = ds.nodata
-                    raw = [float(v[0]) for v in ds.sample(coords)]
+                    raw = [float(v[0]) for v in ds.sample(coords_3857)]
                 for i, v in enumerate(raw):
                     target[i] = None if (nd is not None and v == nd) else v
             except Exception:
@@ -94,3 +85,66 @@ def sample_profile(
         )
         for i in range(n)
     ]
+
+
+def sample_profile(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    region: str,
+    settings: Settings,
+    n: int = 64,
+) -> list[TerrainSample]:
+    """Sample slope, elevation, and aspect along a single A→B line at n
+    evenly-spaced points.
+
+    start/end are (longitude, latitude) in WGS84. Thin wrapper over
+    `sample_polyline` so the A→B measure tool and route create path share one
+    sampling implementation.
+    """
+    return sample_polyline([start, end], region, settings, n_total=n)
+
+
+def sample_polyline(
+    vertices: list[tuple[float, float]],
+    region: str,
+    settings: Settings,
+    n_total: int = 128,
+) -> list[TerrainSample]:
+    """Sample slope, elevation, and aspect along an ordered polyline.
+
+    `vertices` is an ordered list of (longitude, latitude) in WGS84 with at
+    least two entries. The polyline is resampled into ``n_total`` points spaced
+    evenly by cumulative distance — independent of the vertex count — so a
+    hand-drawn 3-point route and an imported Strava track with thousands of
+    vertices both yield the same compact, length-weighted profile.
+    """
+    if len(vertices) < 2:
+        raise ValueError("sample_polyline needs at least two vertices")
+    n = max(2, int(n_total))
+
+    # Cumulative geodetic distance at each vertex (breakpoints for interpolation).
+    vdist = [0.0]
+    for (lng0, lat0), (lng1, lat1) in zip(vertices, vertices[1:]):
+        _, _, m = _geod.inv(lng0, lat0, lng1, lat1)
+        vdist.append(vdist[-1] + m)
+    total_m = vdist[-1]
+
+    if total_m <= 0:
+        # Degenerate (all vertices coincident) — sample the single point.
+        lng0, lat0 = vertices[0]
+        lngs = [lng0] * n
+        lats = [lat0] * n
+        dists = [0.0] * n
+    else:
+        targets = np.linspace(0.0, total_m, n)
+        vlng = np.array([v[0] for v in vertices])
+        vlat = np.array([v[1] for v in vertices])
+        # Piecewise-linear interpolation in lng/lat against cumulative distance:
+        # equivalent to per-leg linspace but with even global spacing.
+        lngs = np.interp(targets, vdist, vlng).tolist()
+        lats = np.interp(targets, vdist, vlat).tolist()
+        dists = targets.tolist()
+
+    xs, ys = _to_3857.transform(lngs, lats)
+    coords = list(zip(list(xs), list(ys)))
+    return _sample_coords(coords, dists, region, settings)

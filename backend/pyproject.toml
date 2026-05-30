@@ -47,3 +47,10 @@ dependencies = [
     "contourpy>=1.2",
     "Pillow>=10.4",
 ]
+
+[dependency-groups]
+# Installed automatically by `uv run` (and thus `make test-api`); not shipped
+# in the production image build.
+dev = [
+    "pytest>=8.0",
+]
