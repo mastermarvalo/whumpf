@@ -15,7 +15,11 @@
     "resolveJsonModule": true,
     "isolatedModules": true,
     "useDefineForClassFields": true,
-    "types": ["vite/client"]
+    "types": ["vite/client"],
+    // Type-check only — Vite/Rollup do the bundling. Without this, the `tsc -b`
+    // in `npm run build` writes a .js next to every .ts/.tsx in src/, and Vite
+    // resolves .js before .tsx, so those stale artifacts shadow the real source.
+    "noEmit": true
   },
   "include": ["src"]
 }
