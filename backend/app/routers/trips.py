@@ -39,6 +39,15 @@ UserDep = Annotated[User, Depends(get_current_user)]
 # --------------------------------------------------------------------------- #
 # Schemas
 # --------------------------------------------------------------------------- #
+class TripRouteRead(RouteRead):
+    trip_route_id: int
+
+
+class TripRouteIn(BaseModel):
+    route_id: int
+    day: int = Field(default=1, ge=1)
+
+
 class TripDayIn(BaseModel):
     route_ids: list[int] = Field(default_factory=list)
 
@@ -105,7 +114,7 @@ class WaypointOut(BaseModel):
 class TripDayOut(BaseModel):
     day: int            # 1-based
     date: dt.date       # start date + (day - 1)
-    routes: list[RouteRead]
+    routes: list[TripRouteRead]
 
 
 class TripListItem(BaseModel):
@@ -152,11 +161,13 @@ def _trip_days(session: Session, trip: Trip) -> list[TripDayOut]:
         .where(TripRoute.trip_id == trip.id)
         .order_by(TripRoute.day, TripRoute.ordering)
     ).all()
-    by_day: dict[int, list[RouteRead]] = {}
+    by_day: dict[int, list[TripRouteRead]] = {}
     for tr in rows:
         r = session.get(Route, tr.route_id)
         if r is not None:
-            by_day.setdefault(tr.day, []).append(_to_read(r))
+            by_day.setdefault(tr.day, []).append(
+                TripRouteRead(trip_route_id=tr.id, **_to_read(r).model_dump())
+            )
     return [
         TripDayOut(
             day=d,
@@ -465,4 +476,51 @@ def delete_waypoint(
     assert_can_view_trip(user, trip, session=session)
     wp = _get_waypoint_or_404(session, trip_id, wid)
     session.delete(wp)
+    session.commit()
+
+
+# --------------------------------------------------------------------------- #
+# Trip routes (add/remove after creation)
+# --------------------------------------------------------------------------- #
+@router.post("/{trip_id}/routes", response_model=TripDetail, status_code=201)
+def add_trip_route(
+    trip_id: int, payload: TripRouteIn, session: SessionDep, user: UserDep,
+) -> TripDetail:
+    """Any accepted trip member may add one of their own routes to the trip."""
+    trip = _get_trip_or_404(session, trip_id)
+    assert_can_view_trip(user, trip, session=session)
+
+    route = session.get(Route, payload.route_id)
+    if route is None or route.owner_id != user.id:
+        raise HTTPException(400, "Route not found or not yours")
+
+    day = max(1, min(payload.day, trip.num_days))
+    existing_count = len(session.scalars(
+        select(TripRoute).where(TripRoute.trip_id == trip_id, TripRoute.day == day)
+    ).all())
+
+    session.add(TripRoute(trip_id=trip_id, route_id=payload.route_id, day=day, ordering=existing_count))
+    session.commit()
+    session.refresh(trip)
+    return _to_detail(session, trip)
+
+
+@router.delete("/{trip_id}/routes/{trip_route_id}", status_code=204)
+def remove_trip_route(
+    trip_id: int, trip_route_id: int, session: SessionDep, user: UserDep,
+) -> None:
+    """Trip owner can remove any route; members can only remove routes they own."""
+    trip = _get_trip_or_404(session, trip_id)
+    assert_can_view_trip(user, trip, session=session)
+
+    tr = session.get(TripRoute, trip_route_id)
+    if tr is None or tr.trip_id != trip_id:
+        raise HTTPException(404, "Route assignment not found")
+
+    if trip.owner_id != user.id:
+        route = session.get(Route, tr.route_id)
+        if route is None or route.owner_id != user.id:
+            raise HTTPException(403, "Not the trip owner or route owner")
+
+    session.delete(tr)
     session.commit()

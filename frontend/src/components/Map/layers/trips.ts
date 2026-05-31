@@ -79,6 +79,21 @@ export function waypointsGeoJSON(waypoints: Waypoint[]): object {
   };
 }
 
+export function applyTripRouteHighlight(map: maplibregl.Map | null, selectedId: number | null) {
+  if (!map || !map.getLayer("trip-routes-line")) return;
+  if (selectedId == null) {
+    map.setPaintProperty("trip-routes-line", "line-opacity", 0.95);
+    map.setPaintProperty("trip-routes-line", "line-width", 4);
+  } else {
+    map.setPaintProperty("trip-routes-line", "line-opacity", [
+      "case", ["==", ["get", "id"], selectedId], 1.0, 0.3,
+    ]);
+    map.setPaintProperty("trip-routes-line", "line-width", [
+      "case", ["==", ["get", "id"], selectedId], 6, 2.5,
+    ]);
+  }
+}
+
 export function setTripData(map: maplibregl.Map | null, detail: TripDetail | null) {
   if (!map) return;
   const routes = map.getSource("trip-routes") as maplibregl.GeoJSONSource | undefined;
@@ -158,6 +173,19 @@ export async function addWaypoint(
 
 export async function deleteWaypoint(tripId: number, wid: number): Promise<void> {
   const r = await apiFetch(`${API_URL}/trips/${tripId}/waypoints/${wid}`, { method: "DELETE" });
+  if (!r.ok && r.status !== 404) throw new Error(`${r.status}`);
+}
+
+export async function addTripRoute(tripId: number, routeId: number, day: number): Promise<TripDetail> {
+  return _json(await apiFetch(`${API_URL}/trips/${tripId}/routes`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ route_id: routeId, day }),
+  }));
+}
+
+export async function removeTripRoute(tripId: number, tripRouteId: number): Promise<void> {
+  const r = await apiFetch(`${API_URL}/trips/${tripId}/routes/${tripRouteId}`, { method: "DELETE" });
   if (!r.ok && r.status !== 404) throw new Error(`${r.status}`);
 }
 

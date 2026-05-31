@@ -118,6 +118,8 @@ import { TripsPanel } from "./Map/TripsPanel";
 import { TripView } from "./Map/TripView";
 import {
   addTripLayers,
+  addTripRoute,
+  applyTripRouteHighlight,
   addWaypoint,
   createTrip,
   deleteTrip,
@@ -128,6 +130,7 @@ import {
   fetchTrips,
   inviteMember,
   removeFriend,
+  removeTripRoute,
   respondFriendRequest,
   respondInvite,
   sendFriendRequest,
@@ -260,12 +263,14 @@ export function Map({
   const [tripsLoading, setTripsLoading] = useState(false);
   const [selectedTripId, setSelectedTripId] = useState<number | null>(null);
   const [tripDetail, setTripDetail] = useState<TripDetail | null>(null);
+  const [selectedTripRouteId, setSelectedTripRouteId] = useState<number | null>(null);
   const [waypointMode, setWaypointMode] = useState(false);
   const [waypointKind, setWaypointKind] = useState<WaypointKind>("other");
   const tripDetailRef = useRef<TripDetail | null>(null);
   const waypointModeRef = useRef(false);
   const waypointKindRef = useRef<WaypointKind>("other");
   const selectedTripIdRef = useRef<number | null>(null);
+  const selectedTripRouteIdRef = useRef<number | null>(null);
   const [units, setUnits] = useState<Units>(() => initialUrlState.units ?? "imperial");
   const [forecast, setForecast] = useState<ForecastPeriod[] | null>(null);
   const [forecastLoading, setForecastLoading] = useState(false);
@@ -424,6 +429,9 @@ export function Map({
       if (sharedRouteRef.current) setSharedRouteData(map, sharedRouteToGeoJSON(sharedRouteRef.current));
       addTripLayers(map);
       setTripData(map, tripDetailRef.current);
+      applyTripRouteHighlight(map, selectedTripRouteIdRef.current);
+      map.on("mouseenter", "trip-routes-line", () => { map.getCanvas().style.cursor = "pointer"; });
+      map.on("mouseleave", "trip-routes-line", () => { if (!measureModeRef.current) map.getCanvas().style.cursor = ""; });
       // Sync prevBasemapRef to whichever basemap was last requested.
       prevBasemapRef.current = basemapRef.current;
     });
@@ -563,6 +571,18 @@ export function Map({
 
       const onStrava = map.queryRenderedFeatures(e.point, { layers: ["strava-lines"] });
       if (onStrava.length > 0) return;
+
+      // Click a trip route line → highlight it (and deselect if clicking again).
+      if (selectedTripIdRef.current != null && !measureModeRef.current) {
+        const onTripRoute = map.queryRenderedFeatures(e.point, { layers: ["trip-routes-line"] });
+        if (onTripRoute.length > 0) {
+          const id = Number(onTripRoute[0].properties?.id);
+          if (!Number.isNaN(id)) {
+            setSelectedTripRouteId((cur) => (cur === id ? null : id));
+          }
+          return;
+        }
+      }
 
       // Click a saved route line (when not drawing/measuring) → select it and
       // open the saved-routes panel to its stored profile.
@@ -1107,6 +1127,12 @@ export function Map({
   useEffect(() => { waypointKindRef.current = waypointKind; }, [waypointKind]);
   useEffect(() => { waypointModeRef.current = waypointMode; }, [waypointMode]);
 
+  // Keep trip route highlight ref + map paint in sync with state.
+  useEffect(() => {
+    selectedTripRouteIdRef.current = selectedTripRouteId;
+    applyTripRouteHighlight(mapRef.current, selectedTripRouteId);
+  }, [selectedTripRouteId]);
+
   // Render the selected trip's routes + waypoints; keep ref in sync.
   useEffect(() => {
     tripDetailRef.current = tripDetail;
@@ -1116,7 +1142,7 @@ export function Map({
   // Load detail (and fly to it) when a trip is selected; clear otherwise.
   useEffect(() => {
     selectedTripIdRef.current = selectedTripId;
-    if (selectedTripId == null) { setTripDetail(null); setWaypointMode(false); return; }
+    if (selectedTripId == null) { setTripDetail(null); setWaypointMode(false); setSelectedTripRouteId(null); return; }
     let cancelled = false;
     fetchTrip(selectedTripId).then((d) => {
       if (cancelled) return;
@@ -1171,6 +1197,20 @@ export function Map({
     const id = selectedTripIdRef.current;
     if (id == null) return;
     deleteWaypoint(id, wid).then(() => reloadTripDetail(id)).catch(() => showToast("Couldn't delete waypoint.", "error"));
+  }, [reloadTripDetail]);
+
+  const handleAddTripRoute = useCallback((routeId: number, day: number) => {
+    const id = selectedTripIdRef.current;
+    if (id == null) return;
+    addTripRoute(id, routeId, day)
+      .then((d) => setTripDetail(d))
+      .catch(() => showToast("Couldn't add route.", "error"));
+  }, []);
+
+  const handleRemoveTripRoute = useCallback((tripRouteId: number) => {
+    const id = selectedTripIdRef.current;
+    if (id == null) return;
+    removeTripRoute(id, tripRouteId).then(() => reloadTripDetail(id)).catch(() => showToast("Couldn't remove route.", "error"));
   }, [reloadTripDetail]);
 
   const handleSendFriendRequest = useCallback((email: string) => {
@@ -1868,7 +1908,10 @@ export function Map({
         <TripView
           detail={tripDetail}
           friends={friends.friends}
+          savedRoutes={savedRoutes}
           currentUserId={user.id}
+          selectedTripRouteId={selectedTripRouteId}
+          onSelectTripRoute={(id) => setSelectedTripRouteId((cur) => (cur === id ? null : id))}
           units={units}
           theme={theme}
           mobile={isMobile}
@@ -1879,6 +1922,8 @@ export function Map({
           onWaypointKindChange={setWaypointKind}
           onInvite={handleInviteMember}
           onDeleteWaypoint={handleDeleteWaypoint}
+          onAddRoute={handleAddTripRoute}
+          onRemoveRoute={handleRemoveTripRoute}
           onDeleteTrip={handleDeleteTrip}
           onClose={() => { setSelectedTripId(null); setWaypointMode(false); }}
         />

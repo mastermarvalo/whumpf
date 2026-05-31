@@ -226,10 +226,14 @@ export interface TripListItem {
   updated_at: string;
 }
 
+export interface TripRouteEntry extends RouteDetail {
+  trip_route_id: number;
+}
+
 export interface TripDay {
   day: number;           // 1-based
   date: string;          // ISO date for that day
-  routes: RouteDetail[];
+  routes: TripRouteEntry[];
 }
 
 export interface TripDetail extends TripListItem {

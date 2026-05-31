@@ -85,7 +85,7 @@ class PasswordResetConfirmIn(BaseModel):
 
 
 @router.post("/register", response_model=RegisterOut, status_code=status.HTTP_201_CREATED)
-@limiter.limit("5/hour")
+@limiter.limit("30/hour")
 async def register(
     request: Request,
     response: Response,
@@ -156,10 +156,9 @@ def login(
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(response: Response) -> Response:
+def logout(response: Response) -> None:
     """Clear the session cookie. Idempotent — safe to call without a session."""
     clear_auth_cookie(response)
-    return response
 
 
 @router.get("/me", response_model=UserOut)

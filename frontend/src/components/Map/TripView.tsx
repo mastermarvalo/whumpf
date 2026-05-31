@@ -1,5 +1,5 @@
 import { type CSSProperties, useState } from "react";
-import type { Friend, TripDetail, Units, WaypointKind } from "./types";
+import type { Friend, RouteListItem, TripDetail, Units, WaypointKind } from "./types";
 import type { Theme } from "./theme";
 import { mobilePanelStyle, panelShared } from "./utils";
 import { ProfileChart } from "./ProfileChart";
@@ -17,6 +17,7 @@ const KIND_EMOJI: Record<string, string> = {
 export function TripView({
   detail,
   friends,
+  savedRoutes,
   currentUserId,
   units,
   theme,
@@ -28,11 +29,16 @@ export function TripView({
   onWaypointKindChange,
   onInvite,
   onDeleteWaypoint,
+  selectedTripRouteId,
+  onSelectTripRoute,
+  onAddRoute,
+  onRemoveRoute,
   onDeleteTrip,
   onClose,
 }: {
   detail: TripDetail;
   friends: Friend[];
+  savedRoutes: RouteListItem[];
   currentUserId: number;
   units: Units;
   theme: Theme;
@@ -44,6 +50,10 @@ export function TripView({
   onWaypointKindChange: (k: WaypointKind) => void;
   onInvite: (email: string) => void;
   onDeleteWaypoint: (wid: number) => void;
+  selectedTripRouteId: number | null;
+  onSelectTripRoute: (routeId: number) => void;
+  onAddRoute: (routeId: number, day: number) => void;
+  onRemoveRoute: (tripRouteId: number) => void;
   onDeleteTrip: () => void;
   onClose: () => void;
 }) {
@@ -51,6 +61,8 @@ export function TripView({
   const { panelRef, handleProps, panelEventProps, dragStyle } = useDraggable(isMobile);
   useEscapeKey(onClose);
   const [inviteEmail, setInviteEmail] = useState("");
+  const [addRouteDay, setAddRouteDay] = useState<number | null>(null);
+  const [selectedRouteId, setSelectedRouteId] = useState<number | "">("");
 
   const isOwner = detail.owner_id === currentUserId;
   const snapshot = detail.forecast_snapshot as CaicZoneDetail | null;
@@ -113,25 +125,74 @@ export function TripView({
       )}
 
       {/* Routes, grouped by day */}
-      {detail.days.map((day) => (
-        <div key={day.day}>
-          {detail.num_days > 1 && (
-            <div style={{ ...sectionTitle, color: theme.accent }}>
-              Day {day.day} · {new Date(day.date + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
-            </div>
-          )}
-          {day.routes.length === 0 && (
-            <div style={{ color: theme.muted, fontSize: 11, marginTop: 4 }}>No routes assigned.</div>
-          )}
-          {day.routes.map((r) => (
-            <div key={r.id} style={{ marginTop: 8 }}>
-              <div style={{ fontWeight: 600, fontSize: 12, marginBottom: 2 }}>{r.name}</div>
-              <ProfileChart samples={r.samples} summary={r.summary} units={units} theme={theme} />
-              <TripDetails summary={r.summary} units={units} theme={theme} />
-            </div>
-          ))}
-        </div>
-      ))}
+      {detail.days.map((day) => {
+        const assignedIds = new Set(day.routes.map((r) => r.id));
+        const available = savedRoutes.filter((r) => !assignedIds.has(r.id));
+        const isAddingThisDay = addRouteDay === day.day;
+        return (
+          <div key={day.day}>
+            {detail.num_days > 1 && (
+              <div style={{ ...sectionTitle, color: theme.accent }}>
+                Day {day.day} · {new Date(day.date + "T00:00:00").toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" })}
+              </div>
+            )}
+            {detail.num_days === 1 && <div style={sectionTitle}>Routes</div>}
+            {day.routes.length === 0 && (
+              <div style={{ color: theme.muted, fontSize: 11, marginTop: 4 }}>No routes assigned.</div>
+            )}
+            {day.routes.map((r) => {
+              const isSelected = selectedTripRouteId === r.id;
+              return (
+                <div
+                  key={r.trip_route_id}
+                  onClick={() => onSelectTripRoute(r.id)}
+                  style={{
+                    marginTop: 8, borderRadius: 6, cursor: "pointer",
+                    padding: "4px 6px", marginLeft: -6, marginRight: -6,
+                    background: isSelected ? `${theme.accent}22` : "transparent",
+                    border: `1px solid ${isSelected ? theme.accent : "transparent"}`,
+                    transition: "background 0.15s, border-color 0.15s",
+                  }}
+                >
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                    <div style={{ fontWeight: 600, fontSize: 12, color: isSelected ? theme.accent : theme.text }}>{r.name}</div>
+                    <button
+                      onClick={(e) => { e.stopPropagation(); onRemoveRoute(r.trip_route_id); }}
+                      style={{ background: "none", border: "none", color: theme.muted, cursor: "pointer", fontSize: 14, padding: "0 2px" }}
+                      aria-label="Remove route"
+                    >×</button>
+                  </div>
+                  <ProfileChart samples={r.samples} summary={r.summary} units={units} theme={theme} />
+                  <TripDetails summary={r.summary} units={units} theme={theme} />
+                </div>
+              );
+            })}
+            {isAddingThisDay ? (
+              <div style={{ display: "flex", gap: 4, marginTop: 6 }}>
+                <select
+                  value={selectedRouteId}
+                  onChange={(e) => setSelectedRouteId(e.target.value === "" ? "" : parseInt(e.target.value, 10))}
+                  style={{ flex: 1, fontSize: 12, padding: "4px 6px", borderRadius: 6, border: `1px solid ${theme.divider}`, background: theme.panel, color: theme.text }}
+                >
+                  <option value="">— pick a route —</option>
+                  {available.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
+                </select>
+                <button
+                  disabled={selectedRouteId === ""}
+                  onClick={() => { if (selectedRouteId !== "") { onAddRoute(selectedRouteId as number, day.day); setAddRouteDay(null); setSelectedRouteId(""); } }}
+                  style={{ ...smallBtn(true), opacity: selectedRouteId === "" ? 0.5 : 1 }}
+                >Add</button>
+                <button onClick={() => { setAddRouteDay(null); setSelectedRouteId(""); }} style={smallBtn()}>Cancel</button>
+              </div>
+            ) : (
+              <button
+                onClick={() => { setAddRouteDay(day.day); setSelectedRouteId(""); }}
+                style={{ ...smallBtn(), marginTop: 6, fontSize: 11 }}
+              >+ Add route</button>
+            )}
+          </div>
+        );
+      })}
 
       {/* Waypoints */}
       <div style={sectionTitle}>Waypoints</div>

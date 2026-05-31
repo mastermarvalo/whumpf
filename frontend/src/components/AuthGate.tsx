@@ -42,7 +42,7 @@ export function AuthGate({ onAuth }: { onAuth: () => void }) {
       }
       if (!r.ok) {
         const data = await r.json().catch(() => ({}));
-        setError(data.detail ?? "Something went wrong");
+        setError(data.detail ?? data.error ?? "Something went wrong");
         return;
       }
       // Registration with email verification required does NOT start a session;
