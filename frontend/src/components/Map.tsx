@@ -519,37 +519,6 @@ export function Map({
       if (!measureModeRef.current) map.getCanvas().style.cursor = "";
     });
 
-    // Strava activity click — open card with nearby runs.
-    map.on("click", "strava-lines", (e) => {
-      if (measureModeRef.current) return;
-      e.originalEvent.stopPropagation();
-      const px = e.point;
-      const bbox: [maplibregl.PointLike, maplibregl.PointLike] = [
-        [px.x - 12, px.y - 12],
-        [px.x + 12, px.y + 12],
-      ];
-      const feats = map.queryRenderedFeatures(bbox, { layers: ["strava-lines"] });
-      const seen = new Set<number>();
-      const activities: ActivityCardProps[] = [];
-      for (const feat of feats) {
-        const p = feat.properties as Record<string, unknown>;
-        const id = Number(p.id);
-        if (!id || seen.has(id)) continue;
-        seen.add(id);
-        activities.push({
-          id,
-          name: String(p.name ?? ""),
-          sport_type: String(p.sport_type ?? ""),
-          color: String(p.color ?? "#95a5a6"),
-          distance_m: Number(p.distance_m ?? 0),
-          elapsed_time_s: Number(p.elapsed_time_s ?? 0),
-          total_elevation_gain_m: Number(p.total_elevation_gain_m ?? 0),
-          start_date: String(p.start_date ?? ""),
-          photo_url: typeof p.photo_url === "string" ? p.photo_url : null,
-        });
-      }
-      if (activities.length > 0) setStravaCard({ activities, index: 0 });
-    });
     map.on("mouseenter", "strava-lines", () => { map.getCanvas().style.cursor = "pointer"; });
     map.on("mouseleave", "strava-lines", () => {
       if (!measureModeRef.current) map.getCanvas().style.cursor = "";
@@ -571,31 +540,55 @@ export function Map({
       const onObs = map.queryRenderedFeatures(e.point, { layers: ["caic-obs-circles"] });
       if (onObs.length > 0) return;
 
-      const onStrava = map.queryRenderedFeatures(e.point, { layers: ["strava-lines"] });
-      if (onStrava.length > 0) return;
+      const hitBox = (r: number): [[number, number], [number, number]] => [
+        [e.point.x - r, e.point.y - r],
+        [e.point.x + r, e.point.y + r],
+      ];
 
-      // Click a trip route line → highlight it (and deselect if clicking again).
-      if (selectedTripIdRef.current != null && !measureModeRef.current) {
-        const onTripRoute = map.queryRenderedFeatures(e.point, { layers: ["trip-routes-line"] });
-        if (onTripRoute.length > 0) {
-          const id = Number(onTripRoute[0].properties?.id);
-          if (!Number.isNaN(id)) {
-            setSelectedTripRouteId((cur) => (cur === id ? null : id));
+      if (measureModeRef.current || routeBuilderModeRef.current) {
+        // These modes handle their own clicks below — skip route/Strava detection.
+      } else {
+        // Click a trip route line → highlight it (and deselect if clicking again).
+        if (selectedTripIdRef.current != null) {
+          const onTripRoute = map.queryRenderedFeatures(hitBox(12), { layers: ["trip-routes-line"] });
+          if (onTripRoute.length > 0) {
+            const id = Number(onTripRoute[0].properties?.id);
+            if (!Number.isNaN(id)) setSelectedTripRouteId((cur) => (cur === id ? null : id));
+            return;
           }
-          return;
         }
-      }
 
-      // Click a saved route line (when not drawing/measuring) → select it and
-      // open the saved-routes panel to its stored profile.
-      if (!routeBuilderModeRef.current && !measureModeRef.current) {
-        const onRoute = map.queryRenderedFeatures(e.point, { layers: ["route-lines"] });
+        // Saved routes take priority over Strava — open the routes panel.
+        const onRoute = map.queryRenderedFeatures(hitBox(12), { layers: ["route-lines"] });
         if (onRoute.length > 0) {
           const id = Number(onRoute[0].properties?.id);
-          if (!Number.isNaN(id)) {
-            setSelectedRouteId(id);
-            setSavedRoutesOpen(true);
+          if (!Number.isNaN(id)) { setSelectedRouteId(id); setSavedRoutesOpen(true); }
+          return;
+        }
+
+        // Click a Strava activity line → open the activity card.
+        const onStrava = map.queryRenderedFeatures(hitBox(12), { layers: ["strava-lines"] });
+        if (onStrava.length > 0) {
+          const seen = new Set<number>();
+          const activities: ActivityCardProps[] = [];
+          for (const feat of onStrava) {
+            const p = feat.properties as Record<string, unknown>;
+            const id = Number(p.id);
+            if (!id || seen.has(id)) continue;
+            seen.add(id);
+            activities.push({
+              id,
+              name: String(p.name ?? ""),
+              sport_type: String(p.sport_type ?? ""),
+              color: String(p.color ?? "#95a5a6"),
+              distance_m: Number(p.distance_m ?? 0),
+              elapsed_time_s: Number(p.elapsed_time_s ?? 0),
+              total_elevation_gain_m: Number(p.total_elevation_gain_m ?? 0),
+              start_date: String(p.start_date ?? ""),
+              photo_url: typeof p.photo_url === "string" ? p.photo_url : null,
+            });
           }
+          if (activities.length > 0) setStravaCard({ activities, index: 0 });
           return;
         }
       }
@@ -1663,6 +1656,7 @@ export function Map({
           routeBuilderActive={routeBuilderMode}
           savedRoutesActive={savedRoutesOpen}
           tripsActive={tripsOpen}
+          tripInviteCount={tripInvites.length}
           layerPanelCollapsed={layerPanelCollapsed}
           theme={theme}
           onMeasureToggle={() => { setRouteBuilderMode(false); setMeasureMode((m) => !m); }}
@@ -1708,7 +1702,7 @@ export function Map({
         <MobileNav
           theme={theme}
           layersOpen={mobilePanelOpen}
-          toolsActive={measureMode || slopeFilterMode || terrain3d || mobileToolsOpen}
+          toolsActive={measureMode || slopeFilterMode || terrain3d || routeBuilderMode || savedRoutesOpen || tripsOpen || mobileToolsOpen}
           onLayersToggle={() => { setMobilePanelOpen((o) => !o); setMobileToolsOpen(false); }}
           onToolsToggle={() => { setMobileToolsOpen((o) => !o); setMobilePanelOpen(false); }}
         />
@@ -1798,6 +1792,100 @@ export function Map({
                 </div>
               </div>
             </button>
+            <div style={{ height: 1, background: theme.divider, margin: "4px 0 12px" }} />
+            <div style={{ fontSize: 11, color: theme.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 10 }}>
+              Plan
+            </div>
+            {/* Draw Route */}
+            <button
+              onClick={() => { setMeasureMode(false); setRouteBuilderMode((m) => !m); setMobileToolsOpen(false); }}
+              aria-pressed={routeBuilderMode}
+              style={{
+                display: "flex", alignItems: "center", gap: 12, width: "100%",
+                background: routeBuilderMode ? `${theme.accent}1a` : "transparent",
+                color: routeBuilderMode ? theme.accent : theme.text,
+                border: `1px solid ${routeBuilderMode ? theme.accent : theme.divider}`,
+                borderRadius: 10, padding: "13px 14px", cursor: "pointer",
+                fontSize: 14, fontWeight: 500, fontFamily: "inherit", textAlign: "left",
+                marginBottom: 8,
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 12 Q5 4 8 8 Q11 12 12 3"/>
+                <circle cx="2" cy="12" r="1.2" fill="currentColor" stroke="none"/>
+                <circle cx="12" cy="3" r="1.2" fill="currentColor" stroke="none"/>
+              </svg>
+              <div>
+                <div>Draw Route</div>
+                <div style={{ fontSize: 11, color: theme.muted, fontWeight: 400, marginTop: 1 }}>
+                  {routeBuilderMode ? "Tap the map to add points" : "Tap points to trace a route"}
+                </div>
+              </div>
+            </button>
+            {/* Saved Routes */}
+            <button
+              onClick={() => { setSavedRoutesOpen((o) => !o); setMobileToolsOpen(false); }}
+              aria-pressed={savedRoutesOpen}
+              style={{
+                display: "flex", alignItems: "center", gap: 12, width: "100%",
+                background: savedRoutesOpen ? `${theme.accent}1a` : "transparent",
+                color: savedRoutesOpen ? theme.accent : theme.text,
+                border: `1px solid ${savedRoutesOpen ? theme.accent : theme.divider}`,
+                borderRadius: 10, padding: "13px 14px", cursor: "pointer",
+                fontSize: 14, fontWeight: 500, fontFamily: "inherit", textAlign: "left",
+                marginBottom: 8,
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M2 11 L5 5 L8 9 L10 6 L12 11 Z" fill="currentColor" fillOpacity="0.15"/>
+                <path d="M2 11 L5 5 L8 9 L10 6 L12 11"/>
+              </svg>
+              <div>
+                <div>Saved Routes</div>
+                <div style={{ fontSize: 11, color: theme.muted, fontWeight: 400, marginTop: 1 }}>
+                  View and manage your routes
+                </div>
+              </div>
+            </button>
+            {/* Trips & Party */}
+            <button
+              onClick={() => { setTripsOpen((o) => !o); setMobileToolsOpen(false); }}
+              aria-pressed={tripsOpen}
+              style={{
+                display: "flex", alignItems: "center", gap: 12, width: "100%",
+                background: tripsOpen ? `${theme.accent}1a` : "transparent",
+                color: tripsOpen ? theme.accent : theme.text,
+                border: `1px solid ${tripsOpen ? theme.accent : theme.divider}`,
+                borderRadius: 10, padding: "13px 14px", cursor: "pointer",
+                fontSize: 14, fontWeight: 500, fontFamily: "inherit", textAlign: "left",
+                marginBottom: 8,
+              }}
+            >
+              <svg width="18" height="18" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                <circle cx="5" cy="4" r="2"/>
+                <circle cx="10" cy="5" r="1.5"/>
+                <path d="M1 12c0-2.2 1.8-4 4-4s4 1.8 4 4"/>
+                <path d="M10 8.5c1.4.3 2.5 1.5 2.5 3"/>
+              </svg>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  Trips &amp; Party
+                  {tripInvites.length > 0 && (
+                    <span style={{ background: theme.accent, color: "#fff", borderRadius: 8, fontSize: 10, fontWeight: 700, padding: "1px 5px" }}>
+                      {tripInvites.length}
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11, color: theme.muted, fontWeight: 400, marginTop: 1 }}>
+                  Plan trips and invite your crew
+                </div>
+              </div>
+            </button>
+
+            <div style={{ height: 1, background: theme.divider, margin: "4px 0 12px" }} />
+            <div style={{ fontSize: 11, color: theme.muted, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 10 }}>
+              Share
+            </div>
             {/* Copy share link */}
             <button
               onClick={async () => {
