@@ -19,7 +19,7 @@ from app.config import get_settings
 from app.db import get_engine
 from app.models import Base
 from app.rate_limit import limiter
-from app.routers import auth, avalanche, health, regions, routes, snowpack, status as status_router, strava, terrain, tiles
+from app.routers import auth, avalanche, friends, health, regions, routes, snowpack, status as status_router, strava, terrain, tiles, trips
 from app.routers.avalanche import get_forecast, get_observations
 from app.services.snotel import fetch_stations_geojson
 
@@ -62,6 +62,9 @@ _SCHEMA_PATCHES: tuple[str, ...] = (
     # routes table pre-dates source_strava_id (Strava-import dedupe).
     "ALTER TABLE routes ADD COLUMN IF NOT EXISTS source_strava_id BIGINT",
     "CREATE INDEX IF NOT EXISTS ix_routes_source_strava_id ON routes(source_strava_id)",
+    # Multi-day trips: per-trip day count and per-route day assignment.
+    "ALTER TABLE trips ADD COLUMN IF NOT EXISTS num_days INTEGER NOT NULL DEFAULT 1",
+    "ALTER TABLE trip_routes ADD COLUMN IF NOT EXISTS day INTEGER NOT NULL DEFAULT 1",
 )
 
 
@@ -119,6 +122,8 @@ def create_app() -> FastAPI:
     app.include_router(avalanche.router)
     app.include_router(regions.router)
     app.include_router(routes.router)
+    app.include_router(friends.router)
+    app.include_router(trips.router)
     app.include_router(status_router.router)
 
     logger.info("Whumpf API starting (env=%s, version=%s)", settings.whumpf_env, __version__)

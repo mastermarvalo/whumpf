@@ -48,9 +48,10 @@ def db_session(engine) -> Iterator[Session]:
 def users(db_session: Session) -> dict[str, User]:
     owner = User(email="owner@example.com", hashed_password="x")
     other = User(email="other@example.com", hashed_password="x")
-    db_session.add_all([owner, other])
+    third = User(email="third@example.com", hashed_password="x")
+    db_session.add_all([owner, other, third])
     db_session.flush()
-    return {"owner": owner, "other": other}
+    return {"owner": owner, "other": other, "third": third}
 
 
 @pytest.fixture

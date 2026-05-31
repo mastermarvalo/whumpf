@@ -106,3 +106,33 @@ async def send_password_reset_email(*, to: str, token: str) -> None:
         f"If you didn't request a reset, ignore this email.</p>"
     )
     await _provider().send(to=to, subject=subject, html=html, text=text)
+
+
+async def send_friend_request(*, to: str, requester_email: str) -> None:
+    s = get_settings()
+    url = s.app_base_url.rstrip("/")
+    subject = "You have a new friend request on whumpf"
+    text = (
+        f"{requester_email} wants to be your friend on whumpf.\n\n"
+        f"Log in to respond: {url}"
+    )
+    html = (
+        f"<p><b>{requester_email}</b> wants to be your friend on whumpf.</p>"
+        f'<p><a href="{url}">Log in to respond</a></p>'
+    )
+    await _provider().send(to=to, subject=subject, html=html, text=text)
+
+
+async def send_trip_invite(*, to: str, trip_name: str, inviter_email: str, trip_id: int) -> None:
+    s = get_settings()
+    url = f"{s.app_base_url.rstrip('/')}/?trip_invite={trip_id}"
+    subject = f"{inviter_email} invited you to a whumpf trip"
+    text = (
+        f"{inviter_email} invited you to the trip \"{trip_name}\" on whumpf.\n\n"
+        f"Log in to view the plan and respond: {url}"
+    )
+    html = (
+        f'<p><b>{inviter_email}</b> invited you to the trip "<b>{trip_name}</b>" on whumpf.</p>'
+        f'<p><a href="{url}">View the plan and respond</a></p>'
+    )
+    await _provider().send(to=to, subject=subject, html=html, text=text)

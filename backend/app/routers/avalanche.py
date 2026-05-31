@@ -235,17 +235,14 @@ def _build_zone_detail(product: dict) -> dict:
     }
 
 
-@router.get("/zone_detail")
-async def caic_zone_detail(
-    lat: float = Query(..., ge=-90, le=90, description="Clicked latitude"),
-    lng: float = Query(..., ge=-180, le=180, description="Clicked longitude"),
-) -> dict:
-    """Full danger rose + avalanche problems for the CAIC zone at (lat, lng)."""
-    try:
-        products, areas = await _fetch_avid()
-    except Exception as exc:
-        logger.error("AVID fetch failed: %s", exc)
-        raise HTTPException(502, "AVID unavailable") from exc
+async def get_zone_detail_for_point(lat: float, lng: float) -> dict | None:
+    """Resolve the CAIC zone forecast at (lat, lng) → a CaicZoneDetail dict with
+    an added ``zone`` label (area name or areaId), or None if no zone matches.
+
+    Point-in-polygon first, falling back to nearest centroid. Reused by the
+    /zone_detail endpoint and by trip creation (to freeze a forecast snapshot).
+    """
+    products, areas = await _fetch_avid()
 
     area_map: dict[str, dict] = {}
     for feat in areas.get("features", []):
@@ -254,13 +251,19 @@ async def caic_zone_detail(
             area_map[aid] = {
                 "geometry": feat["geometry"],
                 "centroid": feat["properties"].get("centroid", [0, 0]),
+                "name": feat["properties"].get("name") or aid,
             }
+
+    def _detail(product: dict) -> dict:
+        aid = product.get("areaId")
+        out = _build_zone_detail(product)
+        out["zone"] = (area_map.get(aid, {}).get("name") if aid else None) or aid or ""
+        return out
 
     for product in products:
         aid = product.get("areaId")
-        if aid and aid in area_map:
-            if _in_multipolygon(lat, lng, area_map[aid]["geometry"]):
-                return _build_zone_detail(product)
+        if aid and aid in area_map and _in_multipolygon(lat, lng, area_map[aid]["geometry"]):
+            return _detail(product)
 
     best_product, best_dist = None, float("inf")
     for product in products:
@@ -270,9 +273,23 @@ async def caic_zone_detail(
             if d < best_dist:
                 best_dist, best_product = d, product
 
-    if best_product is None:
+    return _detail(best_product) if best_product is not None else None
+
+
+@router.get("/zone_detail")
+async def caic_zone_detail(
+    lat: float = Query(..., ge=-90, le=90, description="Clicked latitude"),
+    lng: float = Query(..., ge=-180, le=180, description="Clicked longitude"),
+) -> dict:
+    """Full danger rose + avalanche problems for the CAIC zone at (lat, lng)."""
+    try:
+        detail = await get_zone_detail_for_point(lat, lng)
+    except Exception as exc:
+        logger.error("AVID fetch failed: %s", exc)
+        raise HTTPException(502, "AVID unavailable") from exc
+    if detail is None:
         raise HTTPException(404, "No CAIC zone found")
-    return _build_zone_detail(best_product)
+    return detail
 
 
 # ── field observations ─────────────────────────────────────────────────────────

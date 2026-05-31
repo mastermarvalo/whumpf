@@ -187,3 +187,76 @@ export interface RouteCreatePayload {
 export interface ShareResponse {
   token: string;
 }
+
+// --- Trips, parties, friends, waypoints (Phase C) ----------------------------
+
+export type WaypointKind =
+  | "parking" | "trailhead" | "transition" | "decision" | "summit" | "hazard" | "other";
+
+export interface Waypoint {
+  id: number;
+  trip_id: number;
+  geometry: { type: "Point"; coordinates: number[] };
+  kind: WaypointKind;
+  label: string;
+  notes: string;
+  created_by_id: number;
+}
+
+export type TripMemberStatus = "invited" | "accepted" | "declined";
+export type TripMemberRole = "owner" | "member";
+
+export interface TripMemberOut {
+  id: number;
+  user_id: number | null;
+  email: string;
+  status: TripMemberStatus;
+  role: TripMemberRole;
+}
+
+export interface TripListItem {
+  id: number;
+  owner_id: number;
+  name: string;
+  date: string;          // ISO start date
+  num_days: number;
+  region: string;
+  caic_zone: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TripDay {
+  day: number;           // 1-based
+  date: string;          // ISO date for that day
+  routes: RouteDetail[];
+}
+
+export interface TripDetail extends TripListItem {
+  notes: string;
+  /** Frozen CaicZoneDetail (see layers/caic.ts); cast there for rendering. */
+  forecast_snapshot: unknown | null;
+  days: TripDay[];
+  waypoints: Waypoint[];
+  members: TripMemberOut[];
+}
+
+export interface TripCreatePayload {
+  name: string;
+  date: string;
+  region: string;
+  days: { route_ids: number[] }[];
+  notes?: string;
+}
+
+export interface Friend {
+  friendship_id: number;
+  user_id: number;
+  email: string;
+}
+
+export interface FriendsData {
+  friends: Friend[];
+  incoming: Friend[];
+  outgoing: Friend[];
+}

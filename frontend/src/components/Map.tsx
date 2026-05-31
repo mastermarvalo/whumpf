@@ -12,11 +12,15 @@ import type {
   ActivityCardProps,
   BasemapId,
   ForecastPeriod,
+  FriendsData,
   PointData,
   ProfileResponse,
   Region,
   RouteDetail,
   RouteListItem,
+  TripDetail,
+  TripListItem,
+  WaypointKind,
   Units,
 } from "./Map/types";
 import { fetchSpotData, fetchWindDirection, reverseGeocode } from "./Map/services";
@@ -110,6 +114,25 @@ import { MeasurePanel } from "./Map/MeasurePanel";
 import { RouteBuilderPanel } from "./Map/RouteBuilderPanel";
 import { SavedRoutesPanel } from "./Map/SavedRoutesPanel";
 import { SharedRoutePanel } from "./Map/SharedRoutePanel";
+import { TripsPanel } from "./Map/TripsPanel";
+import { TripView } from "./Map/TripView";
+import {
+  addTripLayers,
+  addWaypoint,
+  createTrip,
+  deleteTrip,
+  deleteWaypoint,
+  fetchFriends,
+  fetchTrip,
+  fetchTripInvites,
+  fetchTrips,
+  inviteMember,
+  removeFriend,
+  respondFriendRequest,
+  respondInvite,
+  sendFriendRequest,
+  setTripData,
+} from "./Map/layers/trips";
 import { SlopeFilterPanel } from "./Map/SlopeFilterPanel";
 import { SearchBar } from "./Map/SearchBar";
 import { StravaActivityCard } from "./Map/StravaActivityCard";
@@ -228,6 +251,21 @@ export function Map({
   const [sharedRouteToken, setSharedRouteToken] = useState<string | null>(null);
   const [cloning, setCloning] = useState(false);
   const sharedRouteRef = useRef<RouteDetail | null>(null);
+
+  // Trips, parties, friends (Phase C).
+  const [tripsOpen, setTripsOpen] = useState(false);
+  const [trips, setTrips] = useState<TripListItem[]>([]);
+  const [tripInvites, setTripInvites] = useState<TripListItem[]>([]);
+  const [friends, setFriends] = useState<FriendsData>({ friends: [], incoming: [], outgoing: [] });
+  const [tripsLoading, setTripsLoading] = useState(false);
+  const [selectedTripId, setSelectedTripId] = useState<number | null>(null);
+  const [tripDetail, setTripDetail] = useState<TripDetail | null>(null);
+  const [waypointMode, setWaypointMode] = useState(false);
+  const [waypointKind, setWaypointKind] = useState<WaypointKind>("other");
+  const tripDetailRef = useRef<TripDetail | null>(null);
+  const waypointModeRef = useRef(false);
+  const waypointKindRef = useRef<WaypointKind>("other");
+  const selectedTripIdRef = useRef<number | null>(null);
   const [units, setUnits] = useState<Units>(() => initialUrlState.units ?? "imperial");
   const [forecast, setForecast] = useState<ForecastPeriod[] | null>(null);
   const [forecastLoading, setForecastLoading] = useState(false);
@@ -384,6 +422,8 @@ export function Map({
       updateRouteDraftSource(map, routeVerticesRef.current);
       addSharedRouteLayer(map);
       if (sharedRouteRef.current) setSharedRouteData(map, sharedRouteToGeoJSON(sharedRouteRef.current));
+      addTripLayers(map);
+      setTripData(map, tripDetailRef.current);
       // Sync prevBasemapRef to whichever basemap was last requested.
       prevBasemapRef.current = basemapRef.current;
     });
@@ -542,6 +582,15 @@ export function Map({
         const newPts: [number, number][] = [...routeVerticesRef.current, [lng, lat]];
         routeVerticesRef.current = newPts;
         setRouteVertices(newPts);
+        return;
+      }
+
+      if (waypointModeRef.current && selectedTripIdRef.current != null) {
+        const tripId = selectedTripIdRef.current;
+        const label = window.prompt("Waypoint label (optional)") ?? "";
+        addWaypoint(tripId, { lng, lat, kind: waypointKindRef.current, label })
+          .then(() => reloadTripDetail(tripId))
+          .catch(() => showToast("Couldn't add waypoint.", "error"));
         return;
       }
 
@@ -1019,6 +1068,125 @@ export function Map({
     }
   }, [sharedRoute, sharedRouteToken]);
 
+  // --- Trips, parties, friends ----------------------------------------------
+  const reloadTrips = useCallback(() => {
+    setTripsLoading(true);
+    fetchTrips().then(setTrips).catch(() => {}).finally(() => setTripsLoading(false));
+  }, []);
+  const reloadInvites = useCallback(() => {
+    fetchTripInvites().then(setTripInvites).catch(() => {});
+  }, []);
+  const reloadFriends = useCallback(() => {
+    fetchFriends().then(setFriends).catch(() => {});
+  }, []);
+  const reloadTripDetail = useCallback((id: number) => {
+    fetchTrip(id).then(setTripDetail).catch(() => {});
+  }, []);
+
+  useEffect(() => { reloadTrips(); reloadInvites(); reloadFriends(); }, [reloadTrips, reloadInvites, reloadFriends]);
+
+  // On load: open the trips panel if arriving via an invite link, and notify
+  // about any pending invites.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("trip_invite")) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete("trip_invite");
+      window.history.replaceState({}, "", url.toString());
+      setTripsOpen(true);
+    }
+    fetchTripInvites()
+      .then((inv) => {
+        if (inv.length) {
+          showToast(`You have ${inv.length} pending trip invite${inv.length > 1 ? "s" : ""}.`, "info");
+        }
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => { waypointKindRef.current = waypointKind; }, [waypointKind]);
+  useEffect(() => { waypointModeRef.current = waypointMode; }, [waypointMode]);
+
+  // Render the selected trip's routes + waypoints; keep ref in sync.
+  useEffect(() => {
+    tripDetailRef.current = tripDetail;
+    setTripData(mapRef.current, tripDetail);
+  }, [tripDetail]);
+
+  // Load detail (and fly to it) when a trip is selected; clear otherwise.
+  useEffect(() => {
+    selectedTripIdRef.current = selectedTripId;
+    if (selectedTripId == null) { setTripDetail(null); setWaypointMode(false); return; }
+    let cancelled = false;
+    fetchTrip(selectedTripId).then((d) => {
+      if (cancelled) return;
+      setTripDetail(d);
+      const map = mapRef.current;
+      const coords: number[][] = [
+        ...d.days.flatMap((day) => day.routes.flatMap((r) => r.geometry.coordinates)),
+        ...d.waypoints.map((w) => w.geometry.coordinates),
+      ];
+      if (map && coords.length >= 1) {
+        const b = new maplibregl.LngLatBounds();
+        coords.forEach((c) => b.extend([c[0], c[1]]));
+        map.fitBounds(b, { padding: 90, maxZoom: 15, duration: 800 });
+      }
+    }).catch(() => { if (!cancelled) showToast("Couldn't load trip.", "error"); });
+    return () => { cancelled = true; };
+  }, [selectedTripId]);
+
+  const handleCreateTrip = useCallback((p: { name: string; date: string; days: { route_ids: number[] }[] }) => {
+    createTrip({ ...p, region: region.id })
+      .then((trip) => {
+        reloadTrips();
+        setSelectedTripId(trip.id);
+        showToast(`Created “${trip.name}”.`, "success");
+      })
+      .catch(() => showToast("Couldn't create trip.", "error"));
+  }, [region.id, reloadTrips]);
+
+  const handleRespondInvite = useCallback((tripId: number, action: "accept" | "decline") => {
+    respondInvite(tripId, action)
+      .then(() => { reloadTrips(); reloadInvites(); if (action === "accept") setSelectedTripId(tripId); })
+      .catch(() => showToast("Couldn't respond to invite.", "error"));
+  }, [reloadTrips, reloadInvites]);
+
+  const handleDeleteTrip = useCallback(() => {
+    const id = selectedTripIdRef.current;
+    if (id == null) return;
+    deleteTrip(id)
+      .then(() => { setSelectedTripId(null); reloadTrips(); showToast("Trip deleted.", "info"); })
+      .catch(() => showToast("Couldn't delete trip.", "error"));
+  }, [reloadTrips]);
+
+  const handleInviteMember = useCallback((email: string) => {
+    const id = selectedTripIdRef.current;
+    if (id == null) return;
+    inviteMember(id, email)
+      .then(() => { reloadTripDetail(id); showToast(`Invited ${email}.`, "success"); })
+      .catch(() => showToast("Couldn't invite — owner only.", "error"));
+  }, [reloadTripDetail]);
+
+  const handleDeleteWaypoint = useCallback((wid: number) => {
+    const id = selectedTripIdRef.current;
+    if (id == null) return;
+    deleteWaypoint(id, wid).then(() => reloadTripDetail(id)).catch(() => showToast("Couldn't delete waypoint.", "error"));
+  }, [reloadTripDetail]);
+
+  const handleSendFriendRequest = useCallback((email: string) => {
+    sendFriendRequest(email)
+      .then(() => { reloadFriends(); showToast(`Friend request sent to ${email}.`, "success"); })
+      .catch((e) => showToast(e?.message || "Couldn't send friend request.", "error"));
+  }, [reloadFriends]);
+
+  const handleRespondFriend = useCallback((fid: number, action: "accept" | "decline") => {
+    respondFriendRequest(fid, action).then(reloadFriends).catch(() => showToast("Couldn't respond.", "error"));
+  }, [reloadFriends]);
+
+  const handleRemoveFriend = useCallback((fid: number) => {
+    removeFriend(fid).then(reloadFriends).catch(() => showToast("Couldn't remove friend.", "error"));
+  }, [reloadFriends]);
+
   const handleImportStravaRoute = useCallback(async (activityId: number, name: string) => {
     try {
       const saved = await importStravaRoute(activityId, region.id);
@@ -1437,6 +1605,7 @@ export function Map({
           terrain3dActive={terrain3d}
           routeBuilderActive={routeBuilderMode}
           savedRoutesActive={savedRoutesOpen}
+          tripsActive={tripsOpen}
           layerPanelCollapsed={layerPanelCollapsed}
           theme={theme}
           onMeasureToggle={() => { setRouteBuilderMode(false); setMeasureMode((m) => !m); }}
@@ -1444,6 +1613,7 @@ export function Map({
           onTerrain3dToggle={() => setTerrain3d((t) => !t)}
           onRouteBuilderToggle={() => { setMeasureMode(false); setRouteBuilderMode((m) => !m); }}
           onSavedRoutesToggle={() => setSavedRoutesOpen((o) => !o)}
+          onTripsToggle={() => setTripsOpen((o) => !o)}
         />
       )}
 
@@ -1673,6 +1843,44 @@ export function Map({
           mobileBottom={mobileBottom}
           onClone={handleCloneShared}
           onClose={() => { setSharedRoute(null); setSharedRouteToken(null); }}
+        />
+      )}
+      {tripsOpen && selectedTripId == null && (
+        <TripsPanel
+          trips={trips}
+          invites={tripInvites}
+          friends={friends}
+          savedRoutes={savedRoutes}
+          loading={tripsLoading}
+          theme={theme}
+          mobile={isMobile}
+          mobileBottom={mobileBottom}
+          onSelectTrip={setSelectedTripId}
+          onCreateTrip={handleCreateTrip}
+          onRespondInvite={handleRespondInvite}
+          onSendFriendRequest={handleSendFriendRequest}
+          onRespondFriend={handleRespondFriend}
+          onRemoveFriend={handleRemoveFriend}
+          onClose={() => setTripsOpen(false)}
+        />
+      )}
+      {tripsOpen && selectedTripId != null && tripDetail && (
+        <TripView
+          detail={tripDetail}
+          friends={friends.friends}
+          currentUserId={user.id}
+          units={units}
+          theme={theme}
+          mobile={isMobile}
+          mobileBottom={mobileBottom}
+          waypointMode={waypointMode}
+          waypointKind={waypointKind}
+          onToggleWaypointMode={() => setWaypointMode((m) => !m)}
+          onWaypointKindChange={setWaypointKind}
+          onInvite={handleInviteMember}
+          onDeleteWaypoint={handleDeleteWaypoint}
+          onDeleteTrip={handleDeleteTrip}
+          onClose={() => { setSelectedTripId(null); setWaypointMode(false); }}
         />
       )}
       {!measureMode && !routeBuilderMode && point && (

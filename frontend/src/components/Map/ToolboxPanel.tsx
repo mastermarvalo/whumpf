@@ -8,6 +8,7 @@ export function ToolboxPanel({
   terrain3dActive,
   routeBuilderActive,
   savedRoutesActive,
+  tripsActive,
   layerPanelCollapsed,
   theme,
   onMeasureToggle,
@@ -15,12 +16,14 @@ export function ToolboxPanel({
   onTerrain3dToggle,
   onRouteBuilderToggle,
   onSavedRoutesToggle,
+  onTripsToggle,
 }: {
   measureActive: boolean;
   slopeFilterActive: boolean;
   terrain3dActive: boolean;
   routeBuilderActive: boolean;
   savedRoutesActive: boolean;
+  tripsActive: boolean;
   layerPanelCollapsed: boolean;
   theme: Theme;
   onMeasureToggle: () => void;
@@ -28,6 +31,7 @@ export function ToolboxPanel({
   onTerrain3dToggle: () => void;
   onRouteBuilderToggle: () => void;
   onSavedRoutesToggle: () => void;
+  onTripsToggle: () => void;
 }) {
   async function copyShareLink() {
     try {
@@ -123,6 +127,22 @@ export function ToolboxPanel({
           <path d="M2 3.5 L5 2.5 L9 4 L12 3 L12 10.5 L9 11.5 L5 10 L2 11 Z"/>
           <path d="M5 2.5 L5 10"/>
           <path d="M9 4 L9 11.5"/>
+        </svg>
+      </button>
+
+      {/* Trips & party */}
+      <button
+        onClick={onTripsToggle}
+        title={tripsActive ? "Hide trips" : "Trips & party"}
+        aria-label="Trips and party"
+        aria-pressed={tripsActive}
+        style={tileStyle(tripsActive, "#1fb6ff")}
+      >
+        <svg width="16" height="16" viewBox="0 0 14 14" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+          <circle cx="4.5" cy="4" r="2"/>
+          <circle cx="9.5" cy="4" r="2"/>
+          <path d="M1.5 12 C1.5 9 3 8 4.5 8 C6 8 7.5 9 7.5 12"/>
+          <path d="M6.5 12 C6.5 9 8 8 9.5 8 C11 8 12.5 9 12.5 12"/>
         </svg>
       </button>
 
