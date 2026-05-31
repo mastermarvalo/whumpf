@@ -15,6 +15,7 @@ import type {
   PointData,
   ProfileResponse,
   Region,
+  RouteDetail,
   RouteListItem,
   Units,
 } from "./Map/types";
@@ -82,14 +83,23 @@ import {
 import {
   ROUTE_VERTEX_STYLE,
   addRouteLayers,
+  addSharedRouteLayer,
   applyRouteHighlight,
+  cloneRoute,
   createRoute,
+  createShare,
   deleteRoute,
   fetchRoutes,
+  fetchSharedRoute,
   importStravaRoute,
   lineStringFrom,
+  revokeShare,
   routesToGeoJSON,
   setRouteData,
+  setSharedRouteData,
+  shareUrl,
+  sharedRouteToGeoJSON,
+  updateRoute,
   updateRouteDraftSource,
 } from "./Map/layers/routes";
 
@@ -99,6 +109,7 @@ import { InfoPanel } from "./Map/InfoPanel";
 import { MeasurePanel } from "./Map/MeasurePanel";
 import { RouteBuilderPanel } from "./Map/RouteBuilderPanel";
 import { SavedRoutesPanel } from "./Map/SavedRoutesPanel";
+import { SharedRoutePanel } from "./Map/SharedRoutePanel";
 import { SlopeFilterPanel } from "./Map/SlopeFilterPanel";
 import { SearchBar } from "./Map/SearchBar";
 import { StravaActivityCard } from "./Map/StravaActivityCard";
@@ -211,6 +222,12 @@ export function Map({
   const routeMarkersRef = useRef<maplibregl.Marker[]>([]);
   const savedRoutesRef = useRef<RouteListItem[]>([]);
   const selectedRouteIdRef = useRef<number | null>(null);
+  // A route opened via a share link (Phase B) — kept entirely separate from the
+  // owned-routes list/layer/highlight; only enters savedRoutes on clone.
+  const [sharedRoute, setSharedRoute] = useState<RouteDetail | null>(null);
+  const [sharedRouteToken, setSharedRouteToken] = useState<string | null>(null);
+  const [cloning, setCloning] = useState(false);
+  const sharedRouteRef = useRef<RouteDetail | null>(null);
   const [units, setUnits] = useState<Units>(() => initialUrlState.units ?? "imperial");
   const [forecast, setForecast] = useState<ForecastPeriod[] | null>(null);
   const [forecastLoading, setForecastLoading] = useState(false);
@@ -365,6 +382,8 @@ export function Map({
       setRouteData(map, routesToGeoJSON(savedRoutesRef.current));
       applyRouteHighlight(map, selectedRouteIdRef.current);
       updateRouteDraftSource(map, routeVerticesRef.current);
+      addSharedRouteLayer(map);
+      if (sharedRouteRef.current) setSharedRouteData(map, sharedRouteToGeoJSON(sharedRouteRef.current));
       // Sync prevBasemapRef to whichever basemap was last requested.
       prevBasemapRef.current = basemapRef.current;
     });
@@ -917,6 +936,88 @@ export function Map({
       })
       .catch(() => showToast("Couldn't delete route.", "error"));
   }, []);
+
+  const handleRenameRoute = useCallback((id: number, name: string) => {
+    updateRoute(id, { name })
+      .then((updated) => {
+        setSavedRoutes((prev) => prev.map((r) => (r.id === id ? { ...r, name: updated.name } : r)));
+      })
+      .catch(() => showToast("Couldn't rename route.", "error"));
+  }, []);
+
+  const handleShareRoute = useCallback(async (id: number) => {
+    try {
+      const { token } = await createShare(id);
+      await navigator.clipboard.writeText(shareUrl(id, token));
+      // Generating a link flips visibility to unlisted server-side; reflect it.
+      setSavedRoutes((prev) => prev.map((r) => (r.id === id ? { ...r, visibility: "unlisted" } : r)));
+      showToast("Share link copied to clipboard.", "success");
+    } catch {
+      showToast("Couldn't create a share link.", "error");
+    }
+  }, []);
+
+  const handleRevokeShare = useCallback(async (id: number) => {
+    try {
+      // Share is idempotent → fetch the active token, then revoke it.
+      const { token } = await createShare(id);
+      await revokeShare(id, token);
+      setSavedRoutes((prev) => prev.map((r) => (r.id === id ? { ...r, visibility: "private" } : r)));
+      showToast("Share link revoked.", "success");
+    } catch {
+      showToast("Couldn't revoke the share link.", "error");
+    }
+  }, []);
+
+  // Render the shared route on its own layer + fly to it whenever it changes.
+  useEffect(() => {
+    sharedRouteRef.current = sharedRoute;
+    const map = mapRef.current;
+    if (!map) return;
+    setSharedRouteData(map, sharedRoute ? sharedRouteToGeoJSON(sharedRoute) : null);
+    const coords = sharedRoute?.geometry?.coordinates ?? [];
+    if (coords.length < 2) return;
+    const bounds = new maplibregl.LngLatBounds();
+    coords.forEach((c) => bounds.extend([c[0], c[1]]));
+    map.fitBounds(bounds, { padding: 80, maxZoom: 15, duration: 800 });
+  }, [sharedRoute]);
+
+  // Resolve a ?route=<id>&route_token=<tok> share link once on mount. The Map
+  // only mounts when authed, so this always runs as a logged-in user.
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const idStr = params.get("route");
+    const token = params.get("route_token");
+    if (!idStr || !token) return;
+    // Strip the params so a refresh / map move doesn't re-trigger resolution.
+    const url = new URL(window.location.href);
+    url.searchParams.delete("route");
+    url.searchParams.delete("route_token");
+    window.history.replaceState({}, "", url.toString());
+    const id = Number(idStr);
+    if (Number.isNaN(id)) return;
+    fetchSharedRoute(id, token)
+      .then((detail) => { setSharedRouteToken(token); setSharedRoute(detail); })
+      .catch(() => showToast("This shared route link is invalid or was revoked.", "error"));
+  }, []);
+
+  const handleCloneShared = useCallback(async () => {
+    if (!sharedRoute) return;
+    setCloning(true);
+    try {
+      const clone = await cloneRoute(sharedRoute.id, sharedRouteToken ?? undefined);
+      setSavedRoutes((prev) => [clone, ...prev.filter((r) => r.id !== clone.id)]);
+      setSharedRoute(null);
+      setSharedRouteToken(null);
+      setSavedRoutesOpen(true);
+      setSelectedRouteId(clone.id);   // flies to it via the selectedRouteId effect
+      showToast(`Cloned “${clone.name}” to your routes.`, "success");
+    } catch {
+      showToast("Couldn't clone this route.", "error");
+    } finally {
+      setCloning(false);
+    }
+  }, [sharedRoute, sharedRouteToken]);
 
   const handleImportStravaRoute = useCallback(async (activityId: number, name: string) => {
     try {
@@ -1556,7 +1657,22 @@ export function Map({
           siblingActive={slopeFilterMode}
           onSelect={setSelectedRouteId}
           onDelete={handleDeleteRoute}
+          onRename={handleRenameRoute}
+          onShare={handleShareRoute}
+          onRevoke={handleRevokeShare}
           onClose={() => { setSavedRoutesOpen(false); setSelectedRouteId(null); }}
+        />
+      )}
+      {sharedRoute && (
+        <SharedRoutePanel
+          detail={sharedRoute}
+          cloning={cloning}
+          units={units}
+          theme={theme}
+          mobile={isMobile}
+          mobileBottom={mobileBottom}
+          onClone={handleCloneShared}
+          onClose={() => { setSharedRoute(null); setSharedRouteToken(null); }}
         />
       )}
       {!measureMode && !routeBuilderMode && point && (

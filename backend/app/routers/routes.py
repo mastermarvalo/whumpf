@@ -1,13 +1,14 @@
 """Saved-route persistence — owner-scoped polylines with a cached terrain profile.
 
-Phase A: create / list / view / edit / delete, owner-only. Sharing, cloning and
-token resolution land in Phase B.
+Phase A: create / list / view / edit / delete, owner-only.
+Phase B: share-link create/revoke, token-scoped view, and clone.
 """
 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
+import secrets
+from datetime import datetime, timezone
 from typing import Annotated, Literal
 
 import numpy as np
@@ -25,6 +26,7 @@ from app.auth.dependencies import get_current_user
 from app.config import Settings, get_settings
 from app.db import get_session
 from app.models.route import Route, Visibility
+from app.models.route_share import RouteShare
 from app.models.strava import StravaConnection
 from app.models.user import User
 from app.regions import validate_region
@@ -93,6 +95,10 @@ class RouteListItem(BaseModel):
     summary: dict
     created_at: datetime
     updated_at: datetime
+
+
+class ShareOut(BaseModel):
+    token: str
 
 
 SessionDep = Annotated[Session, Depends(get_session)]
@@ -317,9 +323,14 @@ def _get_or_404(session: Session, route_id: int) -> Route:
 
 
 @router.get("/{route_id}", response_model=RouteRead)
-def get_route(route_id: int, session: SessionDep, user: UserDep) -> RouteRead:
+def get_route(
+    route_id: int,
+    session: SessionDep,
+    user: UserDep,
+    token: str | None = Query(default=None, description="Share token for non-owner access"),
+) -> RouteRead:
     route = _get_or_404(session, route_id)
-    assert_can_view(user, route)
+    assert_can_view(user, route, session=session, token=token)
     return _to_read(route)
 
 
@@ -346,3 +357,120 @@ def delete_route(route_id: int, session: SessionDep, user: UserDep) -> None:
     assert_can_edit(user, route)
     session.delete(route)
     session.commit()
+
+
+# --------------------------------------------------------------------------- #
+# Sharing (Phase B)
+# --------------------------------------------------------------------------- #
+def _new_share_token() -> str:
+    """Cryptographically secure URL-safe share token (~43 chars)."""
+    return secrets.token_urlsafe(32)
+
+
+def _active_share(session: Session, route_id: int) -> RouteShare | None:
+    return session.scalars(
+        select(RouteShare).where(
+            RouteShare.route_id == route_id,
+            RouteShare.revoked_at.is_(None),
+        )
+    ).first()
+
+
+def _clone_route(session: Session, user: User, source: Route) -> Route:
+    """Deep-copy a route into ``user``'s account as a new private route.
+
+    Copies the stored geometry/summary/samples verbatim — no terrain re-sampling.
+    """
+    clone = Route(
+        owner_id=user.id,
+        name=f"{source.name} (copy)",
+        notes=source.notes,
+        region=source.region,
+        geom=from_shape(to_shape(source.geom), srid=4326),
+        summary=source.summary,
+        samples=source.samples,
+        visibility=Visibility.private,
+        source_strava_id=None,
+    )
+    session.add(clone)
+    session.commit()
+    session.refresh(clone)
+    return clone
+
+
+@router.post("/{route_id}/share", response_model=ShareOut)
+def share_route(
+    route_id: int, session: SessionDep, user: UserDep, response: Response,
+) -> ShareOut:
+    """Create (or return the existing) share link for a route. Owner only.
+
+    One active link per route: a second call returns the same token (200).
+    Generating a link flips visibility to `unlisted` as a cosmetic label —
+    access is governed by the token, not the visibility value."""
+    route = _get_or_404(session, route_id)
+    assert_can_edit(user, route)
+
+    existing = _active_share(session, route.id)
+    if existing is not None:
+        response.status_code = 200
+        return ShareOut(token=existing.token)
+
+    share = RouteShare(
+        route_id=route.id, token=_new_share_token(), created_by_id=user.id,
+    )
+    session.add(share)
+    if route.visibility == Visibility.private:
+        route.visibility = Visibility.unlisted
+    session.commit()
+    session.refresh(share)
+    response.status_code = 201
+    return ShareOut(token=share.token)
+
+
+@router.delete("/{route_id}/share/{token}", status_code=204)
+def revoke_share(
+    route_id: int, token: str, session: SessionDep, user: UserDep,
+) -> None:
+    """Revoke a share token. Owner only. Resets visibility to private when no
+    active links remain."""
+    route = _get_or_404(session, route_id)
+    assert_can_edit(user, route)
+
+    share = session.scalars(
+        select(RouteShare).where(
+            RouteShare.route_id == route.id,
+            RouteShare.token == token,
+            RouteShare.revoked_at.is_(None),
+        )
+    ).first()
+    if share is None:
+        raise HTTPException(404, "Share link not found")
+
+    share.revoked_at = datetime.now(timezone.utc)
+    # Any *other* active links left? (Query excludes this token explicitly so it's
+    # correct without relying on the unflushed revoked_at above.)
+    others = session.scalars(
+        select(RouteShare).where(
+            RouteShare.route_id == route.id,
+            RouteShare.revoked_at.is_(None),
+            RouteShare.token != token,
+        )
+    ).first()
+    if others is None and route.visibility == Visibility.unlisted:
+        route.visibility = Visibility.private
+    session.commit()
+
+
+@router.post("/{route_id}/clone", response_model=RouteRead, status_code=201)
+def clone_route(
+    route_id: int,
+    session: SessionDep,
+    user: UserDep,
+    token: str | None = Query(default=None, description="Share token if not the owner"),
+) -> RouteRead:
+    """Clone a route the caller can view (own, or via a valid share token) into
+    their account as a new private route."""
+    route = _get_or_404(session, route_id)
+    assert_can_view(user, route, session=session, token=token)
+    clone = _clone_route(session, user, route)
+    return _to_read(clone)

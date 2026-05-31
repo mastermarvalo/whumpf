@@ -55,6 +55,15 @@ class TokenOut(BaseModel):
     token_type: str = "bearer"
 
 
+class RegisterOut(BaseModel):
+    # When email verification is required, registration does NOT start a session —
+    # the user must verify first. `access_token` is only set (and a cookie issued)
+    # when the account is immediately usable (skip-verification mode).
+    email_verified: bool
+    access_token: str | None = None
+    token_type: str = "bearer"
+
+
 class UserOut(BaseModel):
     id: int
     email: str
@@ -75,14 +84,14 @@ class PasswordResetConfirmIn(BaseModel):
     new_password: str
 
 
-@router.post("/register", response_model=TokenOut, status_code=status.HTTP_201_CREATED)
+@router.post("/register", response_model=RegisterOut, status_code=status.HTTP_201_CREATED)
 @limiter.limit("5/hour")
 async def register(
     request: Request,
     response: Response,
     body: RegisterIn,
     session: Session = Depends(get_session),
-) -> TokenOut:
+) -> RegisterOut:
     email = body.email.lower().strip()
     if "@" not in email:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid email address")
@@ -111,10 +120,13 @@ async def register(
             await send_verification_email(to=user.email, token=token)
         except Exception as exc:
             logger.warning("Verification email send failed for user %s: %s", user.id, exc)
+        # Verification required → do NOT start a session. The user must verify
+        # their email, then sign in.
+        return RegisterOut(email_verified=False)
 
     access = create_access_token(user.email)
     set_auth_cookie(response, access)
-    return TokenOut(access_token=access)
+    return RegisterOut(email_verified=True, access_token=access)
 
 
 @router.post("/token", response_model=TokenOut)
@@ -132,6 +144,11 @@ def login(
             status.HTTP_401_UNAUTHORIZED,
             "Incorrect email or password",
             headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not get_settings().skip_email_verification and not user.email_verified:
+        raise HTTPException(
+            status.HTTP_403_FORBIDDEN,
+            "Please verify your email before signing in — check your inbox for the link.",
         )
     token = create_access_token(user.email)
     set_auth_cookie(response, token)

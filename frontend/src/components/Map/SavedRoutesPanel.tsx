@@ -19,6 +19,9 @@ export function SavedRoutesPanel({
   siblingActive,
   onSelect,
   onDelete,
+  onRename,
+  onShare,
+  onRevoke,
   onClose,
 }: {
   routes: RouteListItem[];
@@ -31,6 +34,9 @@ export function SavedRoutesPanel({
   siblingActive?: boolean;
   onSelect: (id: number | null) => void;
   onDelete: (id: number) => void;
+  onRename: (id: number, name: string) => void;
+  onShare: (id: number) => void;
+  onRevoke: (id: number) => void;
   onClose: () => void;
 }) {
   const isMobile = mobile ?? false;
@@ -39,6 +45,8 @@ export function SavedRoutesPanel({
 
   const [detail, setDetail] = useState<RouteDetail | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draftName, setDraftName] = useState("");
 
   // Load the full route (with cached samples) when a row is selected. Renders
   // the stored profile offline — no terrain re-fetch.
@@ -50,6 +58,7 @@ export function SavedRoutesPanel({
     let cancelled = false;
     setDetailLoading(true);
     setDetail(null);
+    setEditing(false);
     fetchRoute(selectedId)
       .then((d) => { if (!cancelled) { setDetail(d); setDetailLoading(false); } })
       .catch(() => { if (!cancelled) setDetailLoading(false); });
@@ -129,6 +138,42 @@ export function SavedRoutesPanel({
                   {detailLoading && <div style={{ color: theme.muted, fontSize: 11 }}>Loading profile…</div>}
                   {detail && detail.id === r.id && (
                     <>
+                      {/* Inline rename */}
+                      {editing ? (
+                        <input
+                          autoFocus
+                          value={draftName}
+                          onChange={(e) => setDraftName(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") { e.currentTarget.blur(); }
+                            else if (e.key === "Escape") { setEditing(false); }
+                          }}
+                          onBlur={() => {
+                            const name = draftName.trim();
+                            if (name && name !== r.name) onRename(r.id, name);
+                            setEditing(false);
+                          }}
+                          maxLength={255}
+                          style={{
+                            width: "100%", boxSizing: "border-box", marginBottom: 6,
+                            padding: "5px 8px", fontSize: 13, borderRadius: 6,
+                            border: `1px solid ${theme.accent}`, background: theme.panel, color: theme.text,
+                          }}
+                        />
+                      ) : (
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 2 }}>
+                          <span style={{ fontWeight: 600, fontSize: 13, color: theme.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                            {r.name}
+                          </span>
+                          <button
+                            onClick={() => { setDraftName(r.name); setEditing(true); }}
+                            title="Rename route"
+                            aria-label="Rename route"
+                            style={{ background: "none", border: "none", cursor: "pointer", color: theme.muted, fontSize: 13, padding: 2, flexShrink: 0 }}
+                          >✎</button>
+                        </div>
+                      )}
+
                       <ProfileChart
                         samples={detail.samples}
                         summary={detail.summary}
@@ -136,8 +181,33 @@ export function SavedRoutesPanel({
                         theme={theme}
                       />
                       <TripDetails summary={detail.summary} units={units} theme={theme} />
+
+                      {/* Sharing */}
+                      <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                        <button
+                          onClick={() => onShare(r.id)}
+                          style={{
+                            flex: 1, background: theme.accent, border: "none", color: "#fff",
+                            cursor: "pointer", fontSize: 11, fontWeight: 600,
+                            padding: "5px 10px", borderRadius: 6,
+                          }}
+                        >Copy share link</button>
+                        {r.visibility === "unlisted" && (
+                          <button
+                            onClick={() => onRevoke(r.id)}
+                            style={{
+                              background: "none", border: `1px solid ${theme.divider}`,
+                              color: theme.text, cursor: "pointer", fontSize: 11,
+                              padding: "5px 10px", borderRadius: 6,
+                            }}
+                          >Revoke</button>
+                        )}
+                      </div>
+
                       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginTop: 8 }}>
-                        <span style={{ color: theme.muted, fontSize: 11 }}>{detail.visibility}</span>
+                        <span style={{ color: theme.muted, fontSize: 11 }}>
+                          {r.visibility === "unlisted" ? "shared via link" : r.visibility}
+                        </span>
                         <button
                           onClick={() => onDelete(r.id)}
                           style={{

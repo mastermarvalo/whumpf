@@ -183,3 +183,7 @@ export interface RouteCreatePayload {
   geometry: RouteGeometry;
   notes?: string;
 }
+
+export interface ShareResponse {
+  token: string;
+}

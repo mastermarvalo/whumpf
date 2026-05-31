@@ -227,6 +227,65 @@ function MainApp() {
     );
   }
 
+  // Logged in but email not verified → block app access until verified.
+  // (In skip-verification mode accounts are auto-verified, so this never shows.)
+  if (!user.email_verified) {
+    return (
+      <>
+        <div
+          style={{
+            position: "fixed", inset: 0,
+            background: "linear-gradient(135deg, #0d1117 0%, #161b22 100%)",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            fontFamily: "ui-sans-serif, system-ui, sans-serif", padding: 20,
+          }}
+        >
+          <div
+            style={{
+              width: 360, background: "rgba(22,27,34,0.95)",
+              border: "1px solid rgba(255,255,255,0.1)", borderRadius: 12,
+              padding: "32px 28px", boxShadow: "0 24px 64px rgba(0,0,0,0.5)",
+              color: "#e8e8e8", textAlign: "center",
+            }}
+          >
+            <div style={{ fontSize: 22, fontWeight: 800, marginBottom: 10 }}>Verify your email</div>
+            <div style={{ fontSize: 13, color: "#aaa", lineHeight: 1.5, marginBottom: 20 }}>
+              We sent a verification link to <b>{user.email}</b>. Click it to activate
+              your account, then continue.
+            </div>
+            <button
+              onClick={() => refreshUser().catch(() => {})}
+              style={{
+                width: "100%", padding: 11, borderRadius: 6, border: "none",
+                background: "#4a90d9", color: "#fff", fontSize: 14, fontWeight: 600,
+                cursor: "pointer", marginBottom: 10,
+              }}
+            >
+              I've verified — continue
+            </button>
+            <button
+              onClick={handleResendVerification}
+              style={{
+                width: "100%", padding: 9, borderRadius: 6,
+                border: "1px solid rgba(255,255,255,0.15)", background: "transparent",
+                color: "#e8e8e8", fontSize: 13, cursor: "pointer", marginBottom: 10,
+              }}
+            >
+              Resend verification email
+            </button>
+            <button
+              onClick={handleLogout}
+              style={{ background: "none", border: "none", color: "#888", fontSize: 12, cursor: "pointer" }}
+            >
+              Sign out
+            </button>
+          </div>
+        </div>
+        <ToastContainer />
+      </>
+    );
+  }
+
   // Hold rendering of the map until we know which region to show. Same
   // splash as the auth probe — usually < 50ms after login.
   if (regions === null || regions.length === 0) {

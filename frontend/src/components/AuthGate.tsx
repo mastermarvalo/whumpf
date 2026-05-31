@@ -14,6 +14,8 @@ export function AuthGate({ onAuth }: { onAuth: () => void }) {
   const [forgotEmail, setForgotEmail] = useState("");
   const [forgotSent, setForgotSent] = useState(false);
   const [forgotLoading, setForgotLoading] = useState(false);
+  // Set after a registration that requires email verification (no session yet).
+  const [registeredEmail, setRegisteredEmail] = useState<string | null>(null);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -43,8 +45,17 @@ export function AuthGate({ onAuth }: { onAuth: () => void }) {
         setError(data.detail ?? "Something went wrong");
         return;
       }
-      // Backend sets the httpOnly session cookie on the response — we don't
-      // touch the body. App.tsx will see the user as authed on the next /auth/me.
+      // Registration with email verification required does NOT start a session;
+      // show a "check your email" confirmation instead of entering the app.
+      if (tab === "register") {
+        const data = await r.json().catch(() => ({}));
+        if (data && data.email_verified === false) {
+          setRegisteredEmail(email);
+          return;
+        }
+      }
+      // Otherwise the backend set the httpOnly session cookie; App.tsx will see
+      // the user as authed on the next /auth/me.
       onAuth();
     } catch {
       setError("Could not reach the server");
@@ -134,7 +145,26 @@ export function AuthGate({ onAuth }: { onAuth: () => void }) {
           </div>
         </div>
 
-        {forgotOpen ? (
+        {registeredEmail ? (
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ color: "#e8e8e8", fontSize: 13, lineHeight: 1.5 }}>
+              We sent a verification link to <b>{registeredEmail}</b>. Click it to
+              activate your account, then sign in.
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setRegisteredEmail(null);
+                setTab("login");
+                setError(null);
+                setPassword("");
+              }}
+              style={btnStyle}
+            >
+              Back to sign in
+            </button>
+          </div>
+        ) : forgotOpen ? (
           forgotSent ? (
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               <div style={{ color: "#e8e8e8", fontSize: 13, lineHeight: 1.5 }}>
