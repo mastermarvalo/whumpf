@@ -888,6 +888,10 @@ def main() -> None:
                              "(slope_hires, hillshade_hires, aspect_hires). Use when "
                              "disk is too tight for the ~412 GB peak needed to compute "
                              "and upload a hires derivative simultaneously.")
+    parser.add_argument("--skip-download", action="store_true",
+                        help="Skip TNM catalog query and tile downloads. Use all *.tif "
+                             "files already present in raw_dir. Saves the ~45-min TNM "
+                             "query on re-runs where tiles are already cached locally.")
     parser.add_argument("--test", action="store_true",
                         help="Smoke-test: small bbox near Silverton (~2 min)")
     args = parser.parse_args()
@@ -1054,10 +1058,16 @@ def main() -> None:
             nodata = _ds.nodata
 
     else:
-        # ── standard single-resolution path (unchanged) ───────────────────────
+        # ── standard single-resolution path ──────────────────────────────────
         if dem_path.exists():
             step("dem.tif already exists — skipping download and mosaic.")
             tile_paths: list[Path] = []
+        elif args.skip_download:
+            step("--skip-download: using existing tiles in raw_dir ...")
+            tile_paths = sorted(raw_dir.glob("*.tif"))
+            if not tile_paths:
+                sys.exit(f"ERROR: --skip-download specified but no *.tif files found in {raw_dir}")
+            logger.info("  %d tiles found in %s", len(tile_paths), raw_dir)
         else:
             tiles = query_tnm(bbox, resolution=args.resolution)
             if not tiles:
