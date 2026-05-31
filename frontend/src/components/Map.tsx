@@ -100,6 +100,7 @@ import {
   revokeShare,
   routesToGeoJSON,
   setRouteData,
+  setRouteVisibility,
   setSharedRouteData,
   shareUrl,
   sharedRouteToGeoJSON,
@@ -423,6 +424,7 @@ export function Map({
       applyStravaHighlight(map, selectedStravaIdRef.current);
       addRouteLayers(map);
       setRouteData(map, routesToGeoJSON(savedRoutesRef.current));
+      setRouteVisibility(map, selectedTripIdRef.current == null);
       applyRouteHighlight(map, selectedRouteIdRef.current);
       updateRouteDraftSource(map, routeVerticesRef.current);
       addSharedRouteLayer(map);
@@ -1127,10 +1129,20 @@ export function Map({
   useEffect(() => { waypointKindRef.current = waypointKind; }, [waypointKind]);
   useEffect(() => { waypointModeRef.current = waypointMode; }, [waypointMode]);
 
-  // Keep trip route highlight ref + map paint in sync with state.
+  // Keep trip route highlight ref + map paint in sync with state; fly to route on select.
   useEffect(() => {
     selectedTripRouteIdRef.current = selectedTripRouteId;
     applyTripRouteHighlight(mapRef.current, selectedTripRouteId);
+    const map = mapRef.current;
+    if (selectedTripRouteId == null || !map) return;
+    const coords = tripDetailRef.current?.days
+      .flatMap((d) => d.routes)
+      .find((r) => r.id === selectedTripRouteId)
+      ?.geometry?.coordinates ?? [];
+    if (coords.length < 2) return;
+    const bounds = new maplibregl.LngLatBounds();
+    coords.forEach((c) => bounds.extend([c[0], c[1]]));
+    map.fitBounds(bounds, { padding: 80, maxZoom: 15, duration: 600 });
   }, [selectedTripRouteId]);
 
   // Render the selected trip's routes + waypoints; keep ref in sync.
@@ -1138,6 +1150,11 @@ export function Map({
     tripDetailRef.current = tripDetail;
     setTripData(mapRef.current, tripDetail);
   }, [tripDetail]);
+
+  // Hide/show the saved-routes layer while a trip is open.
+  useEffect(() => {
+    setRouteVisibility(mapRef.current, selectedTripId == null);
+  }, [selectedTripId]);
 
   // Load detail (and fly to it) when a trip is selected; clear otherwise.
   useEffect(() => {

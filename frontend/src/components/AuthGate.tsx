@@ -16,6 +16,7 @@ export function AuthGate({ onAuth }: { onAuth: () => void }) {
   const [forgotLoading, setForgotLoading] = useState(false);
   // Set after a registration that requires email verification (no session yet).
   const [registeredEmail, setRegisteredEmail] = useState<string | null>(null);
+  const [disclaimerChecked, setDisclaimerChecked] = useState(false);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -229,7 +230,7 @@ export function AuthGate({ onAuth }: { onAuth: () => void }) {
               {(["login", "register"] as Tab[]).map((t) => (
                 <button
                   key={t}
-                  onClick={() => { setTab(t); setError(null); }}
+                  onClick={() => { setTab(t); setError(null); setDisclaimerChecked(false); }}
                   style={{
                     flex: 1,
                     padding: "7px 0",
@@ -269,6 +270,20 @@ export function AuthGate({ onAuth }: { onAuth: () => void }) {
                 style={inputStyle}
               />
 
+              {tab === "register" && (
+                <label style={{ display: "flex", gap: 10, alignItems: "flex-start", cursor: "pointer" }}>
+                  <input
+                    type="checkbox"
+                    checked={disclaimerChecked}
+                    onChange={(e) => setDisclaimerChecked(e.target.checked)}
+                    style={{ marginTop: 2, flexShrink: 0, accentColor: "#7b3fe4" }}
+                  />
+                  <span style={{ fontSize: 12, color: "#888", lineHeight: 1.4 }}>
+                    I understand that this tool is <strong style={{ color: "#aaa" }}>not a substitute for good judgment</strong>. The backcountry is an unforgiving environment. I accept full responsibility for my decisions in the field — the creator of this app is not liable for my actions or their consequences.
+                  </span>
+                </label>
+              )}
+
               {error && (
                 <div
                   style={{
@@ -284,7 +299,11 @@ export function AuthGate({ onAuth }: { onAuth: () => void }) {
                 </div>
               )}
 
-              <button type="submit" disabled={loading} style={btnStyle}>
+              <button
+                type="submit"
+                disabled={loading || (tab === "register" && !disclaimerChecked)}
+                style={{ ...btnStyle, opacity: (tab === "register" && !disclaimerChecked) ? 0.45 : 1 }}
+              >
                 {loading ? "…" : tab === "login" ? "Sign in" : "Create account"}
               </button>
 
