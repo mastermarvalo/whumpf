@@ -22,6 +22,27 @@ from app.models.trip_member import MemberStatus, TripMember
 from app.models.user import User
 
 
+def is_strava_sourced(route: Route) -> bool:
+    """True if the route was imported from Strava. Strava's API terms only allow
+    showing Strava data to the athlete it belongs to, so these are owner-only:
+    no share links, no clones by others, hidden from other trip members."""
+    return route.source_strava_id is not None
+
+
+def has_valid_share_token(session: Session, route: Route, token: str | None) -> bool:
+    """True if ``token`` is a non-revoked share token scoped to ``route``."""
+    if not token:
+        return False
+    share = session.scalars(
+        select(RouteShare).where(
+            RouteShare.token == token,
+            RouteShare.route_id == route.id,  # token must match THIS route
+            RouteShare.revoked_at.is_(None),
+        )
+    ).first()
+    return share is not None
+
+
 def can_view_route(
     user: User,
     route: Route,
@@ -32,22 +53,16 @@ def can_view_route(
     """True if ``user`` may view ``route``.
 
     Owner can always view. Otherwise, a non-revoked share token *scoped to this
-    route* grants view (and clone). Token validation needs a DB session, so both
-    ``session`` and ``token`` must be supplied for the token path.
+    route* grants view (and clone) — except for Strava-sourced routes, which are
+    owner-only even if a share link predates that rule. Token validation needs a
+    DB session, so both ``session`` and ``token`` must be supplied for the token
+    path.
     """
     if route.owner_id == user.id:
         return True
-    if token and session is not None:
-        share = session.scalars(
-            select(RouteShare).where(
-                RouteShare.token == token,
-                RouteShare.route_id == route.id,  # token must match THIS route
-                RouteShare.revoked_at.is_(None),
-            )
-        ).first()
-        if share is not None:
-            return True
-    return False
+    if is_strava_sourced(route):
+        return False
+    return session is not None and has_valid_share_token(session, route, token)
 
 
 def can_edit_route(user: User, route: Route) -> bool:

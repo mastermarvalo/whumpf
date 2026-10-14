@@ -15,7 +15,7 @@ from shapely.geometry import Point, mapping
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app.auth.access import assert_can_view_trip, assert_trip_owner
+from app.auth.access import assert_can_view_trip, assert_trip_owner, is_strava_sourced
 from app.auth.dependencies import get_current_user
 from app.db import get_session
 from app.models.route import Route
@@ -161,8 +161,11 @@ def _waypoint_out(wp: Waypoint) -> WaypointOut:
     )
 
 
-def _trip_days(session: Session, trip: Trip) -> list[TripDayOut]:
-    """Routes grouped by day (1..num_days), each with its calendar date."""
+def _trip_days(session: Session, trip: Trip, viewer: User) -> list[TripDayOut]:
+    """Routes grouped by day (1..num_days), each with its calendar date.
+
+    Strava-sourced routes are only included for their owner (Strava API terms).
+    """
     rows = session.scalars(
         select(TripRoute)
         .where(TripRoute.trip_id == trip.id)
@@ -171,10 +174,11 @@ def _trip_days(session: Session, trip: Trip) -> list[TripDayOut]:
     by_day: dict[int, list[TripRouteRead]] = {}
     for tr in rows:
         r = session.get(Route, tr.route_id)
-        if r is not None:
-            by_day.setdefault(tr.day, []).append(
-                TripRouteRead(trip_route_id=tr.id, **_to_read(r).model_dump())
-            )
+        if r is None or (is_strava_sourced(r) and r.owner_id != viewer.id):
+            continue
+        by_day.setdefault(tr.day, []).append(
+            TripRouteRead(trip_route_id=tr.id, **_to_read(r).model_dump())
+        )
     return [
         TripDayOut(
             day=d,
@@ -215,12 +219,12 @@ def _to_list_item(trip: Trip) -> TripListItem:
     )
 
 
-def _to_detail(session: Session, trip: Trip) -> TripDetail:
+def _to_detail(session: Session, trip: Trip, viewer: User) -> TripDetail:
     return TripDetail(
         **_to_list_item(trip).model_dump(),
         notes=trip.notes,
         forecast_snapshot=trip.forecast_snapshot,
-        days=_trip_days(session, trip),
+        days=_trip_days(session, trip, viewer),
         waypoints=[
             _waypoint_out(w)
             for w in session.scalars(
@@ -266,8 +270,13 @@ async def create_trip(payload: TripCreate, session: SessionDep, user: UserDep) -
     )
 
     # Freeze the CAIC forecast for the zone containing the first route's start.
-    if all_ids:
-        coords = list(to_shape(by_id[all_ids[0]].geom).coords)
+    # Skip Strava-sourced routes: the zone is shown to every member, and Strava
+    # data may only be shown to its owner. No non-Strava route → no snapshot.
+    snapshot_route = next(
+        (by_id[rid] for rid in all_ids if not is_strava_sourced(by_id[rid])), None
+    )
+    if snapshot_route is not None:
+        coords = list(to_shape(snapshot_route.geom).coords)
         if coords:
             lng, lat = coords[0][0], coords[0][1]
             try:
@@ -291,7 +300,7 @@ async def create_trip(payload: TripCreate, session: SessionDep, user: UserDep) -
     ))
     session.commit()
     session.refresh(trip)
-    return _to_detail(session, trip)
+    return _to_detail(session, trip, user)
 
 
 @router.get("", response_model=list[TripListItem])
@@ -329,7 +338,7 @@ def list_invites(session: SessionDep, user: UserDep) -> list[TripListItem]:
 def get_trip(trip_id: int, session: SessionDep, user: UserDep) -> TripDetail:
     trip = _get_trip_or_404(session, trip_id)
     assert_can_view_trip(user, trip, session=session)
-    return _to_detail(session, trip)
+    return _to_detail(session, trip, user)
 
 
 @router.patch("/{trip_id}", response_model=TripDetail)
@@ -346,7 +355,7 @@ def update_trip(
         trip.notes = payload.notes
     session.commit()
     session.refresh(trip)
-    return _to_detail(session, trip)
+    return _to_detail(session, trip, user)
 
 
 @router.delete("/{trip_id}", status_code=204)
@@ -515,7 +524,7 @@ def add_trip_route(
     session.add(TripRoute(trip_id=trip_id, route_id=payload.route_id, day=day, ordering=existing_count))
     session.commit()
     session.refresh(trip)
-    return _to_detail(session, trip)
+    return _to_detail(session, trip, user)
 
 
 @router.delete("/{trip_id}/routes/{trip_route_id}", status_code=204)

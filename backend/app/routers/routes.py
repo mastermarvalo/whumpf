@@ -21,7 +21,9 @@ from shapely.geometry import LineString, mapping
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.auth.access import assert_can_edit, assert_can_view
+from app.auth.access import (
+    assert_can_edit, assert_can_view, has_valid_share_token, is_strava_sourced,
+)
 from app.auth.dependencies import get_current_user
 from app.config import Settings, get_settings
 from app.db import get_session
@@ -96,6 +98,16 @@ class RouteListItem(BaseModel):
     summary: dict
     created_at: datetime
     updated_at: datetime
+
+
+_STRAVA_SHARE_MSG = (
+    "Routes imported from Strava can't be shared: Strava's API terms only allow "
+    "showing Strava data to the athlete it belongs to."
+)
+_STRAVA_CLONE_MSG = (
+    "Routes imported from Strava can only be cloned by their owner: Strava's API "
+    "terms only allow showing Strava data to the athlete it belongs to."
+)
 
 
 class ShareOut(BaseModel):
@@ -267,7 +279,7 @@ async def import_strava_route(
         select(Route).where(
             Route.owner_id == user.id,
             Route.source_strava_id == activity_id,
-        )
+        ).order_by(Route.id)  # the original import, not a later clone of it
     ).first()
     if existing is not None:
         response.status_code = 200
@@ -346,6 +358,8 @@ def update_route(
     if payload.notes is not None:
         route.notes = payload.notes
     if payload.visibility is not None:
+        if is_strava_sourced(route) and payload.visibility != Visibility.private:
+            raise HTTPException(409, _STRAVA_SHARE_MSG)
         route.visibility = payload.visibility
     session.commit()
     session.refresh(route)
@@ -387,6 +401,7 @@ def _clone_route(session: Session, user: User, source: Route) -> Route:
     """Deep-copy a route into ``user``'s account as a new private route.
 
     Copies the stored geometry/summary/samples verbatim — no terrain re-sampling.
+    Keeps ``source_strava_id`` so a copy of Strava data stays owner-only.
     """
     clone = Route(
         owner_id=user.id,
@@ -397,7 +412,7 @@ def _clone_route(session: Session, user: User, source: Route) -> Route:
         summary=source.summary,
         samples=source.samples,
         visibility=Visibility.private,
-        source_strava_id=None,
+        source_strava_id=source.source_strava_id,
     )
     session.add(clone)
     session.commit()
@@ -416,6 +431,8 @@ def share_route(
     access is governed by the token, not the visibility value."""
     route = _get_or_404(session, route_id)
     assert_can_edit(user, route)
+    if is_strava_sourced(route):
+        raise HTTPException(409, _STRAVA_SHARE_MSG)
 
     existing = _active_share(session, route.id)
     if existing is not None:
@@ -476,8 +493,15 @@ def clone_route(
     token: str | None = Query(default=None, description="Share token if not the owner"),
 ) -> RouteRead:
     """Clone a route the caller can view (own, or via a valid share token) into
-    their account as a new private route."""
+    their account as a new private route. Strava-sourced routes: owner only."""
     route = _get_or_404(session, route_id)
+    if (
+        is_strava_sourced(route)
+        and route.owner_id != user.id
+        and has_valid_share_token(session, route, token)
+    ):
+        # Only callers holding a (pre-rule) link learn why; everyone else 404s.
+        raise HTTPException(409, _STRAVA_CLONE_MSG)
     assert_can_view(user, route, session=session, token=token)
     clone = _clone_route(session, user, route)
     return _to_read(clone)
