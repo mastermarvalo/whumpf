@@ -18,6 +18,17 @@ The app runs on a real iPhone, but nothing has been tested end to end against th
 | `README.txt` | Not listed | Zip-install notes from Oct 10. Stale; delete or replace |
 | Last updated | Oct 10 | Three days and one iPhone run behind |
 
+## Backend status (Oct 14, 2026)
+
+Checked against `whumpf` at ba17c5d. This covers the backend repo only; the app screens in `whumpf-ios` are not checked here.
+
+- **Phase 0 network hardening:** PostGIS, Redis, MinIO and Martin bind to 127.0.0.1, and Redis requires `REDIS_PASSWORD` (174b508).
+- **Phase 1, backend done:** Strava routes are owner-only (a5168f5); account deletion works for users with data (ff9b806); signed tile tokens with per-token rate limits (a7348c6).
+- **Phase 2, backend complete:** rotating refresh tokens (0ad0703, 4d0cf7b); 6-digit email codes for verify-email and password reset, change-password and change-email (8f01a13); `DELETE /auth/me` requires the password (fd87e0a); Strava connect takes an allowlisted `return_to` carried in a signed state (ba17c5d). An expired state redirects back with `reason=expired`; a forged one is a 400.
+- **Next: Phase 3 (TestFlight).** The likely backend part is serving the privacy policy, terms and credits pages. Upcoming, not built.
+
+**Turn off when the old website is retired:** `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS`. See "Settings added in Phase 2" in `docs/runbook.md`.
+
 ## Gaps
 
 Many gaps are app screens for backend features that already exist. Your biggest differentiator, CAIC observations and incidents, is served by the backend but not shown in the app.
@@ -86,7 +97,7 @@ One prompt per change, in order. Each names its repo. Backend prompts let Claude
 
 - [ ] Router forwards only 80 and 443 to Nginx Proxy Manager (192.168.3.123)
 - [x] `ufw` on the VM (192.168.1.100), Oct 13: SSH from the LAN, 8000/8001/5173 only from Nginx Proxy Manager, deny the rest. Martin (3000) is closed to the network
-- [ ] Bind Postgres, Redis, MinIO and Martin to 127.0.0.1 in `compose.yml`, and give Redis a password. TiTiler stays reachable until the old website, which calls it directly, is gone
+- [x] Bind Postgres, Redis, MinIO and Martin to 127.0.0.1 in `compose.yml`, and give Redis a password (174b508). TiTiler stays reachable until the old website, which calls it directly, is gone
 - [x] TiTiler locked down in Nginx Proxy Manager (Oct 13): only `/cog/tiles` and `/cog/point`, only `s3://dem-cogs/` URLs, no `..`. Remove titiler.whumpf.co when the old website goes
 - [x] Cloudflare proxy on (Oct 13) for api.whumpf.co, whumpf.co and the `*.whumpf.co` wildcard; SSL mode Full (strict). Public DNS now returns Cloudflare addresses
 - [x] Nginx Proxy Manager reviewed (Oct 13): martin.whumpf.co disabled (unused), default site set to 404

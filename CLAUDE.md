@@ -28,6 +28,10 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 - `make health` returns `"ready": true`.
 - New env vars go in `.env.example` with a comment.
 
+## Where we are
+- Phase 2 backend is complete (refresh tokens, 6-digit email codes, password reset, change password/email, delete with password, Strava `return_to`). Next is Phase 3 (TestFlight); the backend part is likely serving the privacy policy, terms and credits pages. Not built yet.
+- Retire with the old site: `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS` must be off (`LEGACY_EMAIL_LINKS` too). Details in `docs/runbook.md`.
+
 ## Don't
 - Don't introduce Alembic, a second ORM, or another web framework.
 - Don't add public/feed/discovery/leaderboard features.

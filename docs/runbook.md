@@ -85,6 +85,26 @@ Edit `.env` and set:
 
 All of these are required; the compose file will refuse to start without them.
 
+### Settings added in Phase 2
+
+As they appear in `.env.example`:
+
+- `REDIS_PASSWORD` — Redis listens on 127.0.0.1 only and requires this
+  password. compose builds the api's `REDIS_URL` from it. Hex only.
+- `REFRESH_TOKEN_TTL_DAYS` (default 60) — how long a refresh token stays
+  valid. Each refresh issues a new one, so active users stay signed in.
+- `TILES_ALLOW_TOKENLESS` (default true) — lets `/tiles/*` requests through
+  without a `?t=` tile token (from `POST /tiles/token`), under a strict
+  per-IP limit. **Turn off when the old site is retired**, then purge
+  `/tiles/*` in Cloudflare or cached tokenless URLs keep being served.
+- `STRAVA_RETURN_TO_ALLOW_DEV` (default false) — also allows the Expo dev
+  `return_to` targets `exp://...` and `http://localhost:8081/...` for Strava
+  connect. **Turn off when the old site is retired** (and keep it false in
+  prod).
+- `LEGACY_EMAIL_LINKS` (default true) — verify/reset emails also carry the
+  old `?verify=` / `?reset=` links, and the API accepts them. Set false once
+  the old website is gone.
+
 ## 3. First boot
 
 ```bash
