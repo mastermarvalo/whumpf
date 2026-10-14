@@ -1,18 +1,27 @@
-"""Auth endpoints: register, token (login), verify, reset, delete, current-user."""
+"""Auth endpoints: register, token (login), verify, reset, change password /
+email, delete, current-user."""
 
 from __future__ import annotations
 
 import logging
-import secrets
 from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
-from pydantic import BaseModel
-from sqlalchemy import delete, func, or_, select
-from sqlalchemy.orm import Session
+from pydantic import BaseModel, model_validator
+from sqlalchemy import delete, func, or_, select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import InstrumentedAttribute, Session
 
 from app.admin import is_admin as _check_admin
+from app.auth.codes import (
+    CodeError,
+    check_code,
+    discard_codes,
+    hash_link_token,
+    issue_code,
+    new_link_token,
+)
 from app.auth.dependencies import get_current_user
 from app.auth.service import (
     RefreshTokenError,
@@ -20,6 +29,7 @@ from app.auth.service import (
     create_access_token,
     hash_password,
     issue_refresh_token,
+    live_refresh_family,
     revoke_all_refresh_tokens,
     revoke_refresh_family,
     rotate_refresh_token,
@@ -29,29 +39,38 @@ from app.auth.service import (
 from app.config import get_settings
 from app.db import get_session
 from app.models import (
-    Friendship, MemberRole, MemberStatus, RefreshToken, Route, RouteShare, Trip,
-    TripMember, TripRoute, Waypoint,
+    CodePurpose, EmailCode, Friendship, MemberRole, MemberStatus, RefreshToken, Route,
+    RouteShare, Trip, TripMember, TripRoute, Waypoint,
 )
 from app.models.strava import StravaConnection
 from app.models.user import User
-from app.rate_limit import limiter
+from app.rate_limit import enforce_key_limits, limiter
 from app.services import strava as strava_svc
 from app.services.email import (
+    send_email_change_code,
     send_password_reset_email,
+    send_security_notice,
     send_verification_email,
 )
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 logger = logging.getLogger("whumpf.auth")
 
+# Per-address limits on sending a code, on top of the per-IP decorators.
+_SEND_LIMITS = ("3/15minutes", "10/day")
+# Per-address limit on code guesses, across codes (each code also allows only
+# MAX_ATTEMPTS wrong guesses).
+_CHECK_LIMITS = ("10/hour",)
 
-def _new_token() -> str:
-    """Cryptographically secure URL-safe token (~43 chars)."""
-    return secrets.token_urlsafe(32)
+_BAD_CODE = "Invalid or expired code"
 
 
 def _now() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def _norm_email(raw: str) -> str:
+    return raw.lower().strip()
 
 
 class RegisterIn(BaseModel):
@@ -96,13 +115,45 @@ class EmailIn(BaseModel):
     email: str
 
 
-class TokenIn(BaseModel):
-    token: str
+class VerifyEmailConfirmIn(BaseModel):
+    # Either email + code (app), or token (legacy link from the old website).
+    email: str | None = None
+    code: str | None = None
+    token: str | None = None
+
+    @model_validator(mode="after")
+    def _code_or_token(self) -> "VerifyEmailConfirmIn":
+        if not (self.token or (self.email and self.code)):
+            raise ValueError("Send email and code")
+        return self
 
 
-class PasswordResetConfirmIn(BaseModel):
-    token: str
+class PasswordResetConfirmIn(VerifyEmailConfirmIn):
     new_password: str
+
+
+class ChangePasswordIn(BaseModel):
+    current_password: str
+    new_password: str
+    # App clients send their refresh token so their own session survives;
+    # every other refresh token is revoked.
+    refresh_token: str | None = None
+
+
+class ChangeEmailIn(BaseModel):
+    new_email: str
+    current_password: str
+
+
+class CodeIn(BaseModel):
+    code: str
+
+
+class ChangeEmailOut(BaseModel):
+    # The access token is keyed on email, so the old one stops working.
+    email: str
+    access_token: str
+    token_type: str = "bearer"
 
 
 @router.post("/register", response_model=RegisterOut, status_code=status.HTTP_201_CREATED)
@@ -113,11 +164,10 @@ async def register(
     body: RegisterIn,
     session: Session = Depends(get_session),
 ) -> RegisterOut:
-    email = body.email.lower().strip()
+    email = _norm_email(body.email)
     if "@" not in email:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid email address")
-    if len(body.password) < 8:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Password must be at least 8 characters")
+    _check_new_password(body.password)
     if session.scalars(select(User).where(User.email == email)).first():
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "Email already registered")
 
@@ -126,21 +176,12 @@ async def register(
     if settings.skip_email_verification:
         user.email_verified = True
         user.email_verified_at = _now()
-    else:
-        token = _new_token()
-        user.email_verification_token = token
-        user.email_verification_token_expires_at = _now() + timedelta(
-            seconds=settings.email_verification_ttl_s,
-        )
     session.add(user)
     session.commit()
     logger.info("New user registered: id=%s email_verified=%s", user.id, user.email_verified)
 
     if not settings.skip_email_verification:
-        try:
-            await send_verification_email(to=user.email, token=token)
-        except Exception as exc:
-            logger.warning("Verification email send failed for user %s: %s", user.id, exc)
+        await _send_verification(session, user)
         # Verification required → do NOT start a session. The user must verify
         # their email, then sign in.
         return RegisterOut(email_verified=False)
@@ -171,7 +212,7 @@ def login(
     if not get_settings().skip_email_verification and not user.email_verified:
         raise HTTPException(
             status.HTTP_403_FORBIDDEN,
-            "Please verify your email before signing in — check your inbox for the link.",
+            "Please verify your email before signing in — check your inbox.",
         )
     token = create_access_token(user.email)
     refresh_token = issue_refresh_token(session, user.id)
@@ -227,7 +268,83 @@ def me(user: User = Depends(get_current_user)) -> UserOut:
     )
 
 
+# ── shared helpers ─────────────────────────────────────────────────────────────
+
+def _check_new_password(password: str) -> None:
+    if len(password) < 8:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Password must be at least 8 characters")
+
+
+def _check_current_password(user: User, password: str) -> None:
+    if not verify_password(password, user.hashed_password):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Current password is incorrect")
+
+
+def _user_from_code(session: Session, email: str, purpose: CodePurpose, code: str) -> User:
+    """User whose live ``purpose`` code for ``email`` is ``code``; consumes it.
+    Unknown email and wrong code look the same."""
+    enforce_key_limits(f"{purpose.value}-check", email, *_CHECK_LIMITS)
+    user = session.scalars(select(User).where(User.email == email)).first()
+    if not user:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _BAD_CODE)
+    try:
+        check_code(session, user.id, purpose, code)
+    except CodeError as exc:
+        session.commit()  # keep the used-up attempt
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _BAD_CODE) from exc
+    return user
+
+
+# Legacy link flow (old website). Remove with LEGACY_EMAIL_LINKS, along with
+# the users.*_token columns.
+def _user_from_link(
+    session: Session,
+    token_col: InstrumentedAttribute,
+    expires_col: InstrumentedAttribute,
+    token: str,
+) -> User:
+    if not get_settings().legacy_email_links:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid or expired token")
+    user = session.scalars(select(User).where(token_col == hash_link_token(token))).first()
+    expires_at = getattr(user, expires_col.key) if user else None
+    if not expires_at:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid or expired token")
+    if expires_at < _now():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Token expired")
+    return user
+
+
+async def _notify(user_id: int, to: str, what: str) -> None:
+    try:
+        await send_security_notice(to=to, what=what)
+    except Exception as exc:
+        logger.warning("Security notice send failed for user %s: %s", user_id, exc)
+
+
 # ── email verification ─────────────────────────────────────────────────────────
+
+async def _send_verification(session: Session, user: User) -> None:
+    """Issue a code (plus a legacy link token) and email it. Commits."""
+    settings = get_settings()
+    code = issue_code(session, user.id, CodePurpose.verify_email, user.email)
+    token = None
+    if settings.legacy_email_links:
+        token, user.email_verification_token = new_link_token()
+        user.email_verification_token_expires_at = _now() + timedelta(
+            seconds=settings.email_verification_ttl_s,
+        )
+    session.commit()
+    try:
+        await send_verification_email(to=user.email, code=code, token=token)
+    except Exception as exc:
+        logger.warning("Verification email send failed for user %s: %s", user.id, exc)
+
+
+def _clear_verification(session: Session, user: User) -> None:
+    user.email_verification_token = None
+    user.email_verification_token_expires_at = None
+    discard_codes(session, user.id, CodePurpose.verify_email)
+
 
 @router.post("/verify-email/request", status_code=status.HTTP_204_NO_CONTENT)
 @limiter.limit("5/hour")
@@ -236,24 +353,15 @@ async def verify_email_request(
     body: EmailIn,
     session: Session = Depends(get_session),
 ) -> Response:
-    """Resend a verification link. Always returns 204 to avoid revealing
+    """Resend a verification code. Always returns 204 to avoid revealing
     whether an account exists. Already-verified accounts are silently
     skipped — same response — so attackers can't probe verification state.
     """
-    email = body.email.lower().strip()
+    email = _norm_email(body.email)
+    enforce_key_limits("verify_email-send", email, *_SEND_LIMITS)
     user = session.scalars(select(User).where(User.email == email)).first()
     if user and not user.email_verified:
-        settings = get_settings()
-        token = _new_token()
-        user.email_verification_token = token
-        user.email_verification_token_expires_at = _now() + timedelta(
-            seconds=settings.email_verification_ttl_s,
-        )
-        session.commit()
-        try:
-            await send_verification_email(to=user.email, token=token)
-        except Exception as exc:
-            logger.warning("Verification email send failed for user %s: %s", user.id, exc)
+        await _send_verification(session, user)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -261,26 +369,33 @@ async def verify_email_request(
 @limiter.limit("20/hour")
 def verify_email_confirm(
     request: Request,
-    body: TokenIn,
+    body: VerifyEmailConfirmIn,
     session: Session = Depends(get_session),
 ) -> Response:
-    user = session.scalars(
-        select(User).where(User.email_verification_token == body.token),
-    ).first()
-    if not user or not user.email_verification_token_expires_at:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid or expired token")
-    if user.email_verification_token_expires_at < _now():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Token expired")
+    if body.token:
+        user = _user_from_link(
+            session, User.email_verification_token,
+            User.email_verification_token_expires_at, body.token,
+        )
+    else:
+        user = _user_from_code(
+            session, _norm_email(body.email), CodePurpose.verify_email, body.code,
+        )
     user.email_verified = True
     user.email_verified_at = _now()
-    user.email_verification_token = None
-    user.email_verification_token_expires_at = None
+    _clear_verification(session, user)
     session.commit()
     logger.info("Email verified: user_id=%s", user.id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ── password reset ─────────────────────────────────────────────────────────────
+
+def _clear_password_reset(session: Session, user: User) -> None:
+    user.password_reset_token = None
+    user.password_reset_token_expires_at = None
+    discard_codes(session, user.id, CodePurpose.password_reset)
+
 
 @router.post("/password-reset/request", status_code=status.HTTP_204_NO_CONTENT)
 @limiter.limit("5/hour")
@@ -290,20 +405,24 @@ async def password_reset_request(
     session: Session = Depends(get_session),
 ) -> Response:
     """Always returns 204, regardless of whether the email exists, to avoid
-    email enumeration. Reset links expire after `password_reset_ttl_s` seconds.
+    email enumeration. Codes expire after 15 minutes, legacy links after
+    `password_reset_ttl_s` seconds.
     """
-    email = body.email.lower().strip()
+    email = _norm_email(body.email)
+    enforce_key_limits("password_reset-send", email, *_SEND_LIMITS)
     user = session.scalars(select(User).where(User.email == email)).first()
     if user and user.is_active:
         settings = get_settings()
-        token = _new_token()
-        user.password_reset_token = token
-        user.password_reset_token_expires_at = _now() + timedelta(
-            seconds=settings.password_reset_ttl_s,
-        )
+        code = issue_code(session, user.id, CodePurpose.password_reset, user.email)
+        token = None
+        if settings.legacy_email_links:
+            token, user.password_reset_token = new_link_token()
+            user.password_reset_token_expires_at = _now() + timedelta(
+                seconds=settings.password_reset_ttl_s,
+            )
         session.commit()
         try:
-            await send_password_reset_email(to=user.email, token=token)
+            await send_password_reset_email(to=user.email, code=code, token=token)
         except Exception as exc:
             logger.warning("Password-reset email send failed for user %s: %s", user.id, exc)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -311,27 +430,131 @@ async def password_reset_request(
 
 @router.post("/password-reset/confirm", status_code=status.HTTP_204_NO_CONTENT)
 @limiter.limit("20/hour")
-def password_reset_confirm(
+async def password_reset_confirm(
     request: Request,
     body: PasswordResetConfirmIn,
     session: Session = Depends(get_session),
 ) -> Response:
-    if len(body.new_password) < 8:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Password must be at least 8 characters")
-    user = session.scalars(
-        select(User).where(User.password_reset_token == body.token),
-    ).first()
-    if not user or not user.password_reset_token_expires_at:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid or expired token")
-    if user.password_reset_token_expires_at < _now():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Token expired")
+    _check_new_password(body.new_password)  # before the code, so a typo costs no attempt
+    if body.token:
+        user = _user_from_link(
+            session, User.password_reset_token,
+            User.password_reset_token_expires_at, body.token,
+        )
+    else:
+        user = _user_from_code(
+            session, _norm_email(body.email), CodePurpose.password_reset, body.code,
+        )
     user.hashed_password = hash_password(body.new_password)
-    user.password_reset_token = None
-    user.password_reset_token_expires_at = None
+    _clear_password_reset(session, user)
     revoke_all_refresh_tokens(session, user.id)
     session.commit()
     logger.info("Password reset: user_id=%s", user.id)
+    await _notify(user.id, user.email, "Your whumpf password was reset.")
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ── change password / email (signed in) ────────────────────────────────────────
+
+@router.post("/change-password", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("10/hour")
+async def change_password(
+    request: Request,
+    body: ChangePasswordIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> Response:
+    """Revokes every refresh token except the family of ``refresh_token`` (if
+    sent and live). Already-issued access tokens stay valid until expiry."""
+    enforce_key_limits("change-password", str(user.id), "10/hour")
+    _check_new_password(body.new_password)
+    _check_current_password(user, body.current_password)
+    keep = (
+        live_refresh_family(session, user.id, body.refresh_token)
+        if body.refresh_token else None
+    )
+    user.hashed_password = hash_password(body.new_password)
+    _clear_password_reset(session, user)
+    revoke_all_refresh_tokens(session, user.id, keep_family=keep)
+    session.commit()
+    logger.info("Password changed: user_id=%s", user.id)
+    await _notify(user.id, user.email, "Your whumpf password was changed.")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/change-email/request", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("5/hour")
+async def change_email_request(
+    request: Request,
+    body: ChangeEmailIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> Response:
+    """Email a code to the new address. The change happens on confirm."""
+    new_email = _norm_email(body.new_email)
+    enforce_key_limits("change_email-send", str(user.id), *_SEND_LIMITS)
+    enforce_key_limits("change_email-send-to", new_email, *_SEND_LIMITS)
+    if "@" not in new_email:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invalid email address")
+    if new_email == user.email:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "That is already your email")
+    # Password before the taken-check, so it can't probe for accounts without it.
+    _check_current_password(user, body.current_password)
+    if session.scalars(select(User.id).where(User.email == new_email)).first():
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Email already registered")
+    code = issue_code(session, user.id, CodePurpose.change_email, new_email)
+    session.commit()
+    try:
+        await send_email_change_code(to=new_email, code=code)
+    except Exception as exc:
+        logger.warning("Email-change code send failed for user %s: %s", user.id, exc)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/change-email/confirm", response_model=ChangeEmailOut)
+@limiter.limit("20/hour")
+async def change_email_confirm(
+    request: Request,
+    response: Response,
+    body: CodeIn,
+    user: User = Depends(get_current_user),
+    session: Session = Depends(get_session),
+) -> ChangeEmailOut:
+    """Switch to the address the code was sent to. Returns (and sets as the
+    cookie) a new access token, since access tokens are keyed on email.
+    Pending trip invites to the old address move to the new one."""
+    enforce_key_limits("change_email-check", str(user.id), *_CHECK_LIMITS)
+    try:
+        row = check_code(session, user.id, CodePurpose.change_email, body.code)
+    except CodeError as exc:
+        session.commit()  # keep the used-up attempt
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, _BAD_CODE) from exc
+    old_email, new_email = user.email, row.email
+    taken = HTTPException(status.HTTP_400_BAD_REQUEST, "Email already registered")
+    if session.scalars(select(User.id).where(User.email == new_email)).first():
+        session.commit()
+        raise taken
+
+    user.email = new_email
+    user.email_verified = True
+    user.email_verified_at = _now()
+    _clear_verification(session, user)
+    session.execute(
+        update(TripMember)
+        .where(func.lower(TripMember.invited_email) == old_email.lower())
+        .values(invited_email=new_email),
+    )
+    try:
+        session.commit()
+    except IntegrityError as exc:  # registered between the check and here
+        session.rollback()
+        raise taken from exc
+    logger.info("Email changed: user_id=%s", user.id)
+    await _notify(user.id, old_email, f"The email on your whumpf account was changed to {new_email}.")
+
+    access = create_access_token(new_email)
+    set_auth_cookie(response, access)
+    return ChangeEmailOut(email=new_email, access_token=access)
 
 
 # ── account deletion ───────────────────────────────────────────────────────────
@@ -400,6 +623,7 @@ def _purge_user_data(session: Session, user: User) -> None:
     )))
     session.execute(delete(Route).where(Route.owner_id == user.id))
     session.execute(delete(RefreshToken).where(RefreshToken.user_id == user.id))
+    session.execute(delete(EmailCode).where(EmailCode.user_id == user.id))
     session.flush()
 
 

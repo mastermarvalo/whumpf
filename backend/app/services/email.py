@@ -2,7 +2,7 @@
 
 The full account-lifecycle flow (verification, password reset) is wired
 end-to-end on the backend. Email delivery is the only piece that needs an
-external provider; the `console` default just logs the URL the user would
+external provider; the `console` default just logs the code/URL the user would
 otherwise receive, so the flow remains usable for self-testing on a host
 without SMTP/transactional-email infrastructure.
 
@@ -14,6 +14,7 @@ HTTP API, and no SDK dependency.
 from __future__ import annotations
 
 import logging
+from html import escape
 from typing import Protocol
 
 import httpx
@@ -72,38 +73,68 @@ def _provider() -> MailProvider:
 
 # ── high-level helpers ─────────────────────────────────────────────────────────
 
-async def send_verification_email(*, to: str, token: str) -> None:
+def _code_parts(code: str, purpose: str) -> tuple[str, str]:
+    return (
+        f"Your code to {purpose}: {code}\n\nIt expires in 15 minutes.",
+        f"<p>Your code to {purpose}:</p>"
+        f'<p style="font-size:24px;font-weight:bold;letter-spacing:4px">{code}</p>'
+        f"<p>It expires in 15 minutes.</p>",
+    )
+
+
+async def send_verification_email(*, to: str, code: str, token: str | None = None) -> None:
+    """``token`` adds the legacy ?verify= link for the old website."""
     s = get_settings()
-    url = f"{s.app_base_url.rstrip('/')}/?verify={token}"
     subject = "Verify your whumpf email"
-    text = (
-        "Welcome to whumpf!\n\n"
-        f"Click here to verify your email: {url}\n\n"
-        f"This link expires in {s.email_verification_ttl_s // 3600}h. "
-        "If you didn't sign up, ignore this email."
-    )
-    html = (
-        f'<p>Welcome to whumpf!</p>'
-        f'<p><a href="{url}">Verify your email</a></p>'
-        f"<p>This link expires in {s.email_verification_ttl_s // 3600}h. "
-        f"If you didn't sign up, ignore this email.</p>"
-    )
+    code_text, code_html = _code_parts(code, "verify your email")
+    text = f"Welcome to whumpf!\n\n{code_text}\n\n"
+    html = f"<p>Welcome to whumpf!</p>{code_html}"
+    if token:
+        url = f"{s.app_base_url.rstrip('/')}/?verify={token}"
+        text += (f"On the website you can use this link instead: {url}\n"
+                 f"(expires in {s.email_verification_ttl_s // 3600}h)\n\n")
+        html += f'<p>On the website you can <a href="{url}">verify with this link</a> instead.</p>'
+    text += "If you didn't sign up, ignore this email."
+    html += "<p>If you didn't sign up, ignore this email.</p>"
     await _provider().send(to=to, subject=subject, html=html, text=text)
 
 
-async def send_password_reset_email(*, to: str, token: str) -> None:
+async def send_password_reset_email(*, to: str, code: str, token: str | None = None) -> None:
+    """``token`` adds the legacy ?reset= link for the old website."""
     s = get_settings()
-    url = f"{s.app_base_url.rstrip('/')}/?reset={token}"
     subject = "Reset your whumpf password"
+    text, html = _code_parts(code, "reset your whumpf password")
+    text += "\n\n"
+    if token:
+        url = f"{s.app_base_url.rstrip('/')}/?reset={token}"
+        text += (f"On the website you can use this link instead: {url}\n"
+                 f"(expires in {s.password_reset_ttl_s // 60} minutes)\n\n")
+        html += f'<p>On the website you can <a href="{url}">reset with this link</a> instead.</p>'
+    text += "If you didn't request a reset, you can safely ignore this email."
+    html += "<p>If you didn't request a reset, ignore this email.</p>"
+    await _provider().send(to=to, subject=subject, html=html, text=text)
+
+
+async def send_email_change_code(*, to: str, code: str) -> None:
+    subject = "Confirm your new whumpf email"
+    text, html = _code_parts(code, "confirm this address for your whumpf account")
+    text += "\n\nIf you didn't ask to change your email, ignore this email."
+    html += "<p>If you didn't ask to change your email, ignore this email.</p>"
+    await _provider().send(to=to, subject=subject, html=html, text=text)
+
+
+async def send_security_notice(*, to: str, what: str) -> None:
+    """Tell the account's (old) address that ``what`` happened."""
+    subject = "Your whumpf account was changed"
     text = (
-        f"Click here to reset your password: {url}\n\n"
-        f"This link expires in {s.password_reset_ttl_s // 60} minutes. "
-        "If you didn't request a reset, you can safely ignore this email."
+        f"{what}\n\n"
+        "If this was you, no action is needed. If not, reset your password "
+        "right away and contact support."
     )
     html = (
-        f'<p><a href="{url}">Reset your whumpf password</a></p>'
-        f"<p>This link expires in {s.password_reset_ttl_s // 60} minutes. "
-        f"If you didn't request a reset, ignore this email.</p>"
+        f"<p>{escape(what)}</p>"
+        "<p>If this was you, no action is needed. If not, reset your password "
+        "right away and contact support.</p>"
     )
     await _provider().send(to=to, subject=subject, html=html, text=text)
 

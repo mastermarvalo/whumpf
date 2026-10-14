@@ -24,8 +24,8 @@ Last updated 2026-10-13.
 
 ### Known gaps (later)
 
-- **Access tokens survive revocation.** Access JWTs are stateless and keyed on email, so after a password reset, logout or reuse detection an already-issued access token stays valid for up to 60 minutes. Fix: a per-user `token_version` claim checked in `get_current_user`.
-- **No cleanup of old rows.** Expired and revoked `refresh_tokens` rows are never deleted. Fine at current size; add a periodic delete of rows expired or revoked more than a few days ago.
+- **Access tokens survive revocation.** Access JWTs are stateless, so after a password change or reset, logout or reuse detection an already-issued access token stays valid for up to 60 minutes. `POST /auth/change-password` revokes the other devices' refresh tokens but not their access tokens. Fix: a per-user `token_version` (or `password_changed_at`) claim checked in `get_current_user`.
+- **JWT subject is the email, not the user id.** Changing email therefore invalidates every access token for the account, so `POST /auth/change-email/confirm` has to issue a new one. Switching `sub` to the user id would make access tokens independent of email and simplify change-email.- **No cleanup of old rows.** Expired and revoked `refresh_tokens` rows are never deleted. Fine at current size; add a periodic delete of rows expired or revoked more than a few days ago.
 
 ## Next up
 

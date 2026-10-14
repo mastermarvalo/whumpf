@@ -8,9 +8,11 @@ from app.models.trip_route import TripRoute  # noqa: F401
 from app.models.trip_member import TripMember, MemberStatus, MemberRole  # noqa: F401
 from app.models.waypoint import Waypoint, WaypointKind  # noqa: F401
 from app.models.refresh_token import RefreshToken  # noqa: F401
+from app.models.email_code import CodePurpose, EmailCode  # noqa: F401
 
 __all__ = [
     "Base", "User", "StravaConnection", "Route", "Visibility", "RouteShare",
     "Friendship", "FriendStatus", "Trip", "TripRoute", "TripMember",
     "MemberStatus", "MemberRole", "Waypoint", "WaypointKind", "RefreshToken",
+    "CodePurpose", "EmailCode",
 ]

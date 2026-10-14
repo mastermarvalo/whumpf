@@ -69,6 +69,15 @@ _SCHEMA_PATCHES: tuple[str, ...] = (
     "ALTER TABLE waypoints ADD COLUMN IF NOT EXISTS color VARCHAR(7)",
     # Refresh tokens: tells rotation (reuse-detectable) apart from logout.
     "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS rotated_at TIMESTAMP WITH TIME ZONE",
+    # Legacy email link tokens are now stored as SHA-256 hex (64 chars). Hash
+    # any still-plaintext ones (token_urlsafe(32) is 43 chars) so outstanding
+    # links keep working. Idempotent: hashed values are never 43 chars.
+    "UPDATE users SET email_verification_token = "
+    "encode(sha256(convert_to(email_verification_token, 'UTF8')), 'hex') "
+    "WHERE length(email_verification_token) = 43",
+    "UPDATE users SET password_reset_token = "
+    "encode(sha256(convert_to(password_reset_token, 'UTF8')), 'hex') "
+    "WHERE length(password_reset_token) = 43",
 )
 
 

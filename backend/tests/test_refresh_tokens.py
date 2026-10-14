@@ -12,6 +12,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
+from app.auth.codes import hash_link_token
 from app.auth.service import SESSION_COOKIE, _hash_refresh_token, hash_password
 from app.config import get_settings
 from app.db import get_session
@@ -188,7 +189,7 @@ def test_inactive_user_cannot_refresh(client, db_session, user):
 def test_password_reset_revokes_all(client, db_session, user):
     t1 = _login(client)["refresh_token"]
     t2 = _login(client)["refresh_token"]
-    user.password_reset_token = "reset-tok"
+    user.password_reset_token = hash_link_token("reset-tok")
     user.password_reset_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
     db_session.flush()
 

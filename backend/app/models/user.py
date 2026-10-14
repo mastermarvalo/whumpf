@@ -35,9 +35,9 @@ class User(Base):
         String(255), default="colorado", server_default="colorado", nullable=False,
     )
 
-    # Email verification — gates "verified" badges, but accounts can still log
-    # in unverified. Token + expiry live on the row so the verification flow
-    # stays single-table; one outstanding token per user is enough.
+    # Email verification — login requires it unless SKIP_EMAIL_VERIFICATION.
+    # The *_token columns are the legacy link flow (old website): SHA-256 of
+    # the link token, one outstanding per user. Codes live in email_codes.
     email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     email_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
@@ -49,8 +49,8 @@ class User(Base):
         DateTime(timezone=True), nullable=True,
     )
 
-    # Password reset — same pattern. Tokens are short-lived (1h) and consumed
-    # on first successful reset.
+    # Password reset — same pattern. Link tokens are short-lived (1h) and
+    # consumed on first successful reset.
     password_reset_token: Mapped[str | None] = mapped_column(
         String(64), nullable=True, index=True,
     )

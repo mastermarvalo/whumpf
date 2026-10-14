@@ -75,9 +75,12 @@ class Settings(BaseSettings):
     # Resend.com API key (https://resend.com), only required when
     # mail_provider == "resend".
     resend_api_key: str = ""
-    # Token TTLs (seconds).
+    # Link-token TTLs (seconds). Codes have a fixed 15-minute TTL.
     email_verification_ttl_s: int = 24 * 3600
     password_reset_ttl_s: int = 3600
+    # Also send (and accept) the old ?verify= / ?reset= email links, alongside
+    # 6-digit codes. On while the old website is still up.
+    legacy_email_links: bool = True
 
     # --- Rate limiting -------------------------------------------------------
     # Redis URL for cross-worker rate limit state. Defaults to in-process

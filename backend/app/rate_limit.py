@@ -10,14 +10,22 @@ Without it, each worker has its own in-process counter (fine for dev/single-work
 
 from __future__ import annotations
 
+import hashlib
 import ipaddress
+import logging
+import time
 
+from fastapi import HTTPException, status
+from limits import parse
+from limits.storage import storage_from_string
+from limits.strategies import FixedWindowRateLimiter
 from slowapi import Limiter
 from starlette.requests import Request
 
 from app.config import get_settings
 
 _settings = get_settings()
+logger = logging.getLogger("whumpf.rate_limit")
 
 # Cloudflare edge ranges, from https://www.cloudflare.com/ips/ (checked
 # 2026-10-13). They change rarely; update this list if Cloudflare adds one.
@@ -80,3 +88,35 @@ limiter = Limiter(
     default_limits=[],
     storage_uri=_settings.redis_url if _settings.redis_url else None,
 )
+
+
+# ── per-key limits (e.g. per email address) ───────────────────────────────────
+# slowapi keys on the request only; these key on a value from the body, so
+# routers call enforce_key_limits() themselves.
+
+_key_limiter = FixedWindowRateLimiter(storage_from_string(_settings.redis_url or "memory://"))
+_store_error_logged_at = 0.0
+
+
+def enforce_key_limits(scope: str, key: str, *limits: str) -> None:
+    """Count one hit for ``key`` (hashed, e.g. an email) against every limit
+    in ``limits``; 429 if any is over.
+
+    Every hit is counted whether or not an account exists, so a 429 reveals
+    nothing. If Redis is unreachable the request is let through with a warning
+    (at most once a minute); per-code attempt caps still apply.
+    """
+    global _store_error_logged_at
+    digest = hashlib.sha256(key.lower().strip().encode()).hexdigest()
+    for raw in limits:
+        try:
+            allowed = _key_limiter.hit(parse(raw), "keyed", scope, digest)
+        except Exception:
+            if time.monotonic() - _store_error_logged_at > 60:
+                _store_error_logged_at = time.monotonic()
+                logger.warning("keyed rate limit store unavailable; allowing requests",
+                               exc_info=True)
+            return
+        if not allowed:
+            logger.warning("rate limit hit: scope=%s limit=%s", scope, raw)
+            raise HTTPException(status.HTTP_429_TOO_MANY_REQUESTS, "Too many requests — try again later")

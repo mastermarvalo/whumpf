@@ -36,14 +36,18 @@ def tile_rate_limits(monkeypatch):
 
 @pytest.fixture(autouse=True)
 def endpoint_rate_limits(monkeypatch):
-    """Same for the slowapi per-endpoint limits (@limiter.limit on /auth/*)."""
+    """Same for the slowapi per-endpoint limits (@limiter.limit on /auth/*)
+    and the per-email/per-user limits (enforce_key_limits)."""
     from limits.storage import MemoryStorage
+    from limits.strategies import FixedWindowRateLimiter
 
+    import app.rate_limit as rate_limit
     from app.rate_limit import limiter
 
     storage = MemoryStorage()
     monkeypatch.setattr(limiter, "_storage", storage)
     monkeypatch.setattr(limiter, "_limiter", type(limiter._limiter)(storage))
+    monkeypatch.setattr(rate_limit, "_key_limiter", FixedWindowRateLimiter(MemoryStorage()))
 
 
 @pytest.fixture(scope="session")

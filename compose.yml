@@ -201,6 +201,7 @@ services:
       MAIL_PROVIDER: ${MAIL_PROVIDER:-console}
       MAIL_FROM: ${MAIL_FROM:-whumpf <no-reply@whumpf.local>}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
+      LEGACY_EMAIL_LINKS: ${LEGACY_EMAIL_LINKS:-true}
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       SKIP_EMAIL_VERIFICATION: ${SKIP_EMAIL_VERIFICATION:-false}
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD required}@localhost:6379

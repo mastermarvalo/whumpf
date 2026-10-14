@@ -147,12 +147,30 @@ def revoke_refresh_family(session: Session, raw: str) -> None:
     )
 
 
-def revoke_all_refresh_tokens(session: Session, user_id: int) -> None:
-    """Revoke every live refresh token of ``user_id``. Caller commits."""
-    session.execute(
+def revoke_all_refresh_tokens(
+    session: Session, user_id: int, keep_family: str | None = None,
+) -> None:
+    """Revoke every live refresh token of ``user_id``, except those in
+    ``keep_family`` if given. Caller commits."""
+    stmt = (
         update(RefreshToken)
         .where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
-        .values(revoked_at=datetime.now(timezone.utc)),
+        .values(revoked_at=datetime.now(timezone.utc))
+    )
+    if keep_family is not None:
+        stmt = stmt.where(RefreshToken.family_id != keep_family)
+    session.execute(stmt)
+
+
+def live_refresh_family(session: Session, user_id: int, raw: str) -> str | None:
+    """Family of ``raw`` if it is a live refresh token of ``user_id``."""
+    return session.scalar(
+        select(RefreshToken.family_id).where(
+            RefreshToken.token_hash == _hash_refresh_token(raw),
+            RefreshToken.user_id == user_id,
+            RefreshToken.revoked_at.is_(None),
+            RefreshToken.expires_at > datetime.now(timezone.utc),
+        ),
     )
 
 
