@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.admin import is_admin as _check_admin
@@ -23,6 +23,10 @@ from app.auth.service import (
 )
 from app.config import get_settings
 from app.db import get_session
+from app.models import (
+    Friendship, MemberRole, MemberStatus, Route, RouteShare, Trip, TripMember,
+    TripRoute, Waypoint,
+)
 from app.models.strava import StravaConnection
 from app.models.user import User
 from app.rate_limit import limiter
@@ -281,6 +285,72 @@ def password_reset_confirm(
 
 # ── account deletion ───────────────────────────────────────────────────────────
 
+def _delete_trip_rows(session: Session, trip: Trip) -> None:
+    for model in (Waypoint, TripMember, TripRoute):
+        for row in session.scalars(select(model).where(model.trip_id == trip.id)).all():
+            session.delete(row)
+    session.flush()
+    session.delete(trip)
+
+
+def _purge_user_data(session: Session, user: User) -> None:
+    """Remove/reassign everything referencing ``user`` (no FK cascades exist).
+
+    Owned trips go to the member who joined earliest (``responded_at``, falling
+    back to ``invited_at``, then id), or are deleted if there is no other
+    accepted member. Waypoints on surviving trips are reassigned to the trip's
+    owner; children are flushed before their parents.
+    """
+    # Trips: transfer or delete.
+    for trip in session.scalars(select(Trip).where(Trip.owner_id == user.id)).all():
+        heir = session.scalars(
+            select(TripMember)
+            .where(
+                TripMember.trip_id == trip.id,
+                TripMember.status == MemberStatus.accepted,
+                TripMember.user_id.is_not(None),
+                TripMember.user_id != user.id,
+            )
+            .order_by(
+                func.coalesce(TripMember.responded_at, TripMember.invited_at),
+                TripMember.id,
+            )
+        ).first()
+        if heir is None:
+            _delete_trip_rows(session, trip)
+        else:
+            trip.owner_id = heir.user_id
+            heir.role = MemberRole.owner
+
+    session.flush()
+
+    # Waypoints on surviving trips stay for the remaining party.
+    for wp, trip_owner_id in session.execute(
+        select(Waypoint, Trip.owner_id)
+        .join(Trip, Trip.id == Waypoint.trip_id)
+        .where(Waypoint.created_by_id == user.id)
+    ).all():
+        wp.created_by_id = trip_owner_id
+
+    # Rows the user belongs to.
+    session.execute(delete(TripMember).where(or_(
+        TripMember.user_id == user.id,
+        func.lower(TripMember.invited_email) == user.email.lower(),
+    )))
+    session.execute(delete(Friendship).where(or_(
+        Friendship.requester_id == user.id, Friendship.addressee_id == user.id,
+    )))
+
+    # Routes: detach from trips and drop shares, then the routes themselves.
+    route_ids = select(Route.id).where(Route.owner_id == user.id)
+    session.execute(delete(TripRoute).where(TripRoute.route_id.in_(route_ids)))
+    session.execute(delete(RouteShare).where(or_(
+        RouteShare.route_id.in_(route_ids), RouteShare.created_by_id == user.id,
+    )))
+    session.execute(delete(Route).where(Route.owner_id == user.id))
+    session.flush()
+
+
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
 async def delete_me(
     response: Response,
@@ -303,6 +373,7 @@ async def delete_me(
                            user.id, exc)
         session.delete(conn)
 
+    _purge_user_data(session, user)
     logger.info("Account deleted: user_id=%s", user.id)
     session.delete(user)
     session.commit()
