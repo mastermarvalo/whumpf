@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 import logging
 from datetime import datetime, timezone
+from urllib.parse import urlencode
 
 import httpx
 from sqlalchemy.orm import Session
@@ -54,8 +55,7 @@ def get_authorize_url(state: str) -> str:
         "scope": SCOPE,
         "state": state,
     }
-    query = "&".join(f"{k}={v}" for k, v in params.items())
-    return f"{STRAVA_AUTH_URL}?{query}"
+    return f"{STRAVA_AUTH_URL}?{urlencode(params)}"
 
 
 async def exchange_code(code: str) -> dict:

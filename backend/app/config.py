@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     # tokens at rest. Empty string disables encryption (legacy plaintext path).
     # Generate with: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
     strava_token_key: str = ""
+    # Also accept exp://... and http://localhost:8081/... as the Strava connect
+    # return_to (Expo dev builds). Off in prod.
+    strava_return_to_allow_dev: bool = False
 
     # --- CORS ---------------------------------------------------------------
     cors_allow_origins: str = "http://localhost:5173"

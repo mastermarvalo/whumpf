@@ -150,6 +150,26 @@ VM, `ss -tlnp | grep -E ':(5432|6379|9000|9001|3000)\b'` should show only
 Remember to update `.env` so `CORS_ALLOW_ORIGINS` and the `VITE_*` URLs match
 the reverse-proxied origins, then `make restart`.
 
+### Strava connect: where users land afterwards
+
+Strava always redirects to the API's `STRAVA_REDIRECT_URI`
+(`/auth/strava/callback`), so the Strava app's "Authorization Callback
+Domain" stays the API host. The API then sends the user on:
+
+- If the client passed `?return_to=` to `GET /auth/strava/authorize`, the
+  callback redirects there with `?strava=connected` or
+  `?strava=error&reason=denied|expired|bad_state|token_exchange_failed`.
+  Allowed targets: `whumpf://...` and `https://whumpf.co/...`. With
+  `STRAVA_RETURN_TO_ALLOW_DEV=true` (dev only, keep `false` in prod),
+  `exp://...` and `http://localhost:8081/...` are also allowed. Anything else
+  is a 400.
+- Without `return_to` (the old website), it redirects to `STRAVA_SUCCESS_URL`
+  with `?strava=connected|denied|error`, as before.
+
+`return_to` travels inside the OAuth `state`, a JWT signed with `JWT_SECRET`
+that is valid for 10 minutes. A forged, tampered or wrong-purpose state is a
+400 with no redirect. Rotating `JWT_SECRET` breaks any connects in progress.
+
 ## 5. Tear-down
 
 ```bash
