@@ -96,6 +96,7 @@ def test_refresh_rotates(client, db_session, user):
     assert _me(client, body["access_token"]).json()["email"] == user.email
     old_row, new_row = _row(db_session, old), _row(db_session, body["refresh_token"])
     assert old_row.revoked_at is not None
+    assert old_row.rotated_at is not None
     assert new_row.revoked_at is None
     assert new_row.family_id == old_row.family_id
 
@@ -107,7 +108,7 @@ def test_reuse_outside_grace_revokes_everything(client, db_session, user):
     t1 = _login(client)["refresh_token"]
     other_device = _login(client)["refresh_token"]
     t2 = _refresh(client, t1).json()["refresh_token"]
-    _row(db_session, t1).revoked_at = datetime.now(timezone.utc) - timedelta(seconds=61)
+    _row(db_session, t1).rotated_at = datetime.now(timezone.utc) - timedelta(seconds=61)
     db_session.flush()
 
     assert _refresh(client, t1).status_code == 401
@@ -148,12 +149,14 @@ def test_logout_revokes_refresh_token(client, db_session, user):
     other_device = _login(client)["refresh_token"]
     r = client.post("/auth/logout", json={"refresh_token": t1})
     assert r.status_code == 204
-    assert _row(db_session, t1).revoked_at is not None
-    # other sessions are untouched
-    other_device = _refresh(client, other_device).json()["refresh_token"]
-    # presenting the logged-out token is reuse: everything goes
+    row = _row(db_session, t1)
+    assert row.revoked_at is not None
+    assert row.rotated_at is None
+    # a logged-out token is just rejected, not treated as reuse...
     assert _refresh(client, t1).status_code == 401
-    assert _refresh(client, other_device).status_code == 401
+    assert _refresh(client, t1).status_code == 401
+    # ...so other sessions survive
+    assert _refresh(client, other_device).status_code == 200
 
 
 @pytest.mark.parametrize("kwargs", [{}, {"json": {}}, {"json": {"refresh_token": "nope"}}])

@@ -12,13 +12,13 @@ from collections.abc import Callable, Iterator
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
 from app.config import get_settings
 from app.db import get_session
-from app.main import app
+from app.main import _SCHEMA_PATCHES, app
 from app.models import Base, User
 
 
@@ -49,7 +49,12 @@ def endpoint_rate_limits(monkeypatch):
 @pytest.fixture(scope="session")
 def engine():
     eng = create_engine(get_settings().database_url, future=True)
+    # Same schema setup as app startup (main.lifespan): create_all doesn't add
+    # columns to existing tables, the patches do.
     Base.metadata.create_all(eng)
+    with eng.begin() as conn:
+        for stmt in _SCHEMA_PATCHES:
+            conn.execute(text(stmt))
     return eng
 
 

@@ -87,10 +87,12 @@ def _can_sign_in(user: User | None) -> bool:
 def rotate_refresh_token(session: Session, raw: str) -> tuple[User, str]:
     """Swap a refresh token for a new one in the same family; revoke the old.
 
-    Presenting a revoked token is reuse (it may have been stolen): every
-    refresh token the user holds is revoked. Exception: a token rotated within
-    REFRESH_REUSE_GRACE_S whose family still has a live token gets a fresh
-    token in that family instead, and the live one stays valid.
+    Presenting a token that a refresh already rotated is reuse (it may have
+    been stolen): every refresh token the user holds is revoked. Exception: a
+    token rotated within REFRESH_REUSE_GRACE_S whose family still has a live
+    token gets a fresh token in that family instead, and the live one stays
+    valid. A token revoked any other way (logout, password reset, reuse
+    detection) is simply rejected.
 
     Raises RefreshTokenError. Caller commits — also on error, so a reuse
     revocation sticks.
@@ -106,13 +108,16 @@ def rotate_refresh_token(session: Session, raw: str) -> tuple[User, str]:
     if row is None or row.expires_at <= now:
         raise RefreshTokenError("Invalid or expired refresh token")
 
-    if row.revoked_at is not None:
+    if row.revoked_at is not None and row.rotated_at is None:
+        raise RefreshTokenError("Invalid or expired refresh token")
+
+    if row.rotated_at is not None:
         family_live = session.scalar(select(exists().where(
             RefreshToken.family_id == row.family_id,
             RefreshToken.revoked_at.is_(None),
             RefreshToken.expires_at > now,
         )))
-        if not (family_live and row.revoked_at > now - timedelta(seconds=REFRESH_REUSE_GRACE_S)):
+        if not (family_live and row.rotated_at > now - timedelta(seconds=REFRESH_REUSE_GRACE_S)):
             revoke_all_refresh_tokens(session, row.user_id)
             logger.warning("Refresh token reuse: user_id=%s; all refresh tokens revoked",
                            row.user_id)
@@ -122,7 +127,7 @@ def rotate_refresh_token(session: Session, raw: str) -> tuple[User, str]:
     if not _can_sign_in(user):
         raise RefreshTokenError("Invalid or expired refresh token")
     if row.revoked_at is None:
-        row.revoked_at = now
+        row.revoked_at = row.rotated_at = now
     return user, issue_refresh_token(session, user.id, row.family_id)
 
 

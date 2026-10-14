@@ -67,6 +67,8 @@ _SCHEMA_PATCHES: tuple[str, ...] = (
     "ALTER TABLE trip_routes ADD COLUMN IF NOT EXISTS day INTEGER NOT NULL DEFAULT 1",
     # Optional per-waypoint marker color (#rrggbb).
     "ALTER TABLE waypoints ADD COLUMN IF NOT EXISTS color VARCHAR(7)",
+    # Refresh tokens: tells rotation (reuse-detectable) apart from logout.
+    "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS rotated_at TIMESTAMP WITH TIME ZONE",
 )
 
 
