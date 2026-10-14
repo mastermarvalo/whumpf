@@ -83,6 +83,9 @@ class MemberOut(BaseModel):
     role: MemberRole
 
 
+HexColor = Annotated[str, Field(pattern=r"^#[0-9a-fA-F]{6}$")]
+
+
 class WaypointIn(BaseModel):
     lng: float
     lat: float
@@ -90,6 +93,7 @@ class WaypointIn(BaseModel):
     kind: WaypointKind = WaypointKind.other
     label: str = ""
     notes: str = ""
+    color: HexColor | None = None
 
 
 class WaypointUpdate(BaseModel):
@@ -99,6 +103,7 @@ class WaypointUpdate(BaseModel):
     kind: WaypointKind | None = None
     label: str | None = None
     notes: str | None = None
+    color: HexColor | None = None  # explicit null clears it
 
 
 class WaypointOut(BaseModel):
@@ -108,6 +113,7 @@ class WaypointOut(BaseModel):
     kind: WaypointKind
     label: str
     notes: str
+    color: str | None
     created_by_id: int
 
 
@@ -150,7 +156,8 @@ def _get_trip_or_404(session: Session, trip_id: int) -> Trip:
 def _waypoint_out(wp: Waypoint) -> WaypointOut:
     return WaypointOut(
         id=wp.id, trip_id=wp.trip_id, geometry=mapping(to_shape(wp.geom)),
-        kind=wp.kind, label=wp.label, notes=wp.notes, created_by_id=wp.created_by_id,
+        kind=wp.kind, label=wp.label, notes=wp.notes, color=wp.color,
+        created_by_id=wp.created_by_id,
     )
 
 
@@ -346,10 +353,13 @@ def update_trip(
 def delete_trip(trip_id: int, session: SessionDep, user: UserDep) -> None:
     trip = _get_trip_or_404(session, trip_id)
     assert_trip_owner(user, trip)
-    # No FK cascade configured — remove children explicitly.
+    # No FK cascade configured — remove children explicitly. Without ORM
+    # relationships the unit of work doesn't order these deletes, so flush the
+    # children before the parent row goes.
     for model in (Waypoint, TripMember, TripRoute):
         for row in session.scalars(select(model).where(model.trip_id == trip.id)).all():
             session.delete(row)
+    session.flush()
     session.delete(trip)
     session.commit()
 
@@ -432,6 +442,7 @@ def add_waypoint(
         trip_id=trip.id,
         geom=from_shape(Point(payload.lng, payload.lat, payload.elevation_m), srid=4326),
         kind=payload.kind, label=payload.label, notes=payload.notes,
+        color=payload.color.lower() if payload.color else None,
         created_by_id=user.id,
     )
     session.add(wp)
@@ -460,6 +471,8 @@ def update_waypoint(
         wp.label = payload.label
     if payload.notes is not None:
         wp.notes = payload.notes
+    if "color" in payload.model_fields_set:
+        wp.color = payload.color.lower() if payload.color else None
     if payload.lng is not None and payload.lat is not None:
         z = payload.elevation_m if payload.elevation_m is not None else 0.0
         wp.geom = from_shape(Point(payload.lng, payload.lat, z), srid=4326)

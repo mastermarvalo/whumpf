@@ -42,6 +42,7 @@ class Waypoint(Base):
     )
     label: Mapped[str] = mapped_column(String(255), default="", server_default="", nullable=False)
     notes: Mapped[str] = mapped_column(Text, default="", server_default="", nullable=False)
+    color: Mapped[str | None] = mapped_column(String(7), nullable=True, default=None)
     created_by_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("users.id"), nullable=False,
     )

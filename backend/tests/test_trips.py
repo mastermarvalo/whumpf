@@ -5,7 +5,13 @@ respond, and waypoint CRUD. Terrain sampling + CAIC zone lookup are mocked.
 from __future__ import annotations
 
 import pytest
+from sqlalchemy import select
 
+from app.models.route import Route
+from app.models.trip import Trip
+from app.models.trip_member import TripMember
+from app.models.trip_route import TripRoute
+from app.models.waypoint import Waypoint
 from app.services.cog_sampler import TerrainSample
 
 _LINE = {
@@ -188,3 +194,55 @@ def test_waypoint_crud_by_members(make_client):
     assert upd.status_code == 200 and upd.json()["label"] == "Parking lot"
     assert owner.delete(f"/trips/{tid}/waypoints/{wid}").status_code == 204
     assert owner.get(f"/trips/{tid}").json()["waypoints"] == []
+
+
+def test_waypoint_color(make_client):
+    owner = make_client("owner")
+    tid = _create_trip(owner, [_make_route(owner)]).json()["id"]
+    url = f"/trips/{tid}/waypoints"
+
+    # Defaults to null.
+    plain = owner.post(url, json={"lng": -106.4, "lat": 39.1})
+    assert plain.status_code == 201 and plain.json()["color"] is None
+
+    # Accepted on create (normalised to lowercase) and shown in trip detail.
+    wp = owner.post(url, json={"lng": -106.4, "lat": 39.1, "color": "#FF8800"})
+    assert wp.status_code == 201 and wp.json()["color"] == "#ff8800"
+    wid = wp.json()["id"]
+    detail = owner.get(f"/trips/{tid}").json()["waypoints"]
+    assert {w["id"]: w["color"] for w in detail}[wid] == "#ff8800"
+
+    # Invalid values rejected on create and PATCH.
+    for bad in ("red", "#fff", "ff8800", "#gg0000"):
+        assert owner.post(url, json={"lng": 0, "lat": 0, "color": bad}).status_code == 422
+        assert owner.patch(f"{url}/{wid}", json={"color": bad}).status_code == 422
+
+    # PATCH sets, is untouched when omitted, and clears on explicit null.
+    assert owner.patch(f"{url}/{wid}", json={"color": "#00aa11"}).json()["color"] == "#00aa11"
+    assert owner.patch(f"{url}/{wid}", json={"label": "x"}).json()["color"] == "#00aa11"
+    assert owner.patch(f"{url}/{wid}", json={"color": None}).json()["color"] is None
+
+
+def test_delete_trip_removes_waypoints_members_and_routes(make_client, db_session, monkeypatch):
+    async def _no_email(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr("app.routers.trips.send_trip_invite", _no_email)
+    owner = make_client("owner")
+    rid = _make_route(owner)
+    tid = _create_trip(owner, [rid]).json()["id"]
+    for kind in ("parking", "summit"):
+        assert owner.post(
+            f"/trips/{tid}/waypoints", json={"lng": -106.4, "lat": 39.1, "kind": kind}
+        ).status_code == 201
+    assert owner.post(f"/trips/{tid}/members", json={"email": "other@example.com"}).status_code in (200, 201)
+    assert owner.post(f"/trips/{tid}/members", json={"email": "nobody@example.com"}).status_code in (200, 201)
+
+    assert owner.delete(f"/trips/{tid}").status_code == 204
+
+    assert owner.get(f"/trips/{tid}").status_code == 404
+    assert db_session.get(Trip, tid) is None
+    for model in (Waypoint, TripMember, TripRoute):
+        assert db_session.scalars(select(model).where(model.trip_id == tid)).all() == []
+    # The route itself belongs to the owner, not the trip, so it survives.
+    assert db_session.get(Route, rid) is not None

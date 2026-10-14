@@ -65,6 +65,8 @@ _SCHEMA_PATCHES: tuple[str, ...] = (
     # Multi-day trips: per-trip day count and per-route day assignment.
     "ALTER TABLE trips ADD COLUMN IF NOT EXISTS num_days INTEGER NOT NULL DEFAULT 1",
     "ALTER TABLE trip_routes ADD COLUMN IF NOT EXISTS day INTEGER NOT NULL DEFAULT 1",
+    # Optional per-waypoint marker color (#rrggbb).
+    "ALTER TABLE waypoints ADD COLUMN IF NOT EXISTS color VARCHAR(7)",
 )
 
 
