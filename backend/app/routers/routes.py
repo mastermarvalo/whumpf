@@ -28,6 +28,7 @@ from app.db import get_session
 from app.models.route import Route, Visibility
 from app.models.route_share import RouteShare
 from app.models.strava import StravaConnection
+from app.models.trip_route import TripRoute
 from app.models.user import User
 from app.regions import validate_region
 from app.routers.terrain import _MAX_PROFILE_DISTANCE_M
@@ -355,6 +356,12 @@ def update_route(
 def delete_route(route_id: int, session: SessionDep, user: UserDep) -> None:
     route = _get_or_404(session, route_id)
     assert_can_edit(user, route)
+    # No FK cascade configured — detach the route from trip days and drop its
+    # share links first, flushing so they go before the parent row.
+    for model in (TripRoute, RouteShare):
+        for row in session.scalars(select(model).where(model.route_id == route.id)).all():
+            session.delete(row)
+    session.flush()
     session.delete(route)
     session.commit()
 

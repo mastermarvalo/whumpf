@@ -7,7 +7,12 @@ from __future__ import annotations
 
 import pytest
 
+from sqlalchemy import select
+
+from app.models.route_share import RouteShare
 from app.models.strava import StravaConnection
+from app.models.trip import Trip
+from app.models.trip_route import TripRoute
 from app.services.cog_sampler import TerrainSample
 
 # A short A→B line in Colorado.
@@ -116,6 +121,35 @@ def test_owner_can_patch_and_delete(make_client):
 
     assert client.delete(f"/routes/{rid}").status_code == 204
     assert client.get(f"/routes/{rid}").status_code == 404
+
+
+def test_delete_route_used_in_trip_with_share_link(make_client, db_session):
+    client = make_client("owner")
+    rid = _create(client).json()["id"]
+    keep = _create(client, name="Keep").json()["id"]
+    # One revoked and one active link — both must be cleaned up.
+    old = client.post(f"/routes/{rid}/share").json()["token"]
+    client.delete(f"/routes/{rid}/share/{old}")
+    client.post(f"/routes/{rid}/share")
+    trip = client.post(
+        "/trips",
+        json={
+            "name": "T", "date": "2026-06-01", "region": "colorado",
+            "days": [{"route_ids": [rid, keep]}],
+        },
+    )
+    assert trip.status_code == 201, trip.text
+    tid = trip.json()["id"]
+
+    assert client.delete(f"/routes/{rid}").status_code == 204
+
+    assert client.get(f"/routes/{rid}").status_code == 404
+    assert db_session.scalars(select(RouteShare).where(RouteShare.route_id == rid)).all() == []
+    assert db_session.scalars(select(TripRoute).where(TripRoute.route_id == rid)).all() == []
+    # The trip and its other route survive.
+    assert db_session.get(Trip, tid) is not None
+    remaining = db_session.scalars(select(TripRoute).where(TripRoute.trip_id == tid)).all()
+    assert [tr.route_id for tr in remaining] == [keep]
 
 
 def test_unknown_region_rejected(make_client):
