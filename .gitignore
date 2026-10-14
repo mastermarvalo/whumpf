@@ -59,3 +59,4 @@ frontend/dist/
 frontend/src/**/*.js
 frontend/src/**/*.js.map
 *.tsbuildinfo
+*.png
