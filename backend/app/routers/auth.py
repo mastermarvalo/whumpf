@@ -149,6 +149,10 @@ class CodeIn(BaseModel):
     code: str
 
 
+class DeleteMeIn(BaseModel):
+    password: str
+
+
 class ChangeEmailOut(BaseModel):
     # The access token is keyed on email, so the old one stops working.
     email: str
@@ -628,15 +632,21 @@ def _purge_user_data(session: Session, user: User) -> None:
 
 
 @router.delete("/me", status_code=status.HTTP_204_NO_CONTENT)
+@limiter.limit("10/hour")
 async def delete_me(
+    request: Request,
     response: Response,
+    body: DeleteMeIn,
     user: User = Depends(get_current_user),
     session: Session = Depends(get_session),
 ) -> Response:
-    """Self-serve account deletion. Best-effort server-side Strava revoke
-    happens first; if it fails, the local user row is still deleted so the
-    user isn't trapped by a dead upstream.
+    """Self-serve account deletion, confirmed with the password. Best-effort
+    server-side Strava revoke happens first; if it fails, the local user row
+    is still deleted so the user isn't trapped by a dead upstream.
     """
+    enforce_key_limits("delete-me", str(user.id), "10/hour")
+    if not verify_password(body.password, user.hashed_password):
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Password is incorrect")
     conn = session.scalars(
         select(StravaConnection).where(StravaConnection.user_id == user.id),
     ).first()

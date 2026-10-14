@@ -11,6 +11,7 @@ from geoalchemy2.shape import from_shape
 from shapely.geometry import LineString, Point
 from sqlalchemy import or_, select
 
+from app.auth.service import hash_password
 from app.models import (
     Friendship, FriendStatus, MemberRole, MemberStatus, Route, RouteShare, Trip,
     TripMember, TripRoute, User, Waypoint,
@@ -94,7 +95,9 @@ def test_delete_me_cleans_up_everything(db_session, users, make_client):
     ids = {k: v.id for k, v in dict(t1=t1, t2=t2, t3=t3, t4=t4, ra=route_a, rb=route_b,
                                     ro=other_route, other=other, third=third).items()}
 
-    r = make_client("owner").delete("/auth/me")
+    owner.hashed_password = hash_password("owner password")
+    db_session.flush()
+    r = make_client("owner").request("DELETE", "/auth/me", json={"password": "owner password"})
     assert r.status_code == 204
 
     s = db_session

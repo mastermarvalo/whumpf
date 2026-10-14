@@ -93,16 +93,18 @@ function MainApp() {
     showToast("Verification email sent — check your inbox.", "info");
   }
 
-  async function handleDeleteAccount() {
-    const ok = window.confirm(
-      "Delete your account permanently? This cannot be undone.\n\n" +
-      "Your Strava connection will also be revoked.",
-    );
-    if (!ok) return;
-    const r = await apiFetch(`${API_URL}/auth/me`, { method: "DELETE" });
+  // The confirm step (warning + password field) is in LayerPanel.
+  async function handleDeleteAccount(password: string) {
+    const r = await apiFetch(`${API_URL}/auth/me`, {
+      method: "DELETE",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password }),
+    });
     if (r.ok) {
       setUser(false);
       showToast("Account deleted.", "info");
+    } else if (r.status === 400) {
+      showToast("Password is incorrect.", "error");
     } else {
       showToast("Couldn't delete account — try again later.", "error");
     }

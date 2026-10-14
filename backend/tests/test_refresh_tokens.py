@@ -204,7 +204,8 @@ def test_delete_me_removes_refresh_tokens(client, db_session, user):
     body = _login(client)
     _login(client)
     user_id = user.id
-    r = client.delete("/auth/me", headers={"Authorization": f"Bearer {body['access_token']}"})
+    r = client.request("DELETE", "/auth/me", json={"password": PASSWORD},
+                       headers={"Authorization": f"Bearer {body['access_token']}"})
     assert r.status_code == 204
     assert db_session.scalars(
         select(RefreshToken).where(RefreshToken.user_id == user_id),

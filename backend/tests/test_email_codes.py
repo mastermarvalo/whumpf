@@ -497,5 +497,37 @@ def test_delete_me_removes_email_codes(client, db_session, outbox, user):
     access = _login(client)["access_token"]
     _request_change(client, access)
     user_id = user.id
-    assert client.delete("/auth/me", headers=_auth(access)).status_code == 204
+    r = client.request("DELETE", "/auth/me", headers=_auth(access), json={"password": PASSWORD})
+    assert r.status_code == 204
     assert db_session.scalars(select(EmailCode).where(EmailCode.user_id == user_id)).all() == []
+
+
+def test_delete_me_wrong_password(client, db_session, user):
+    access = _login(client)["access_token"]
+    r = client.request("DELETE", "/auth/me", headers=_auth(access), json={"password": "wrong one"})
+    assert r.status_code == 400 and r.json()["detail"] == "Password is incorrect"
+    assert db_session.get(User, user.id) is not None
+    assert client.get("/auth/me", headers=_auth(access)).status_code == 200
+
+
+@pytest.mark.parametrize("kwargs", [{}, {"json": {}}])
+def test_delete_me_requires_password_body(client, db_session, user, kwargs):
+    access = _login(client)["access_token"]
+    r = client.request("DELETE", "/auth/me", headers=_auth(access), **kwargs)
+    assert r.status_code == 422
+    assert db_session.get(User, user.id) is not None
+
+
+def test_delete_me_rate_limited(client, user):
+    access = _login(client)["access_token"]
+    codes = [
+        client.request("DELETE", "/auth/me", headers=_auth(access),
+                       json={"password": "wrong one"}).status_code
+        for _ in range(11)
+    ]
+    assert codes == [400] * 10 + [429]
+
+
+def test_delete_me_requires_auth(client):
+    r = client.request("DELETE", "/auth/me", json={"password": PASSWORD})
+    assert r.status_code == 401

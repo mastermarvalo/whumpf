@@ -68,12 +68,14 @@ export function LayerPanel({
   onApplyWindPreset?: () => void;
   emailVerified?: boolean;
   onResendVerification?: () => void;
-  onDeleteAccount?: () => void;
+  onDeleteAccount?: (password: string) => void;
 }) {
   const collapsed = mobile ? false : (collapsedProp ?? false);
   const setCollapsed = (c: boolean) => onCollapsedChange?.(c);
 
   const [dragId, setDragId] = useState<string | null>(null);
+  // null = delete-account confirm form hidden.
+  const [deletePassword, setDeletePassword] = useState<string | null>(null);
   const [dragOverId, setDragOverId] = useState<string | null>(null);
   // Default every group (and the Strava section) to collapsed so a first-time
   // user sees a compact panel they can drill into, not a wall of legends.
@@ -742,9 +744,35 @@ export function LayerPanel({
           Sign out
         </button>
 
-        {onDeleteAccount && (
+        {onDeleteAccount && deletePassword !== null && (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              if (deletePassword) onDeleteAccount(deletePassword);
+            }}
+            style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4,
+                     fontFamily: "ui-sans-serif, system-ui, sans-serif", fontSize: 10, color: theme.muted }}
+          >
+            Delete your account permanently? This cannot be undone. Your Strava
+            connection will also be revoked. Enter your password to confirm.
+            <input
+              type="password"
+              autoComplete="current-password"
+              autoFocus
+              value={deletePassword}
+              onChange={(e) => setDeletePassword(e.target.value)}
+              placeholder="Password"
+            />
+            <div style={{ display: "flex", gap: 4 }}>
+              <button type="submit" disabled={!deletePassword}>Delete permanently</button>
+              <button type="button" onClick={() => setDeletePassword(null)}>Cancel</button>
+            </div>
+          </form>
+        )}
+
+        {onDeleteAccount && deletePassword === null && (
           <button
-            onClick={onDeleteAccount}
+            onClick={() => setDeletePassword("")}
             style={{
               marginTop: 6,
               width: "100%",

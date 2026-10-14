@@ -172,7 +172,7 @@ export function Map({
   stravaStatus: StravaStatus;
   onStravaStatusChange: () => void;
   onResendVerification: () => void;
-  onDeleteAccount: () => void;
+  onDeleteAccount: (password: string) => void;
 }) {
   // Region-derived layer registry. Stable across renders for a fixed region;
   // recomputed when the user picks a different region.
