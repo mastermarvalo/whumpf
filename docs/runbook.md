@@ -80,8 +80,10 @@ Edit `.env` and set:
 - `MINIO_ROOT_USER` — at least 3 characters
 - `MINIO_ROOT_PASSWORD` — at least 8 characters
 - `JWT_SECRET` — generate with `openssl rand -hex 32`
+- `REDIS_PASSWORD` — generate with `openssl rand -hex 32` (hex only; it is
+  embedded in the api's `REDIS_URL`)
 
-All three are required; the compose file will refuse to start without them.
+All of these are required; the compose file will refuse to start without them.
 
 ## 3. First boot
 
@@ -121,7 +123,29 @@ From the NAS's NPM instance, point your domains at the VM's IP:
 | `api.whumpf.<your-domain>`| `http://<vm-ip>:8000`   | Backend API       |
 | `tiles.whumpf.<your-domain>` | `http://<vm-ip>:3000` | Martin (MVT)      |
 | `rasters.whumpf.<your-domain>` | `http://<vm-ip>:8001` | TiTiler        |
-| `minio.whumpf.<your-domain>` | `http://<vm-ip>:9001` | MinIO console    |
+
+### Loopback-only services
+
+Because every container uses host networking, ports are bound by each service
+itself. PostGIS (5432), Redis (6379, password required), MinIO (9000 S3 and
+9001 console) and Martin (3000) listen on `127.0.0.1` only, so they are
+unreachable from the LAN and from Nginx Proxy Manager. The api, frontend and
+TiTiler still listen on all interfaces (restrict them with `ufw`); TiTiler
+stays that way until the old website, which calls it directly, is gone.
+
+This means NPM can no longer proxy `tiles.` (Martin) or `minio.` (console)
+hosts. To reach the MinIO console, Postgres or Redis from your workstation,
+use an SSH tunnel:
+
+```bash
+ssh -L 9001:127.0.0.1:9001 -L 5432:127.0.0.1:5432 <user>@<vm-ip>
+# console at http://localhost:9001; psql -h localhost works
+```
+
+Verify from another machine on the LAN that these ports are closed:
+`nc -zv <vm-ip> 5432 6379 9000 9001 3000` should fail for all of them. On the
+VM, `ss -tlnp | grep -E ':(5432|6379|9000|9001|3000)\b'` should show only
+`127.0.0.1`.
 
 Remember to update `.env` so `CORS_ALLOW_ORIGINS` and the `VITE_*` URLs match
 the reverse-proxied origins, then `make restart`.
@@ -158,6 +182,17 @@ docker compose exec titiler env | grep AWS_
 
 `AWS_S3_ENDPOINT=minio:9000` — not `http://minio:9000`; the scheme is set
 separately via `AWS_HTTPS=NO`.
+
+### Redis `NOAUTH` / `WRONGPASS` errors
+
+`REDIS_PASSWORD` in `.env` must be set, and the redis container must be
+recreated after changing it (`make up`, not `make restart`) so the new
+`--requirepass` takes effect. The api reads it through `REDIS_URL`, which
+compose builds from the same variable. Check with:
+
+```bash
+docker compose exec redis redis-cli ping    # PONG (uses REDISCLI_AUTH)
+```
 
 ### `martin` can't see new tables
 

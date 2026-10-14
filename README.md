@@ -14,7 +14,7 @@ see [`docs/external-services.md`](./docs/external-services.md).
 | Service     | Image                                     | Host port                | Purpose                              |
 |-------------|-------------------------------------------|--------------------------|--------------------------------------|
 | `postgis`   | `postgis/postgis:17-3.5-alpine`           | `127.0.0.1:5432`         | Spatial database                     |
-| `minio`     | `quay.io/minio/minio:latest`              | `9000` (S3), `9001` (UI) | Object storage for DEM COGs, uploads |
+| `minio`     | `quay.io/minio/minio:latest`              | `127.0.0.1:9000` (S3), `127.0.0.1:9001` (UI) | Object storage for DEM COGs, uploads |
 | `titiler`   | `ghcr.io/developmentseed/titiler:latest`  | `127.0.0.1:8001`         | Dynamic raster tile server           |
 | `martin`    | `ghcr.io/maplibre/martin:v0.18.0`         | `127.0.0.1:3000`         | PostGIS → vector tiles (MVT)         |
 | `api`       | local build (`whumpf-api:dev`)            | `127.0.0.1:8000`         | FastAPI backend                      |

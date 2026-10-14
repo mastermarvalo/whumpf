@@ -7,9 +7,10 @@
 #   + No CNI / Netavark dependency — works on any Podman on any distro
 #   + Simpler mental model: the VM's ports == the containers' ports
 #   - Can't run two containers that both want the same port
-#   - All ports are reachable from your LAN, not just loopback. Make sure
-#     the VM's firewall (or the NAS's) blocks anything you don't want
-#     exposed.
+#   - Anything not explicitly bound to 127.0.0.1 is reachable from your LAN.
+#     PostGIS, Redis, MinIO and Martin are bound to loopback below; the api,
+#     frontend and TiTiler still listen on all interfaces, so keep the VM's
+#     firewall (ufw) restricting them to the reverse proxy.
 
 name: whumpf
 
@@ -19,13 +20,14 @@ name: whumpf
 
 services:
   # ---------------------------------------------------------------------------
-  # PostGIS — listening on :5432 of the VM
+  # PostGIS — 127.0.0.1:5432 (loopback only)
   # ---------------------------------------------------------------------------
   postgis:
     image: postgis/postgis:17-3.5-alpine
     container_name: whumpf-postgis
     network_mode: host
     restart: unless-stopped
+    command: ["postgres", "-c", "listen_addresses=127.0.0.1"]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-whumpf}
       POSTGRES_USER: ${POSTGRES_USER:-whumpf}
@@ -40,14 +42,23 @@ services:
       retries: 10
 
   # ---------------------------------------------------------------------------
-  # Redis — :6379 (rate-limit store shared across all uvicorn workers)
+  # Redis — 127.0.0.1:6379, password required (rate-limit store shared across
+  # all uvicorn workers)
   # ---------------------------------------------------------------------------
   redis:
     image: redis:7-alpine
     container_name: whumpf-redis
     network_mode: host
     restart: unless-stopped
-    command: redis-server --maxmemory 64mb --maxmemory-policy allkeys-lru
+    # sh -c so the password comes from the environment and stays out of the
+    # process list.
+    command:
+      - sh
+      - -c
+      - exec redis-server --bind 127.0.0.1 --requirepass "$$REDIS_PASSWORD" --maxmemory 64mb --maxmemory-policy allkeys-lru
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?REDIS_PASSWORD required}
+      REDISCLI_AUTH: ${REDIS_PASSWORD}
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -55,14 +66,14 @@ services:
       retries: 10
 
   # ---------------------------------------------------------------------------
-  # MinIO — :9000 (S3 API), :9001 (console)
+  # MinIO — 127.0.0.1:9000 (S3 API), 127.0.0.1:9001 (console)
   # ---------------------------------------------------------------------------
   minio:
     image: quay.io/minio/minio:latest
     container_name: whumpf-minio-svc
     network_mode: host
     restart: unless-stopped
-    command: server /data --console-address ":9001"
+    command: server /data --address 127.0.0.1:9000 --console-address 127.0.0.1:9001
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER required}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD required}
@@ -138,14 +149,14 @@ services:
         condition: service_healthy
 
   # ---------------------------------------------------------------------------
-  # Martin — :3000
+  # Martin — 127.0.0.1:3000
   # ---------------------------------------------------------------------------
   martin:
     image: ghcr.io/maplibre/martin:v0.18.0
     container_name: whumpf-martin
     network_mode: host
     restart: unless-stopped
-    command: ["/data/martin-tiles"]
+    command: ["--listen-addresses", "127.0.0.1:3000", "/data/martin-tiles"]
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-whumpf}:${POSTGRES_PASSWORD}@localhost:5432/${POSTGRES_DB:-whumpf}
     volumes:
@@ -192,7 +203,7 @@ services:
       RESEND_API_KEY: ${RESEND_API_KEY:-}
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       SKIP_EMAIL_VERIFICATION: ${SKIP_EMAIL_VERIFICATION:-false}
-      REDIS_URL: ${REDIS_URL:-redis://localhost:6379}
+      REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD required}@localhost:6379
       TILES_ALLOW_TOKENLESS: ${TILES_ALLOW_TOKENLESS:-true}
     volumes:
       - ./backend/app:/app/app
