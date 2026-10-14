@@ -51,3 +51,33 @@ def test_slope_tile_is_512_and_unbuffered(monkeypatch):
     # And the served PNG is genuinely 512×512 (not tilesize + 2*buffer).
     width, height = struct.unpack(">II", resp.content[16:24])
     assert (width, height) == (512, 512)
+
+
+def test_aspect_tile_uses_hsv_and_caches(monkeypatch):
+    captured: dict = {}
+
+    async def fake_get(url, params=None, **kwargs):
+        captured["params"] = params or {}
+        return httpx.Response(
+            200, content=_png_bytes(512, 512),
+            headers={"content-type": "image/png"},
+            request=httpx.Request("GET", url, params=params),
+        )
+
+    monkeypatch.setattr(tiles._HTTP, "get", fake_get)
+
+    client = TestClient(app)
+    resp = client.get("/tiles/aspect/10/211/395?region=colorado")
+    assert resp.status_code == 200
+    assert resp.headers["cache-control"] == "public, max-age=86400"
+    assert resp.headers["content-type"] == "image/png"
+
+    params = captured["params"]
+    assert params["colormap_name"] == "hsv"
+    assert params["rescale"] == "0,360"
+    assert str(params["tilesize"]) == "512"
+    assert "buffer" not in params
+    assert params["url"].endswith("/colorado/aspect.tif")
+
+    # Out-of-range tile coords are rejected.
+    assert client.get("/tiles/aspect/1/5/0?region=colorado").status_code == 400

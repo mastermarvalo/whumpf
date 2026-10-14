@@ -49,6 +49,7 @@ _HTTP = httpx.AsyncClient(
 # Average PNG sizes: slope ~25 KB, contour ~15 KB.
 
 _SLOPE_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
+_ASPECT_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
 _CONTOUR_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
 _FILTER_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
 _TERRAIN_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
@@ -172,6 +173,70 @@ async def slope_tile(
         return Response(status_code=204)
 
     _cache_put(_SLOPE_CACHE, cache_key, resp.content, _SLOPE_CACHE_MAX)
+    return Response(
+        content=resp.content,
+        media_type="image/png",
+        headers={"Cache-Control": "public, max-age=86400"},
+    )
+
+
+@router.get("/aspect/{z}/{x}/{y}")
+async def aspect_tile(
+    z: int, x: int, y: int,
+    region: str = "colorado",
+) -> Response:
+    """Proxy an aspect tile from TiTiler with the hsv colormap (0–360°).
+
+    Mirrors slope_tile: 512×512, no buffer (see the note there).
+    """
+    validate_region(region)
+    if z < 0 or z > _MAX_Z or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
+        raise HTTPException(400, "tile coordinates out of range")
+
+    cache_key = (z, x, y, region)
+    if cached := _cache_get(_ASPECT_CACHE, cache_key):
+        return Response(content=cached, media_type="image/png",
+                        headers={"Cache-Control": "public, max-age=86400"})
+
+    settings = get_settings()
+    cog_url = (
+        f"/vsicurl/{settings.s3_endpoint}"
+        f"/{settings.s3_bucket_dem_cogs}/{region}/aspect.tif"
+    )
+
+    async def _do() -> httpx.Response:
+        r = await _HTTP.get(
+            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png",
+            params={
+                "url": cog_url,
+                "rescale": "0,360",
+                "nodata": "-9999",
+                "colormap_name": "hsv",
+                "tilesize": 512,
+            },
+        )
+        if r.status_code != 404:
+            r.raise_for_status()
+        return r
+
+    try:
+        resp = await call_with_resilience("titiler", _do)
+    except CircuitOpenError:
+        raise HTTPException(503, "tile server temporarily unavailable")
+    except httpx.RequestError as exc:
+        logger.error("TiTiler unreachable: %s", exc)
+        raise HTTPException(502, "tile server unreachable") from exc
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "TiTiler returned %d for aspect tile %d/%d/%d",
+            exc.response.status_code, z, x, y,
+        )
+        raise HTTPException(502, f"TiTiler returned {exc.response.status_code}") from exc
+
+    if resp.status_code == 404:
+        return Response(status_code=204)
+
+    _cache_put(_ASPECT_CACHE, cache_key, resp.content, _SLOPE_CACHE_MAX)
     return Response(
         content=resp.content,
         media_type="image/png",
