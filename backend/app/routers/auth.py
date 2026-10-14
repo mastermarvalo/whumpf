@@ -15,17 +15,22 @@ from sqlalchemy.orm import Session
 from app.admin import is_admin as _check_admin
 from app.auth.dependencies import get_current_user
 from app.auth.service import (
+    RefreshTokenError,
     clear_auth_cookie,
     create_access_token,
     hash_password,
+    issue_refresh_token,
+    revoke_all_refresh_tokens,
+    revoke_refresh_family,
+    rotate_refresh_token,
     set_auth_cookie,
     verify_password,
 )
 from app.config import get_settings
 from app.db import get_session
 from app.models import (
-    Friendship, MemberRole, MemberStatus, Route, RouteShare, Trip, TripMember,
-    TripRoute, Waypoint,
+    Friendship, MemberRole, MemberStatus, RefreshToken, Route, RouteShare, Trip,
+    TripMember, TripRoute, Waypoint,
 )
 from app.models.strava import StravaConnection
 from app.models.user import User
@@ -56,7 +61,18 @@ class RegisterIn(BaseModel):
 
 class TokenOut(BaseModel):
     access_token: str
+    # Body-only, for app clients: swap it at POST /auth/refresh when the access
+    # token expires. Browsers keep using the session cookie.
+    refresh_token: str
     token_type: str = "bearer"
+
+
+class RefreshIn(BaseModel):
+    refresh_token: str
+
+
+class LogoutIn(BaseModel):
+    refresh_token: str | None = None
 
 
 class RegisterOut(BaseModel):
@@ -65,6 +81,7 @@ class RegisterOut(BaseModel):
     # when the account is immediately usable (skip-verification mode).
     email_verified: bool
     access_token: str | None = None
+    refresh_token: str | None = None
     token_type: str = "bearer"
 
 
@@ -129,8 +146,10 @@ async def register(
         return RegisterOut(email_verified=False)
 
     access = create_access_token(user.email)
+    refresh_token = issue_refresh_token(session, user.id)
+    session.commit()
     set_auth_cookie(response, access)
-    return RegisterOut(email_verified=True, access_token=access)
+    return RegisterOut(email_verified=True, access_token=access, refresh_token=refresh_token)
 
 
 @router.post("/token", response_model=TokenOut)
@@ -155,13 +174,44 @@ def login(
             "Please verify your email before signing in — check your inbox for the link.",
         )
     token = create_access_token(user.email)
+    refresh_token = issue_refresh_token(session, user.id)
+    session.commit()
     set_auth_cookie(response, token)
-    return TokenOut(access_token=token)
+    return TokenOut(access_token=token, refresh_token=refresh_token)
+
+
+@router.post("/refresh", response_model=TokenOut)
+@limiter.limit("30/minute")
+def refresh(
+    request: Request,
+    body: RefreshIn,
+    session: Session = Depends(get_session),
+) -> TokenOut:
+    """Swap a refresh token for a new access + refresh token pair. The old
+    refresh token is revoked; see rotate_refresh_token for reuse handling.
+    Sets no cookie — the cookie flow doesn't use refresh tokens."""
+    try:
+        user, new_refresh = rotate_refresh_token(session, body.refresh_token)
+    except RefreshTokenError as exc:
+        session.commit()  # keep a reuse revocation
+        raise HTTPException(
+            status.HTTP_401_UNAUTHORIZED, str(exc), headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    session.commit()
+    return TokenOut(access_token=create_access_token(user.email), refresh_token=new_refresh)
 
 
 @router.post("/logout", status_code=status.HTTP_204_NO_CONTENT)
-def logout(response: Response) -> None:
-    """Clear the session cookie. Idempotent — safe to call without a session."""
+def logout(
+    response: Response,
+    body: LogoutIn | None = None,
+    session: Session = Depends(get_session),
+) -> None:
+    """Clear the session cookie and, if a refresh token is sent, revoke it
+    (and the rest of its family). Idempotent — safe to call without a session."""
+    if body and body.refresh_token:
+        revoke_refresh_family(session, body.refresh_token)
+        session.commit()
     clear_auth_cookie(response)
 
 
@@ -278,6 +328,7 @@ def password_reset_confirm(
     user.hashed_password = hash_password(body.new_password)
     user.password_reset_token = None
     user.password_reset_token_expires_at = None
+    revoke_all_refresh_tokens(session, user.id)
     session.commit()
     logger.info("Password reset: user_id=%s", user.id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -348,6 +399,7 @@ def _purge_user_data(session: Session, user: User) -> None:
         RouteShare.route_id.in_(route_ids), RouteShare.created_by_id == user.id,
     )))
     session.execute(delete(Route).where(Route.owner_id == user.id))
+    session.execute(delete(RefreshToken).where(RefreshToken.user_id == user.id))
     session.flush()
 
 

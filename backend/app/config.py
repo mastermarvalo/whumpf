@@ -38,6 +38,8 @@ class Settings(BaseSettings):
     jwt_secret: str
     jwt_algorithm: str = "HS256"
     jwt_access_ttl_min: int = 60
+    # Refresh tokens: lifetime from issue (each rotation starts a new one).
+    refresh_token_ttl_days: int = 60
 
     # --- S3 / MinIO ----------------------------------------------------------
     s3_endpoint: str
