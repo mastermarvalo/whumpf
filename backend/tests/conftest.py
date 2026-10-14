@@ -22,6 +22,18 @@ from app.main import app
 from app.models import Base, User
 
 
+@pytest.fixture(autouse=True)
+def tile_rate_limits(monkeypatch):
+    """Fresh in-memory tile limit counters per test, so tests never touch the
+    real Redis counters or leak hits into each other."""
+    from limits.storage import MemoryStorage
+    from limits.strategies import FixedWindowRateLimiter
+
+    import app.tile_tokens as tile_tokens
+
+    monkeypatch.setattr(tile_tokens, "_rate_limiter", FixedWindowRateLimiter(MemoryStorage()))
+
+
 @pytest.fixture(scope="session")
 def engine():
     eng = create_engine(get_settings().database_url, future=True)

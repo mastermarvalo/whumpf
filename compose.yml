@@ -192,6 +192,7 @@ services:
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       SKIP_EMAIL_VERIFICATION: ${SKIP_EMAIL_VERIFICATION:-false}
       REDIS_URL: ${REDIS_URL:-redis://localhost:6379}
+      TILES_ALLOW_TOKENLESS: ${TILES_ALLOW_TOKENLESS:-true}
     volumes:
       - ./backend/app:/app/app
       # Tests aren't copied into the image; mount them so `make test-api` runs

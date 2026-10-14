@@ -14,7 +14,7 @@ import httpx
 import numpy as np
 import rasterio
 from contourpy import contour_generator
-from fastapi import APIRouter, HTTPException, Query, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from PIL import Image, ImageDraw
 from pyproj import Transformer
 from rasterio.crs import CRS
@@ -23,13 +23,19 @@ from rasterio.warp import Resampling, reproject
 
 from app.config import get_settings, validate_region
 from app.http_retry import CircuitOpenError, call_with_resilience
+from app.tile_tokens import require_tile_access
 
 # Web-mercator tile coordinates are bounded by z (we serve at most z16) and
 # 0 <= x,y < 2**z. Validating up-front avoids upstream rasterio reads for
 # nonsensical inputs.
 _MAX_Z = 18
 
-router = APIRouter(prefix="/tiles", tags=["tiles"])
+# Every tile endpoint checks the ?t= tile token and rate limits before it
+# renders anything. POST /tiles/token lives in routers/tile_tokens.py so it
+# is not behind this check.
+router = APIRouter(
+    prefix="/tiles", tags=["tiles"], dependencies=[Depends(require_tile_access)]
+)
 logger = logging.getLogger("whumpf.tiles")
 
 # Thread pool for blocking rasterio / PIL work — keeps asyncio event loop free.

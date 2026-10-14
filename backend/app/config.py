@@ -81,6 +81,9 @@ class Settings(BaseSettings):
     # Redis URL for cross-worker rate limit state. Defaults to in-process
     # memory (fine for single-worker dev). Set to redis://localhost:6379 in prod.
     redis_url: str = ""
+    # Let /tiles/* requests without a ?t= tile token through (strict per-IP
+    # limit). On while the old website, which sends no tokens, is still up.
+    tiles_allow_tokenless: bool = True
 
     # --- Admin / status page ------------------------------------------------
     # CSV of email addresses that get admin powers automatically. The

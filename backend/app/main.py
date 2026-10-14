@@ -19,7 +19,7 @@ from app.config import get_settings
 from app.db import get_engine
 from app.models import Base
 from app.rate_limit import limiter
-from app.routers import auth, avalanche, friends, health, regions, routes, snowpack, status as status_router, strava, terrain, tiles, trips
+from app.routers import auth, avalanche, friends, health, regions, routes, snowpack, status as status_router, strava, terrain, tile_tokens, tiles, trips
 from app.routers.avalanche import get_forecast, get_observations
 from app.services.snotel import fetch_stations_geojson
 
@@ -118,6 +118,7 @@ def create_app() -> FastAPI:
     app.include_router(health.router)
     app.include_router(auth.router)
     app.include_router(strava.router)
+    app.include_router(tile_tokens.router)
     app.include_router(tiles.router)
     app.include_router(terrain.router)
     app.include_router(snowpack.router)

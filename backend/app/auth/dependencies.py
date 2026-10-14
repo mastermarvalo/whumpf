@@ -45,3 +45,15 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     return user
+
+
+def get_optional_user(
+    request: Request,
+    bearer_token: str | None = Depends(oauth2_scheme),
+    session: Session = Depends(get_session),
+) -> User | None:
+    """None when no credentials are sent; 401 (not None) when they are invalid,
+    so a broken sign-in is never silently treated as signed out."""
+    if not (request.cookies.get(SESSION_COOKIE) or bearer_token):
+        return None
+    return get_current_user(request, bearer_token, session)
