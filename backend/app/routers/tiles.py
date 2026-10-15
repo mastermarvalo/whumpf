@@ -599,6 +599,24 @@ async def terrain_filter_tile(
 _TERRAIN_PX  = 256  # MapLibre requests exactly 256×256 terrain tiles.
 _TERRAIN_BUF = 1    # 1-px border overlap — prevents seams from independent bilinear resampling.
 
+# A read that fails or times out must not look like "no data": it answers 503
+# no-store so neither this cache nor Cloudflare keeps it and the map retries.
+_TERRAIN_COG_ENV   = dict(_COG_ENV, GDAL_HTTP_TIMEOUT="10")
+_TERRAIN_TIMEOUT_S = 30.0  # backstop over GDAL's own timeout, incl. pool queueing
+_TERRAIN_HEADERS   = {"Cache-Control": "public, max-age=86400"}
+
+
+def _flat_terrain_png() -> bytes:
+    """256×256 tile at 0 m. MapLibre's raster-dem needs every tile the same
+    size, so empty areas get this instead of a 204 ("dem dimension mismatch").
+    Terrarium: 0 m → 0 + 32768 = 128*256 + 0 + 0/256 → (128, 0, 0)."""
+    out = io.BytesIO()
+    Image.new("RGB", (_TERRAIN_PX, _TERRAIN_PX), (128, 0, 0)).save(out, format="PNG")
+    return out.getvalue()
+
+
+_FLAT_TERRAIN_PNG = _flat_terrain_png()
+
 
 def _render_terrain_rgb(
     dem_url: str,
@@ -606,6 +624,7 @@ def _render_terrain_rgb(
 ) -> bytes | None:
     """Blocking: read DEM window and encode as terrarium-RGB PNG.
 
+    Returns None when the window has no valid pixels; raises if the read fails.
     Renders at (_TERRAIN_PX + 2*_TERRAIN_BUF)² then crops to _TERRAIN_PX².
     The extra border pixels ensure bilinear resampling at tile edges uses
     data from the neighbouring tile's extent, eliminating seam artifacts.
@@ -619,23 +638,19 @@ def _render_terrain_rgb(
 
     data = np.full((total, total), np.nan, dtype=np.float32)
     dst_transform = from_bounds(xmin_b, ymin_b, xmax_b, ymax_b, total, total)
-    try:
-        with rasterio.Env(**_COG_ENV):
-            with rasterio.open(dem_url) as src:
-                reproject(
-                    source=rasterio.band(src, 1),
-                    destination=data,
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    src_nodata=src.nodata,
-                    dst_transform=dst_transform,
-                    dst_crs=_WM_CRS,
-                    dst_nodata=np.nan,
-                    resampling=Resampling.bilinear,
-                )
-    except Exception as exc:
-        logger.debug("terrain_rgb DEM read failed: %s", exc)
-        return None
+    with rasterio.Env(**_TERRAIN_COG_ENV):
+        with rasterio.open(dem_url) as src:
+            reproject(
+                source=rasterio.band(src, 1),
+                destination=data,
+                src_transform=src.transform,
+                src_crs=src.crs,
+                src_nodata=src.nodata,
+                dst_transform=dst_transform,
+                dst_crs=_WM_CRS,
+                dst_nodata=np.nan,
+                resampling=Resampling.bilinear,
+            )
 
     # Crop border pixels back to 256×256.
     data = data[buf:buf + _TERRAIN_PX, buf:buf + _TERRAIN_PX]
@@ -660,8 +675,17 @@ def _render_terrain_rgb_with_fallback(
     dem_url: str, fallback_url: str | None,
     xmin: float, ymin: float, xmax: float, ymax: float,
 ) -> bytes | None:
-    """Try dem_url; on None result retry with fallback_url."""
-    result = _render_terrain_rgb(dem_url, xmin, ymin, xmax, ymax)
+    """Try dem_url; on no data or a read error retry with fallback_url.
+
+    Returns None when neither has data; raises if the last read fails.
+    """
+    try:
+        result = _render_terrain_rgb(dem_url, xmin, ymin, xmax, ymax)
+    except Exception as exc:
+        if not fallback_url:
+            raise
+        logger.warning("terrain_rgb hires read failed, trying 10m: %s", exc)
+        result = None
     if result is None and fallback_url:
         result = _render_terrain_rgb(fallback_url, xmin, ymin, xmax, ymax)
     return result
@@ -682,17 +706,19 @@ async def terrain_rgb_tile(
 
     cache_key = (z, x, y, region)
     if cached := _cache_get(_TERRAIN_CACHE, cache_key):
-        return Response(content=cached, media_type="image/png",
-                        headers={"Cache-Control": "public, max-age=86400"})
+        return Response(content=cached, media_type="image/png", headers=_TERRAIN_HEADERS)
 
     # If this tile is already being rendered, wait on the existing Future instead
     # of launching a duplicate render (prevents N×CPU burn for burst requests).
     if cache_key in _TERRAIN_IN_FLIGHT:
-        png = await asyncio.shield(_TERRAIN_IN_FLIGHT[cache_key])
-        if png is None:
-            return Response(status_code=204)
-        return Response(content=png, media_type="image/png",
-                        headers={"Cache-Control": "public, max-age=86400"})
+        try:
+            png = await asyncio.wait_for(
+                asyncio.shield(_TERRAIN_IN_FLIGHT[cache_key]), _TERRAIN_TIMEOUT_S)
+        except Exception as exc:
+            logger.warning("terrain_rgb %s unavailable: %r", cache_key, exc)
+            return Response(status_code=503, headers={"Cache-Control": "no-store"})
+        return Response(content=png or _FLAT_TERRAIN_PNG, media_type="image/png",
+                        headers=_TERRAIN_HEADERS)
 
     settings = get_settings()
     xmin, ymin, xmax, ymax = _tile_mercator_bounds(z, x, y)
@@ -708,19 +734,19 @@ async def terrain_rgb_tile(
     )
     _TERRAIN_IN_FLIGHT[cache_key] = fut
     try:
-        png = await fut
+        png = await asyncio.wait_for(asyncio.shield(fut), _TERRAIN_TIMEOUT_S)
+    except Exception as exc:
+        logger.warning("terrain_rgb %s unavailable: %r", cache_key, exc)
+        return Response(status_code=503, headers={"Cache-Control": "no-store"})
     finally:
         _TERRAIN_IN_FLIGHT.pop(cache_key, None)
 
     if png is None:
-        return Response(status_code=204)
+        return Response(content=_FLAT_TERRAIN_PNG, media_type="image/png",
+                        headers=_TERRAIN_HEADERS)
 
     _cache_put(_TERRAIN_CACHE, cache_key, png, _TERRAIN_CACHE_MAX)
-    return Response(
-        content=png,
-        media_type="image/png",
-        headers={"Cache-Control": "public, max-age=86400"},
-    )
+    return Response(content=png, media_type="image/png", headers=_TERRAIN_HEADERS)
 
 
 # ── ski runs (vector, from Martin) ─────────────────────────────────────────────
