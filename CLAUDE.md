@@ -12,6 +12,11 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 - **No FK cascades and no ORM relationships.** Deleting a parent must explicitly delete child rows and `session.flush()` before deleting the parent (see `delete_trip`, `delete_route`); otherwise Postgres raises a FK violation (500).
 - **One session per request** via `get_session` (`app/db.py`). No ad-hoc engines/sessions.
 - **Auth on every read and write** via `get_current_user` (`app/auth/dependencies.py`). Ownership/membership/visibility is enforced in the router/query layer (`app/auth/access.py`), never only in the frontend. Admin checks: `app/admin.py::is_admin`.
+  - Deliberate public exceptions (don't flag these; anything new needs the same reasoning and a limit):
+    - `/tiles/*`: a tile token (`app/tile_tokens.py`) instead of sign-in. `POST /tiles/token` is open with a per-IP limit.
+    - `/avalanche/*`: public CAIC data used by signed-out users and the old site. Per-IP limit (`avalanche` bucket in `tile_tokens.BUCKETS`).
+    - `/healthz`, `/readyz`, and `GET /status` (the service status and banner page).
+    - The `/auth/*` endpoints that sign you in or recover an account (register, token, refresh, verify-email, password-reset), each with `@limiter.limit`. The Strava OAuth callback is protected by its signed `state`.
 - **Visibility enum is `private | shared | unlisted`.** Deliberately no `public`, no feed/discovery. New objects default to `private`.
 - **Geometry in PostGIS**, GeoJSON at the API boundary.
 - **Validate every `region` param** with `app/regions.py::validate_region`.

@@ -1,4 +1,8 @@
-"""CAIC avalanche forecast and observations — stale-while-revalidate caching."""
+"""CAIC avalanche forecast and observations — stale-while-revalidate caching.
+
+Deliberately public (no sign-in): signed-out users and the old site use it and
+the data is public CAIC data. Rate-limited per client IP instead.
+"""
 
 from __future__ import annotations
 
@@ -8,11 +12,18 @@ import math
 from datetime import datetime, timedelta, timezone
 
 import httpx
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.http_retry import call_with_resilience
+from app.rate_limit import client_ip
+from app.tile_tokens import enforce
 
-router = APIRouter(prefix="/avalanche", tags=["avalanche"])
+
+def _limit_by_ip(request: Request) -> None:
+    enforce("avalanche", client_ip(request))
+
+
+router = APIRouter(prefix="/avalanche", tags=["avalanche"], dependencies=[Depends(_limit_by_ip)])
 logger = logging.getLogger("whumpf.avalanche")
 
 _FORECAST_TTL = timedelta(hours=1)

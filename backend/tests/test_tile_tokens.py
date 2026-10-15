@@ -90,6 +90,7 @@ def test_configured_limits_match_the_plan():
         "anon_ip": ["1500 per 1 minute", "15000 per 1 hour"],
         "user": ["1200 per 1 minute", "20000 per 1 hour"],
         "tokenless": ["180 per 1 minute", "2000 per 1 hour"],
+        "avalanche": ["120 per 1 minute", "2000 per 1 hour"],
     }
 
 

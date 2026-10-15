@@ -55,6 +55,10 @@ BUCKETS: dict[str, tuple[RateLimitItem, ...]] = {
     "user": (parse("1200/minute"), parse("20000/hour")),
     # Per client IP, requests with no token (the old website).
     "tokenless": (parse("180/minute"), parse("2000/hour")),
+    # Per client IP, /avalanche/* (public CAIC data, no sign-in). Not tiles,
+    # but the same fail-open counting and 429 shape. Cloudflare doesn't cache
+    # these, so every map load and zone tap counts.
+    "avalanche": (parse("120/minute"), parse("2000/hour")),
 }
 
 _NO_STORE = {"Cache-Control": "no-store"}

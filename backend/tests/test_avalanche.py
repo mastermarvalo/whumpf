@@ -176,3 +176,23 @@ def test_zone_detail_endpoint_returns_name_and_id(_zones_env):
     assert resp.status_code == 200, resp.text
     assert resp.json()["zone"] == "Vail & Summit County"
     assert resp.json()["zone_id"] == _AREA_ID
+
+
+def test_avalanche_is_public_and_rate_limited_per_ip(monkeypatch):
+    from fastapi.testclient import TestClient
+
+    from app.main import app
+    from app.tile_tokens import BUCKETS
+
+    monkeypatch.setattr(avalanche, "_forecast_cache", ({"features": []}, datetime.utcnow()))
+    monkeypatch.setitem(BUCKETS, "avalanche", (__import__("limits").parse("3/minute"),))
+    client = TestClient(app)  # no auth override: signed-out
+    for _ in range(3):
+        assert client.get("/avalanche/forecast").status_code == 200
+    resp = client.get("/avalanche/forecast")
+    assert resp.status_code == 429
+    assert resp.headers["cache-control"] == "no-store"
+    assert int(resp.headers["retry-after"]) >= 1
+    # A different client IP has its own counter.
+    other = client.get("/avalanche/forecast", headers={"x-forwarded-for": "203.0.113.9"})
+    assert other.status_code == 200
