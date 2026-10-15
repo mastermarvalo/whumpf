@@ -22,7 +22,10 @@ sudo apt install -y podman podman-docker uidmap slirp4netns fuse-overlayfs
 ```
 
 `podman-docker` installs a `docker` shim that points at Podman, so the Docker
-CLI and Docker Compose v2 work transparently against Podman's API.
+CLI and Docker Compose v2 work transparently against Podman's API. On the
+VM itself `docker` is only the podman shim and has no `compose` subcommand;
+the Makefile calls the compose v2 plugin binary directly,
+`~/.docker/cli-plugins/docker-compose`.
 
 Enable the Podman user socket so Docker Compose v2 can talk to it:
 
@@ -291,6 +294,8 @@ make up
 ```
 
 ### One-time cutover: stamping the existing prod database
+
+Done: prod is stamped at `0001_baseline`. Kept as the record of the steps.
 
 Prod's schema was built by the old `create_all()` + `_SCHEMA_PATCHES` and has
 no `alembic_version` table. It must be **stamped** at `0001_baseline` (marks

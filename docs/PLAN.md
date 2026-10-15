@@ -20,11 +20,15 @@ The app runs on a real iPhone, but nothing has been tested end to end against th
 
 ## Backend status (Oct 14, 2026)
 
-Checked against `whumpf` at ba17c5d. This covers the backend repo only; the app screens in `whumpf-ios` are not checked here.
+Checked against `whumpf` at 65846e8. This covers the backend repo only; the app screens in `whumpf-ios` are not checked here.
 
 - **Phase 0 network hardening:** PostGIS, Redis, MinIO and Martin bind to 127.0.0.1, and Redis requires `REDIS_PASSWORD` (174b508).
 - **Phase 1, backend done:** Strava routes are owner-only (a5168f5); account deletion works for users with data (ff9b806); signed tile tokens with per-token rate limits (a7348c6).
 - **Phase 2, backend complete:** rotating refresh tokens (0ad0703, 4d0cf7b); 6-digit email codes for verify-email and password reset, change-password and change-email (8f01a13); `DELETE /auth/me` requires the password (fd87e0a); Strava connect takes an allowlisted `return_to` carried in a signed state (ba17c5d). An expired state redirects back with `reason=expired`; a forged one is a 400.
+- **Alembic, done:** schema changes go through `make makemigration`; `0001_baseline` is stamped on prod; tests run on `whumpf_test` (97bc465, `docs/runbook.md` §6).
+- **Own ski tiles, done:** `/tiles/ski` serves our own OSM ski run tiles, rebuilt weekly on Tuesdays at 04:00 with rollback if Martin doesn't come back (0a52151, `docs/runbook.md` §7).
+- **Backups, done:** daily at 03:00 from cron; a local dump kept 14 days plus Cloudflare R2, each read back and checked by sha256 (3a86dca, 65846e8).
+- **Cloudflare `/tiles/*` cache, done and verified** (MISS then HIT; 65e9f50).
 - **Next: Phase 3 (TestFlight).** The likely backend part is serving the privacy policy, terms and credits pages. Upcoming, not built.
 
 **Turn off when the old website is retired:** `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS`. See "Settings added in Phase 2" in `docs/runbook.md`.
@@ -263,7 +267,7 @@ The two items that block TestFlight are a privacy policy and a safety disclaimer
 | Fixes without a rebuild | EAS Update pushes JavaScript-only fixes to testers in minutes | 3 |
 | App CI | The backend runs CI on every push; `whumpf-ios` has none. Run the type check and terrain checks on push | 1 |
 | Outage notices | The backend has status banners (`/status`); the app never shows them | 2 |
-| Server health | Tile cache lives only in memory per worker; confirm `scripts/backup.sh` runs on a schedule; add an uptime check | 0 to 1 |
+| Server health | Tile cache lives only in memory per worker; add an uptime check (`scripts/backup.sh` now runs daily from cron) | 0 to 1 |
 | Place search | The old website searched places in Colorado (Photon); the app cannot | 4 |
 | GPX import and export | Lets people share their own tracks without touching Strava data | 4 |
 | API types kept in sync | `types.ts` is copied by hand from the backend; generating it from the backend's OpenAPI schema stops drift | 4 |
@@ -288,22 +292,17 @@ The backend is close to portable: it runs in containers, reads its settings from
 | Health checks hard-code `localhost` | `routers/status.py` | Use the URLs from settings |
 | Data folders hard-coded to `/data/pgdata`, `/data/minio`, `/data/martin-tiles` | `compose.yml` | One `DATA_DIR` setting |
 | Host networking, with every service URL set to `localhost` | `compose.yml` | Keep it for the NAS; add a bridge-network compose for Docker hosts (service names instead of `localhost`) |
-| No database migrations: tables are created on startup and patched with `ALTER` lines | `main.py` `_SCHEMA_PATCHES` | Add Alembic before real users, so schema changes apply the same everywhere |
-| Images on `:latest` (MinIO, TiTiler, mc) | `compose.yml` | Pin versions, so a new host gets the same software |
+| Images on `:latest` (MinIO, TiTiler); mc is already pinned | `compose.yml` | Pin versions, so a new host gets the same software |
 | Elevation processing runs only on the NAS (`/data/dem-work`) | `Makefile`, `data/pipelines/` | Document it as one repeatable command that writes to S3 |
 | Tiles rendered live from 1 m elevation files; cache is in memory per worker | `routers/tiles.py` | Pre-build tiles as files (the same PMTiles the offline packs need) and serve them from S3 behind a CDN. Cheaper and faster on any host |
 | Cloudflare tunnel and `.env` live only on the VM | Not in the repo | Keep a `.env.example` that lists every setting; document the tunnel or reverse proxy in `docs/runbook.md` |
 
-Backups already go to any S3-compatible target (`scripts/backup.sh`). Restore steps are written in docs/external-services.md, and its checklist still lists a one-time restore rehearsal as not done.
+Backups run daily and go to a local 14-day dump plus any S3-compatible target (Cloudflare R2 today; `scripts/backup.sh`). Restore steps are in docs/external-services.md; a restore from an R2 backup has not been rehearsed (see Later).
 
 **On AWS later:** the simplest move is one EC2 VM running the same compose file, with S3 for files. Managed Postgres (RDS supports PostGIS) and containers on ECS can come after. The biggest cost to watch is serving tiles: rendering them live is heavy on CPU, and downloads count as paid traffic, which is why pre-built tiles behind a CDN matter.
 
 ```text
 [whumpf] Make the backend portable without changing behaviour: read DEMs via /vsis3/ with credentials (keep /vsicurl/ working for MinIO), use settings URLs in status.py, add a DATA_DIR setting, pin image versions, and add a bridge-network compose override for plain Docker. Test it with a fresh docker-compose up in CI.
-```
-
-```text
-[whumpf] Add Alembic: an initial migration matching the current tables (including everything in _SCHEMA_PATCHES), and move future schema changes to migrations. Don't change any data.
 ```
 
 ```text
@@ -330,6 +329,17 @@ Dropping only the `t` parameter from the cache key is listed as an Enterprise op
 ```text
 [whumpf] + [whumpf-ios] Add signed tile tokens: POST /tiles/token (anonymous install id or signed-in user), HMAC-signed with expiry, checked on every /tiles/* endpoint without a database lookup, rate-limited per token in Redis with higher limits when signed in and a per-IP cap on token creation. Let tokenless requests through with a strict per-IP limit until the old website is removed. In the app, add the token in tiles.ts and renew it before expiry, on iPhone, web and 3D. Tests for expired, forged and missing tokens.
 ```
+
+## Later
+
+Backend work with no phase yet.
+
+- [ ] **Backend lint cleanup:** 181 ruff errors. One commit with no behaviour changes, then run `make lint-api` in CI.
+- [ ] **Restore rehearsal** from an R2 backup into a throwaway database.
+- [ ] **Replace `mc` with `rclone` in backups.** The mc image is pinned and saved to `/data/backups/images/`.
+- [ ] **Replace the MinIO server.** The community edition is discontinued and its images are no longer pullable. Options: R2/S3 directly, or Garage. Decide before moving hosts.
+- [ ] **`/readyz` shows `"postgis": "0\""`,** so the PostGIS version is read wrong. Fix it.
+- [ ] **Phase 5 cleanup:** turn off `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS`, then purge `/tiles/*` in Cloudflare.
 
 ## Idea backlog
 

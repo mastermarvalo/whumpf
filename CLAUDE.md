@@ -22,7 +22,8 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 - External HTTP calls go through `app/http_retry.py::call_with_resilience` (see `app/services/strava.py`, `routers/avalanche.py`).
 - Email goes through `app/services/email.py` (pluggable); don't hardcode a provider.
 - Frontend map: shared types in `frontend/src/components/Map/types.ts`; geojson layer helpers in `Map/layers/` (copy `layers/strava.ts`); tool buttons in `Map/ToolboxPanel.tsx`. Server-backed state lives on the server; only device preferences go in localStorage / URL state.
-- Use `make <target>` for container ops, never raw podman/docker.
+- Use `make <target>` for container ops, never raw podman/docker. The compose binary is `~/.docker/cli-plugins/docker-compose` (the `docker` on this host is the podman shim, which has no `compose`).
+- Claude Code never restarts or deploys prod: no `make up`, `make restart-*` or `make nuke` against it. Change code, tests and docs; the owner deploys.
 
 ## Definition of done
 - `make test-api` passes (it also fails if models and migrations differ). Add tests for any new authorization/visibility logic.
@@ -32,7 +33,10 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 ## Where we are
 - Phase 2 backend is complete (refresh tokens, 6-digit email codes, password reset, change password/email, delete with password, Strava `return_to`). Next is Phase 3 (TestFlight); the backend part is likely serving the privacy policy, terms and credits pages. Not built yet.
 - Retire with the old site: `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS` must be off (`LEGACY_EMAIL_LINKS` too). Details in `docs/runbook.md`.
-- Alembic replaced `create_all` + `_SCHEMA_PATCHES` (baseline `0001_baseline`). Prod must be stamped once before the first deploy of it; steps in `docs/runbook.md` §6 "One-time cutover".
+- Done: Alembic replaced `create_all` + `_SCHEMA_PATCHES`; prod is stamped at `0001_baseline`. Schema changes go through `make makemigration`; tests run on `whumpf_test` (`docs/runbook.md` §6).
+- Done: our own ski run tiles at `/tiles/ski`, rebuilt weekly (Tuesdays 04:00) with automatic rollback (`docs/runbook.md` §7).
+- Done: daily backups at 03:00 (local 14-day dump plus Cloudflare R2, read back and checksum-verified). Cloudflare caches `/tiles/*` (verified).
+- Open work is in the "Later" list in `docs/PLAN.md`.
 
 ## Don't
 - Don't introduce a second ORM, a second migration tool, or another web framework.
