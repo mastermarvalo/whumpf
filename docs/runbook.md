@@ -201,6 +201,110 @@ make nuke            # stop containers AND delete all volumes — destructive
 themselves (typically several GB) live in the `dem-raw` bucket and would need
 to be re-downloaded from 3DEP.
 
+## 6. Schema migrations (Alembic)
+
+The schema is owned by Alembic (`backend/migrations/`). The api container's
+`entrypoint.sh` runs `alembic upgrade head` once before uvicorn starts, so a
+normal deploy (`make up`) applies pending migrations by itself. If a
+migration fails, the api doesn't start (Postgres DDL is transactional, so a
+failed migration leaves no half-applied schema); `make logs-api` shows why.
+
+`make migrate`, `make alembic`, `make db-check`, `make schema-diff` and
+`make test-api` all run in a **one-off container from the current api image**
+(`compose run --rm`), never by exec'ing into the running api. After
+`make build-api` they use the new code while the old api keeps serving.
+
+### Changing the schema
+
+```bash
+# 1. edit the model in backend/app/models/
+make makemigration m="add foo to trips"   # writes backend/migrations/versions/<rev>_add_foo_to_trips.py
+# 2. read the generated file; fix anything autogenerate got wrong
+#    (renames show up as drop+add; data backfills must be written by hand)
+make test-api      # builds whumpf_test from scratch and fails if models ≠ migrations
+make up            # deploy: entrypoint applies it
+make health        # checks.schema.ok must be true
+```
+
+Useful: `make alembic ARGS=current`, `make alembic ARGS=history`,
+`make db-check` (models vs. live DB), `make schema-diff` (live DB vs. a
+scratch DB built from migrations).
+
+### Safety rails
+
+- **Tests never touch the live DB.** `tests/conftest.py` drops and recreates
+  `whumpf_test` (same server) and refuses to drop/create any other name.
+- **Baseline downgrade is blocked.** `0001_baseline` downgrade drops every
+  table, so it refuses unless the DB is `whumpf_test` or you pass
+  `ALLOW_DESTRUCTIVE_DOWNGRADE=1` on that one make command line. It's not read
+  from `.env`; never set it there.
+- **Unstamped databases are not upgraded.** If tables exist but there is no
+  `alembic_version` row, `0001_baseline` upgrade refuses instead of trying to
+  create tables over them.
+
+### Backups and restore
+
+```bash
+make backup                      # off-site dump (scripts/backup.sh, BACKUP_S3_*)
+make db-dump                     # local pg_dump -Fc → /data/backups/whumpf-<utc>.dump
+```
+
+`db-dump` writes inside the postgis container, checks the file with
+`pg_restore --list`, then copies it out (no streaming through `exec`, which
+podman occasionally cuts off with "connection reset by peer"). A restore of
+one of these into a throwaway database was rehearsed on 2026-10-14; row
+counts matched.
+
+Restore a local dump (overwrites the live DB; stop the api first so nothing
+writes during the restore):
+
+```bash
+make stop-api
+make db-restore FILE=/data/backups/whumpf-<utc>.dump CONFIRM=yes
+make up
+```
+
+### One-time cutover: stamping the existing prod database
+
+Prod's schema was built by the old `create_all()` + `_SCHEMA_PATCHES` and has
+no `alembic_version` table. It must be **stamped** at `0001_baseline` (marks
+it as already migrated; writes only the `alembic_version` row) before the new
+api starts. Verified on 2026-10-14: `make schema-diff` showed the live schema
+and a migrations-built schema identical (333 lines).
+
+Before deploy (old api keeps serving throughout):
+
+```bash
+cd ~/whumpf
+git log --oneline -1                  # the Alembic commit is checked out
+make backup                           # off-site
+make db-dump                          # local; must print "tables with data: 15" and the file
+make psql                             # select count(*) from users; … routes; … trips;  (note them)
+make build-api                        # new image; running api untouched
+make schema-diff                      # must end with "✓ schema identical"
+make alembic ARGS="stamp 0001_baseline"
+make alembic ARGS=current             # 0001_baseline (head)
+make db-check                         # "No new upgrade operations detected."
+```
+
+If `schema-diff` or `db-check` fails: `make alembic ARGS="stamp base"`
+(removes the version row again — nothing else was changed) and don't deploy.
+
+Deploy and after:
+
+```bash
+make up
+make logs-api       # no "Running upgrade" lines (already at head); uvicorn starts
+make health         # "ready": true and checks.schema.ok true
+make test-api       # runs on whumpf_test, not prod
+make psql           # same row counts as before
+```
+
+Rollback: `git checkout <previous commit> && make up`. The old code's
+`create_all` + patches are no-ops on this schema and it ignores
+`alembic_version`, so no database restore is needed. Only restore
+(`make db-restore`) if data itself is damaged.
+
 ## Troubleshooting
 
 ### `api` container restarts repeatedly

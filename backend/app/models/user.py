@@ -38,7 +38,9 @@ class User(Base):
     # Email verification — login requires it unless SKIP_EMAIL_VERIFICATION.
     # The *_token columns are the legacy link flow (old website): SHA-256 of
     # the link token, one outstanding per user. Codes live in email_codes.
-    email_verified: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    email_verified: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default="false", nullable=False,
+    )
     email_verified_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True,
     )

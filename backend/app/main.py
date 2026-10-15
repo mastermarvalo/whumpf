@@ -12,12 +12,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
-from sqlalchemy import text
 
 from app import __version__
 from app.config import get_settings
-from app.db import get_engine
-from app.models import Base
 from app.rate_limit import limiter
 from app.routers import auth, avalanche, friends, health, regions, routes, snowpack, status as status_router, strava, terrain, tile_tokens, tiles, trips
 from app.routers.avalanche import get_forecast, get_observations
@@ -45,50 +42,10 @@ async def _prewarm() -> None:
             logger.info("Pre-warm %s OK", name)
 
 
-# Idempotent column adds for tables that pre-date their current model. Run
-# on every startup since we use Base.metadata.create_all (no Alembic). Each
-# statement is a no-op when the column / index already exists. Cheap.
-_SCHEMA_PATCHES: tuple[str, ...] = (
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified BOOLEAN NOT NULL DEFAULT FALSE",
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at TIMESTAMP WITH TIME ZONE",
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token VARCHAR(64)",
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verification_token_expires_at TIMESTAMP WITH TIME ZONE",
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_token VARCHAR(64)",
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_reset_token_expires_at TIMESTAMP WITH TIME ZONE",
-    "CREATE INDEX IF NOT EXISTS ix_users_email_verification_token ON users(email_verification_token)",
-    "CREATE INDEX IF NOT EXISTS ix_users_password_reset_token ON users(password_reset_token)",
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS allowed_regions VARCHAR(255) NOT NULL DEFAULT 'colorado'",
-    "ALTER TABLE users ADD COLUMN IF NOT EXISTS is_admin BOOLEAN NOT NULL DEFAULT FALSE",
-    # routes table pre-dates source_strava_id (Strava-import dedupe).
-    "ALTER TABLE routes ADD COLUMN IF NOT EXISTS source_strava_id BIGINT",
-    "CREATE INDEX IF NOT EXISTS ix_routes_source_strava_id ON routes(source_strava_id)",
-    # Multi-day trips: per-trip day count and per-route day assignment.
-    "ALTER TABLE trips ADD COLUMN IF NOT EXISTS num_days INTEGER NOT NULL DEFAULT 1",
-    "ALTER TABLE trip_routes ADD COLUMN IF NOT EXISTS day INTEGER NOT NULL DEFAULT 1",
-    # Optional per-waypoint marker color (#rrggbb).
-    "ALTER TABLE waypoints ADD COLUMN IF NOT EXISTS color VARCHAR(7)",
-    # Refresh tokens: tells rotation (reuse-detectable) apart from logout.
-    "ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS rotated_at TIMESTAMP WITH TIME ZONE",
-    # Legacy email link tokens are now stored as SHA-256 hex (64 chars). Hash
-    # any still-plaintext ones (token_urlsafe(32) is 43 chars) so outstanding
-    # links keep working. Idempotent: hashed values are never 43 chars.
-    "UPDATE users SET email_verification_token = "
-    "encode(sha256(convert_to(email_verification_token, 'UTF8')), 'hex') "
-    "WHERE length(email_verification_token) = 43",
-    "UPDATE users SET password_reset_token = "
-    "encode(sha256(convert_to(password_reset_token, 'UTF8')), 'hex') "
-    "WHERE length(password_reset_token) = 43",
-)
-
-
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
-    engine = get_engine()
-    Base.metadata.create_all(engine)
-    with engine.begin() as conn:
-        for stmt in _SCHEMA_PATCHES:
-            conn.execute(text(stmt))
-    logger.info("Database tables ensured.")
+    # Schema is managed by Alembic; entrypoint.sh runs `alembic upgrade head`
+    # before uvicorn starts (once, not per worker). /readyz reports drift.
     asyncio.ensure_future(_prewarm())
     yield
 

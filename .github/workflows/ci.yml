@@ -46,7 +46,7 @@ jobs:
 
       - name: Ruff
         working-directory: backend
-        run: uv run ruff check app tests
+        run: uv run ruff check app tests migrations
 
       - name: Pytest
         working-directory: backend

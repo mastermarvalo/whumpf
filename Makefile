@@ -37,6 +37,14 @@ down:  ## stop the stack (keeps volumes)
 nuke:  ## stop the stack AND delete all volumes — destroys DB and MinIO data
 	$(COMPOSE) down -v
 
+.PHONY: build-api
+build-api:  ## build the api image without restarting the running api
+	$(COMPOSE) build api
+
+.PHONY: stop-api
+stop-api:  ## stop only the api (e.g. before make db-restore); make up starts it again
+	$(COMPOSE) stop api
+
 .PHONY: restart
 restart:  ## restart all services without rebuilding
 	$(COMPOSE) restart
@@ -73,6 +81,56 @@ shell-api:  ## shell into the api container
 shell-minio:  ## shell into the minio container
 	$(COMPOSE) exec minio /bin/sh
 
+# --- database / migrations -------------------------------------------------
+# These run in a one-off container from the current api image (`compose run`),
+# never by exec'ing into the running api — so after `make build-api` they use
+# the new code and migrations while the old api keeps serving. --no-deps: the
+# database must already be up. ALLOW_DESTRUCTIVE_DOWNGRADE=1 can be passed on
+# the make command line for the rare intentional baseline downgrade.
+
+API_RUN = $(COMPOSE) run --rm --no-deps -T -e ALLOW_DESTRUCTIVE_DOWNGRADE=$(ALLOW_DESTRUCTIVE_DOWNGRADE) api
+
+.PHONY: migrate
+migrate:  ## apply pending schema migrations (alembic upgrade head)
+	$(API_RUN) uv run alembic upgrade head
+
+.PHONY: makemigration
+makemigration:  ## autogenerate a migration from model changes: make makemigration m="add foo to bar"
+	@test -n "$(m)" || { echo 'usage: make makemigration m="describe the change"'; exit 1; }
+	$(API_RUN) uv run alembic revision --autogenerate -m "$(m)"
+
+.PHONY: alembic
+alembic:  ## run any alembic command: make alembic ARGS="current"
+	$(API_RUN) uv run alembic $(ARGS)
+
+.PHONY: db-check
+db-check:  ## fail if the models and the database schema differ (alembic check)
+	$(API_RUN) uv run alembic check
+
+.PHONY: schema-diff
+schema-diff:  ## diff the live schema against a scratch DB built from migrations
+	COMPOSE="$(COMPOSE)" ./scripts/schema-diff.sh
+
+BACKUP_DIR ?= /data/backups
+
+.PHONY: db-dump
+db-dump:  ## local pg_dump (custom format) to $(BACKUP_DIR)/whumpf-<utc>.dump, then verify it reads back
+	@mkdir -p $(BACKUP_DIR)
+	@set -e; f=whumpf-$$(date -u +%Y%m%dT%H%M%SZ).dump; \
+	$(COMPOSE) exec -T postgis pg_dump -U $${POSTGRES_USER:-whumpf} -d $${POSTGRES_DB:-whumpf} -Fc -f /tmp/$$f; \
+	$(COMPOSE) exec -T postgis sh -c "pg_restore --list /tmp/$$f | grep -c 'TABLE DATA' | sed 's/^/tables with data: /'"; \
+	$(COMPOSE) cp postgis:/tmp/$$f $(BACKUP_DIR)/$$f.partial; \
+	$(COMPOSE) exec -T postgis rm -f /tmp/$$f; \
+	mv $(BACKUP_DIR)/$$f.partial $(BACKUP_DIR)/$$f; ls -lh $(BACKUP_DIR)/$$f
+
+.PHONY: db-restore
+db-restore:  ## restore a db-dump: make db-restore FILE=/data/backups/x.dump CONFIRM=yes (stop the api first)
+	@test -f "$(FILE)" || { echo "FILE=<path to .dump> required"; exit 1; }
+	@test "$(CONFIRM)" = yes || { echo "This overwrites the live database. Re-run with CONFIRM=yes."; exit 1; }
+	$(COMPOSE) cp $(FILE) postgis:/tmp/restore.dump
+	$(COMPOSE) exec -T postgis pg_restore -U $${POSTGRES_USER:-whumpf} -d $${POSTGRES_DB:-whumpf} --clean --if-exists --no-owner /tmp/restore.dump
+	$(COMPOSE) exec -T postgis rm -f /tmp/restore.dump
+
 # --- health -----------------------------------------------------------------
 
 .PHONY: health
@@ -104,12 +162,12 @@ dem-clean-cogs:  ## delete processed COGs so the next pipeline run recomputes fr
 # --- tests / lint -----------------------------------------------------------
 
 .PHONY: test-api
-test-api:  ## run backend pytest inside the api container
-	$(COMPOSE) exec api uv run pytest -q
+test-api:  ## run backend pytest in a one-off api container (uses the whumpf_test DB)
+	$(API_RUN) uv run pytest -q
 
 .PHONY: lint-api
 lint-api:  ## ruff check the backend
-	$(COMPOSE) exec api uv run ruff check app tests
+	$(API_RUN) uv run ruff check app tests migrations
 
 # --- backups ---------------------------------------------------------------
 

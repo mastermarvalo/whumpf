@@ -5,7 +5,8 @@ The roadmap and prompt list is in docs/PLAN.md. Read it when asked what's next o
 Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlchemy 2.x + PostGIS (`backend/`). Tiles: TiTiler (raster) + Martin (vector). Object storage: MinIO. Frontend: Vite + React + MapLibre (`frontend/`). Runs in containers via `compose.yml`, reverse-proxied by Nginx Proxy Manager.
 
 ## Hard rules
-- **No Alembic.** Schema comes from `Base.metadata.create_all()` in `backend/app/main.py`. Columns added to *existing* tables go in the idempotent `_SCHEMA_PATCHES` tuple (`ALTER TABLE ... IF NOT EXISTS` / `CREATE INDEX IF NOT EXISTS`). New tables need no patch.
+- **Schema changes go through Alembic** (`backend/migrations/`). Change the model, run `make makemigration m="..."`, read and fix the generated file (renames come out as drop+add; backfills are hand-written), then `make test-api`. Never edit `0001_baseline` or any applied migration; add a new one. No `create_all()` and no startup `ALTER` patches. `entrypoint.sh` runs `alembic upgrade head` on deploy. Details: `docs/runbook.md` §6.
+- **Never point tests or destructive commands at the live DB.** Tests rebuild `whumpf_test` from migrations; `0001_baseline` downgrade refuses on any other DB.
 - **Register every new model** in `app/models/__init__.py`.
 - **SQLAlchemy 2.x style only** — `Mapped[...]` + `mapped_column(...)`, timezone-aware `DateTime(timezone=True)`. Reference: `app/models/user.py`.
 - **No FK cascades and no ORM relationships.** Deleting a parent must explicitly delete child rows and `session.flush()` before deleting the parent (see `delete_trip`, `delete_route`); otherwise Postgres raises a FK violation (500).
@@ -24,15 +25,16 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 - Use `make <target>` for container ops, never raw podman/docker.
 
 ## Definition of done
-- `make test-api` passes. Add tests for any new authorization/visibility logic.
+- `make test-api` passes (it also fails if models and migrations differ). Add tests for any new authorization/visibility logic.
 - `make health` returns `"ready": true`.
 - New env vars go in `.env.example` with a comment.
 
 ## Where we are
 - Phase 2 backend is complete (refresh tokens, 6-digit email codes, password reset, change password/email, delete with password, Strava `return_to`). Next is Phase 3 (TestFlight); the backend part is likely serving the privacy policy, terms and credits pages. Not built yet.
 - Retire with the old site: `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS` must be off (`LEGACY_EMAIL_LINKS` too). Details in `docs/runbook.md`.
+- Alembic replaced `create_all` + `_SCHEMA_PATCHES` (baseline `0001_baseline`). Prod must be stamped once before the first deploy of it; steps in `docs/runbook.md` §6 "One-time cutover".
 
 ## Don't
-- Don't introduce Alembic, a second ORM, or another web framework.
+- Don't introduce a second ORM, a second migration tool, or another web framework.
 - Don't add public/feed/discovery/leaderboard features.
 - Don't commit real secrets; `.env` is gitignored.

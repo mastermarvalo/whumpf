@@ -5,20 +5,19 @@ through the real login, not the get_current_user override.
 
 from __future__ import annotations
 
-import secrets
 from collections.abc import Iterator
 from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select, text
+from sqlalchemy import select
 
 import app.routers.auth as auth_router
 from app.auth.codes import MAX_ATTEMPTS, hash_link_token
 from app.auth.service import _hash_refresh_token, hash_password, verify_password
 from app.config import get_settings
 from app.db import get_session
-from app.main import _SCHEMA_PATCHES, app
+from app.main import app
 from app.models import CodePurpose, EmailCode, RefreshToken, Trip, TripMember, User
 
 PASSWORD = "correct horse battery"
@@ -214,26 +213,6 @@ def test_legacy_links_off(client, db_session, outbox, unverified, monkeypatch):
     unverified.email_verification_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
     db_session.flush()
     assert client.post("/auth/verify-email/confirm", json={"token": "old-link"}).status_code == 400
-
-
-def test_schema_patch_hashes_old_plaintext_links(client, db_session, unverified):
-    """Links mailed before tokens were hashed keep working after the patch,
-    and the patch is idempotent."""
-    raw = secrets.token_urlsafe(32)
-    unverified.email_verification_token = raw
-    unverified.email_verification_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
-    db_session.flush()
-    for _ in range(2):
-        for stmt in _SCHEMA_PATCHES:
-            if stmt.startswith("UPDATE users"):
-                db_session.execute(text(stmt))
-    db_session.refresh(unverified)
-    assert unverified.email_verification_token == hash_link_token(raw)
-    # The stored hash itself is not a valid link token.
-    r = client.post("/auth/verify-email/confirm",
-                    json={"token": unverified.email_verification_token})
-    assert r.status_code == 400
-    assert client.post("/auth/verify-email/confirm", json={"token": raw}).status_code == 204
 
 
 # ── rate limits ───────────────────────────────────────────────────────────────

@@ -53,8 +53,8 @@ class Route(Base):
     summary: Mapped[dict] = mapped_column(JSONB, nullable=False)
     samples: Mapped[list] = mapped_column(JSONB, nullable=False)
 
-    # native_enum=False → stored as VARCHAR + CHECK constraint, so there's no
-    # Postgres enum type to migrate (we have no Alembic).
+    # native_enum=False → stored as plain VARCHAR, so adding a value needs no
+    # migration (there's no Postgres enum type to alter).
     visibility: Mapped[Visibility] = mapped_column(
         Enum(Visibility, native_enum=False, length=16),
         default=Visibility.private,

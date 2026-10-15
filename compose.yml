@@ -211,6 +211,8 @@ services:
       # Tests aren't copied into the image; mount them so `make test-api` runs
       # the current tests without a rebuild (dependency changes still rebuild).
       - ./backend/tests:/app/tests
+      # Mounted so `make makemigration` writes new revisions into the repo.
+      - ./backend/migrations:/app/migrations
     ulimits:
       nofile:
         soft: 65536
