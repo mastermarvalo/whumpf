@@ -23,6 +23,9 @@ TEST_DATABASE = "whumpf_test"
 os.environ["DATABASE_URL"] = (
     make_url(os.environ["DATABASE_URL"]).set(database=TEST_DATABASE).render_as_string(hide_password=False)
 )
+# Never send real email from tests: the container env may select Resend.
+os.environ["MAIL_PROVIDER"] = "console"
+os.environ["RESEND_API_KEY"] = ""
 
 import pytest  # noqa: E402
 from alembic import command  # noqa: E402
@@ -66,6 +69,50 @@ def recreate_test_database(url: URL) -> None:
             conn.exec_driver_sql(f'CREATE DATABASE "{TEST_DATABASE}"')
     finally:
         admin.dispose()
+
+
+@pytest.fixture(autouse=True)
+def no_network(monkeypatch):
+    """Fail any test that opens a network connection beyond loopback or a
+    unix socket. The attempt raises OSError (as if offline, so app code takes
+    its normal error path) and the test fails at teardown even if the app
+    swallowed it. libpq (the test DB) uses C sockets and isn't affected."""
+    import ipaddress
+    import socket
+
+    attempts: list[str] = []
+
+    def _local(host: str) -> bool:
+        if host in ("localhost", "testserver"):
+            return True
+        try:
+            return ipaddress.ip_address(host.split("%")[0]).is_loopback
+        except ValueError:
+            return False
+
+    real_getaddrinfo = socket.getaddrinfo
+
+    def guarded_getaddrinfo(host, *args, **kwargs):
+        name = host.decode() if isinstance(host, bytes) else str(host)
+        if host is not None and not _local(name):
+            attempts.append(f"resolve {name}")
+            raise socket.gaierror(socket.EAI_NONAME, f"network disabled in tests: {name}")
+        return real_getaddrinfo(host, *args, **kwargs)
+
+    def _guard(connect):
+        def guarded(self, address):
+            if self.family != socket.AF_UNIX and not _local(str(address[0])):
+                attempts.append(f"connect {address[0]}")
+                raise OSError(f"network disabled in tests: {address[0]}")
+            return connect(self, address)
+        return guarded
+
+    monkeypatch.setattr(socket, "getaddrinfo", guarded_getaddrinfo)
+    monkeypatch.setattr(socket.socket, "connect", _guard(socket.socket.connect))
+    monkeypatch.setattr(socket.socket, "connect_ex", _guard(socket.socket.connect_ex))
+    yield
+    if attempts:
+        pytest.fail(f"test tried to use the network: {attempts}")
 
 
 @pytest.fixture(autouse=True)
