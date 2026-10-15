@@ -144,6 +144,22 @@ From the NAS's NPM instance, point your domains at the VM's IP:
 | `tiles.whumpf.<your-domain>` | `http://<vm-ip>:3000` | Martin (MVT)      |
 | `rasters.whumpf.<your-domain>` | `http://<vm-ip>:8001` | TiTiler        |
 
+### Cloudflare cache
+
+`api.whumpf.co` is proxied by Cloudflare. A Cache Rule makes
+`https://api.whumpf.co/tiles/*` Eligible for cache (tile URLs have no file
+extension, so Cloudflare would not cache them by default). Cloudflare follows
+the API's `Cache-Control` (a day for most tiles). Check it with:
+
+```bash
+curl -sI "https://api.whumpf.co/tiles/slope/10/210/394?region=colorado" | grep -i cf-cache-status
+# first request MISS, then HIT; DYNAMIC means the rule is not applying
+```
+
+Each tile token (`?t=`) gets its own cache entry: removing a single query
+parameter from the cache key needs Enterprise (docs/PLAN.md, Tile access).
+After changing what a tile endpoint returns, purge `/tiles/*`.
+
 ### Loopback-only services
 
 Because every container uses host networking, ports are bound by each service
