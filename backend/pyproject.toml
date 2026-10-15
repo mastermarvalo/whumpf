@@ -53,4 +53,5 @@ dependencies = [
 # in the production image build.
 dev = [
     "pytest>=8.0",
+    "ruff>=0.6",
 ]

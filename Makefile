@@ -211,6 +211,10 @@ ski-tiles-refresh: ski-tiles ski-tiles-publish  ## the weekly job: fetch, build,
 test-api:  ## run backend pytest in a one-off api container (uses the whumpf_test DB)
 	$(API_RUN) uv run pytest -q
 
+.PHONY: lock-api
+lock-api:  ## update backend/uv.lock after editing pyproject.toml (then make build-api)
+	$(COMPOSE) run --rm --no-deps -T -v $(CURDIR)/backend:/src:Z -w /src api uv lock
+
 .PHONY: lint-api
 lint-api:  ## ruff check the backend
 	$(API_RUN) uv run ruff check app tests migrations
