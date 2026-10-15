@@ -229,13 +229,14 @@ bucket should now contain:
 - `user-uploads/...` (mirrored)
 
 ### Schedule daily
-```sh
-crontab -e
+Installed in the user crontab (`crontab -l`), 03:00 server time (Mountain;
+Ubuntu's cron ignores `CRON_TZ`). The `XDG_RUNTIME_DIR` / `DOCKER_HOST` lines
+at the top of the crontab let `podman` work without a login session:
 ```
-Add (3am UTC daily):
+0 3 * * * cd /home/ronkerflonk/whumpf && flock -n /data/backups/.backup.lock scripts/backup.sh >> /data/backups/backup.log 2>&1
 ```
-0 3 * * * /home/ronkerflonk/whumpf/scripts/backup.sh >> /var/log/whumpf-backup.log 2>&1
-```
+Until `BACKUP_S3_*` are set the script logs "nothing to do" and exits 0, so
+check `/data/backups/backup.log` for `complete` lines after configuring.
 The script self-prunes postgres dumps older than 30 days. `user-uploads/`
 mirrors are kept indefinitely (only new/changed files are uploaded each
 run — cheap incremental).
@@ -346,7 +347,7 @@ When you're getting close to opening signups:
 - [ ] Sentry capturing a synthetic test error
 - [ ] First successful `make backup` run, and a one-time **restore rehearsal**
   into a throwaway database
-- [ ] Cron entry confirmed running (`grep CRON /var/log/syslog`)
+- [ ] Cron entry confirmed running (`grep CRON /var/log/syslog`, and `complete` lines in `/data/backups/backup.log`)
 - [ ] UptimeRobot monitors green for at least 24h
 - [ ] CI passing on `main`
 - [ ] Strava client secret rotated (optional but recommended)

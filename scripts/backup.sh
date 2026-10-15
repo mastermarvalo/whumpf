@@ -13,8 +13,8 @@
 # Retention: postgres dumps older than 30 days are pruned; user-uploads is
 # mirrored without --remove so deletions on the source don't wipe the backup.
 #
-# Schedule via cron (3am UTC daily):
-#   0 3 * * * /home/ronkerflonk/whumpf/scripts/backup.sh >> /var/log/whumpf-backup.log 2>&1
+# Scheduled via cron, 3am server time daily (docs/external-services.md):
+#   0 3 * * * cd /home/ronkerflonk/whumpf && flock -n /data/backups/.backup.lock scripts/backup.sh >> /data/backups/backup.log 2>&1
 #
 # Configure: set BACKUP_S3_* in .env. See docs/external-services.md.
 
