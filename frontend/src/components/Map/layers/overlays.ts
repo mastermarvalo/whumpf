@@ -70,11 +70,22 @@ export function buildLayerGroups(regionId: string): LayerGroup[] {
           defaultVisible: false,
         },
         {
+          // Our own OSM vector tiles; source and layers live in layers/ski.ts.
           id: "ski-runs",
           label: "Ski resort runs",
-          tiles: ["https://tiles.opensnowmap.org/pistes/{z}/{x}/{y}.png"],
-          opacity: 0.85,
+          kind: "vector_overlay",
+          tiles: [],
+          opacity: 0.9,
           defaultVisible: false,
+          legend: {
+            swatches: [
+              { color: "#2e9e45", label: "Easy" },
+              { color: "#1f6fd1", label: "Intermediate" },
+              { color: "#111111", label: "Advanced / expert" },
+              { color: "#ff8a00", label: "Freeride" },
+              { color: "#c0262d", label: "Lift" },
+            ],
+          },
         },
       ],
       upcoming: [],

@@ -305,6 +305,147 @@ Rollback: `git checkout <previous commit> && make up`. The old code's
 `alembic_version`, so no database restore is needed. Only restore
 (`make db-restore`) if data itself is damaged.
 
+## 7. Ski run tiles
+
+Ski runs, lifts and ski area outlines come from OpenStreetMap (Geofabrik
+state extracts) and are rebuilt weekly into vector tiles. They replace the
+OpenSnowMap raster layer.
+
+```
+Geofabrik colorado-latest.osm.pbf
+  -> tilemaker (container, profile in data/pipelines/ski/)
+  -> /data/ski-work/out/ski_colorado.mbtiles      validated
+  -> /data/martin-tiles/ski_colorado.mbtiles      Martin source "ski_colorado"
+  -> GET /tiles/ski/{z}/{x}/{y}?region=colorado   API: tile token, rate limits, Cloudflare cache
+```
+
+Attribution: "© OpenStreetMap contributors" (ODbL), linked to
+<https://www.openstreetmap.org/copyright>. It is in the MBTiles metadata and
+must be shown whenever the layer is on. The tiles are an ODbL Produced Work,
+so attribution is all that is required, offline packs included.
+
+### Layers and fields
+
+The file has z8–14; clients set `maxzoom: 14` and overzoom. Every field is a
+string. `osm_id` is a string because tilemaker stores numbers as float32,
+which corrupts ids above 2^24.
+
+| Layer | Geometry | Zooms | Fields |
+| --- | --- | --- | --- |
+| `ski_runs` | lines; polygons for runs mapped as areas | 11–14 | `piste_type` (`downhill`, `nordic`, `skitour`), `difficulty` (`novice`, `easy`, `intermediate`, `advanced`, `expert`, `freeride`, `extreme`; absent if untagged), `grooming` (OSM value, `;` normalised to `+`, e.g. `classic+skating`, `mogul`, `backcountry`), `name`, `osm_id`, `osm_type` |
+| `ski_lifts` | lines | 10–14 | `lift_type` (`chair_lift`, `gondola`, `cable_car`, `mixed_lift`, `drag_lift`, `t-bar`, `j-bar`, `platter`, `rope_tow`, `magic_carpet`), `name`, `osm_id`, `osm_type` |
+| `ski_areas` | polygon outline + one point for the label | 8–14 | `name`, `osm_id`, `osm_type` |
+
+Nordic and skitour trails often get their tags from a `route=piste` relation;
+member ways inherit `piste_type`, `difficulty`, `grooming` and `name` from it.
+`osm_type` is `way` or `relation`. The layer and field list is enforced by
+`EXPECTED_FIELDS` in `data/pipelines/ski_tiles.py`; change it, `process.lua`,
+this table and the apps together.
+
+### Make targets
+
+| Target | What it does |
+| --- | --- |
+| `make ski-tiles` | fetch + build + validate. Does not touch what is served |
+| `make ski-tiles-publish` | validate again, swap into `/data/martin-tiles`, restart Martin, roll back on failure |
+| `make ski-tiles-refresh` | both; the weekly job |
+| `make ski-tiles-fetch` / `ski-tiles-build` | the single steps |
+| `make restart-martin` | restart Martin only |
+
+All take `REGION=` (default `colorado`), `SKI_WORKDIR=` (default
+`/data/ski-work`) and `SKI_TILES_DIR=` (default `/data/martin-tiles`). The
+workdir must be on the same filesystem as the tiles dir so the swap is an
+atomic rename; publish refuses otherwise. Needs `ogrinfo` (`gdal-bin`) and
+the pipeline venv (`.venv`, `data/pipelines/requirements.txt`).
+
+Workdir layout: `<region>/download/` (the extract and its `.md5`, re-downloaded
+only when Geofabrik's md5 changes), `out/` (latest build), `prev/` (the file
+served before the last publish), `<region>/published.json` (feature counts
+of the served file), `refresh.log` (cron output).
+
+### Weekly refresh
+
+User crontab (`crontab -l`), Tuesdays 04:00 server time (Mountain), outside
+ski hours and clear of the 03:00 backup:
+
+```
+XDG_RUNTIME_DIR=/run/user/1000
+DOCKER_HOST=unix:///run/user/1000/podman/podman.sock
+0 4 * * 2 cd /home/ronkerflonk/whumpf && flock -n /data/ski-work/.refresh.lock make ski-tiles-refresh >> /data/ski-work/refresh.log 2>&1
+```
+
+Cron has no login environment, so `DOCKER_HOST` and `XDG_RUNTIME_DIR` are
+needed for `make restart-martin` to reach rootless podman. Linger must stay on
+(`loginctl show-user $USER -p Linger`). A run takes about 15 seconds plus the
+download.
+
+### How the swap avoids downtime
+
+Martin only scans `/data/martin-tiles` at startup and keeps the old file open
+after a rename, so publishing needs a restart. Publish:
+
+1. validates the build (below); a failure exits non-zero and nothing changes;
+2. hard-links the served file to `prev/` (outside the tiles dir: Martin would
+   serve any `.mbtiles` left in there as an extra source);
+3. renames the build over the served file (atomic);
+4. restarts Martin and waits up to 60 s for `ski_colorado` in `/catalog`;
+   if it doesn't appear, puts `prev/` back and restarts again.
+
+Martin is unreachable for well under a second (measured: one missed 200 ms
+probe). The API's retries (`call_with_resilience`, about 0.5–3 s) cover that,
+and Cloudflare and the clients hold tiles they already have. The terrain
+MBTiles, also served by Martin, see the same blip.
+
+### Validation
+
+A build is refused if any of these fail:
+
+- layers and field names/types differ from `EXPECTED_FIELDS`;
+- attribution missing, format not `pbf`, or no tiles;
+- `bounds` outside the region bbox in `data/pipelines/ski/regions.json`;
+- a layer's z14 feature count is below the region's `min_features`, or less
+  than half of the served file's count (`published.json`). That is more likely
+  a truncated extract than real edits. If the drop is real, delete
+  `published.json` and publish again.
+
+### Rollback
+
+```bash
+ln -f /data/ski-work/prev/ski_colorado.mbtiles /data/ski-work/out/ski_colorado.mbtiles
+make ski-tiles-publish REGION=colorado
+```
+
+(Publish re-validates it and keeps the bad one in `prev/`.)
+
+To test the automatic rollback, point publish's "is Martin back" check at a
+dead port. Martin really restarts twice; the run takes about 2 minutes, exits
+1 with "previous file restored", and the served file's inode is unchanged
+(tested Oct 14):
+
+```bash
+make ski-tiles
+stat -c %i /data/martin-tiles/ski_colorado.mbtiles
+.venv/bin/python data/pipelines/ski_tiles.py --region colorado publish --martin-url http://127.0.0.1:3999
+stat -c %i /data/martin-tiles/ski_colorado.mbtiles   # same inode as before
+```
+
+### Adding a state
+
+1. Add the region to `backend/app/regions.py` (the API only proxies known ids).
+2. Add it to `data/pipelines/ski/regions.json`: Geofabrik path, bbox (the
+   extract's PBF header bbox is unreliable, so tilemaker gets it from here),
+   and `min_features` (about a quarter of a first build's counts).
+3. `make ski-tiles-refresh REGION=<id>`, then add a line to the crontab.
+
+### Bumping tilemaker
+
+Only a `master` tag is published, so `TILEMAKER_IMAGE` in the Makefile pins a
+digest. To update, pull `ghcr.io/systemed/tilemaker:master`, put its digest in
+the Makefile, run `make ski-tiles` and compare the counts with
+`published.json`. Known quirks of the pinned version: numeric attributes are
+float32, `AttributeInteger` silently drops the field, and its own
+"Generated ... lines: 0" summary line is wrong.
+
 ## Troubleshooting
 
 ### `api` container restarts repeatedly

@@ -1,0 +1,8 @@
+{
+  "_comment": "Region ids must match backend/app/regions.py. bbox is lon_min,lat_min,lon_max,lat_max of the Geofabrik extract (its PBF header bbox is not reliable). min_features is the z14 feature count below which a build is refused.",
+  "colorado": {
+    "geofabrik": "north-america/us/colorado",
+    "bbox": [-109.07, 36.98, -102.03, 41.02],
+    "min_features": { "ski_runs": 2000, "ski_lifts": 200, "ski_areas": 50 }
+  }
+}

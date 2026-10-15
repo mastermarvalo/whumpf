@@ -77,6 +77,7 @@ import {
   setTrailsOpacity,
   setTrailsVisibility,
 } from "./Map/layers/osm";
+import { addSkiLayers, setSkiOpacity, setSkiRegion, setSkiVisibility } from "./Map/layers/ski";
 import { readUrlState, writeUrlState } from "./Map/urlState";
 import {
   MEASURE_MARKER_STYLE,
@@ -391,6 +392,8 @@ export function Map({
       setStreetsVisibility(map, visibleRef.current["streets"] ?? false);
       addTrailsLayers(map, opacityRef.current["trails"] ?? 0.9, osmBeforeId);
       setTrailsVisibility(map, visibleRef.current["trails"] ?? false);
+      addSkiLayers(map, region.id, opacityRef.current["ski-runs"] ?? 0.9, osmBeforeId);
+      setSkiVisibility(map, visibleRef.current["ski-runs"] ?? false);
       addMeasureLayers(map);
       updateMeasureSource(map, measurePtsRef.current);
       // Terrain-rgb source: always loaded, never removed — setTerrain() is the only toggle.
@@ -1277,6 +1280,11 @@ export function Map({
   useEffect(() => { setStreetsOpacity(mapRef.current, streetsOpacity ?? 0.9); }, [streetsOpacity]);
   useEffect(() => { setTrailsVisibility(mapRef.current, !!trailsVisible); }, [trailsVisible]);
   useEffect(() => { setTrailsOpacity(mapRef.current, trailsOpacity ?? 0.9); }, [trailsOpacity]);
+  const skiVisible = visible["ski-runs"];
+  const skiOpacity = opacity["ski-runs"];
+  useEffect(() => { setSkiVisibility(mapRef.current, !!skiVisible); }, [skiVisible]);
+  useEffect(() => { setSkiOpacity(mapRef.current, skiOpacity ?? 0.9); }, [skiOpacity]);
+  useEffect(() => { setSkiRegion(mapRef.current, region.id); }, [region.id]);
 
   useFetchWithRetry<object>({
     enabled: !!snotelVisible,

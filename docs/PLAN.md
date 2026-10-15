@@ -198,7 +198,7 @@ Most of the old website's layers are not in the app yet. Observations need no ba
 | Aspect | TiTiler COG | No | Port; it is a natural partner to slope |
 | Contours | Backend `/tiles/contours` | No | Port after fixing the lag the website has |
 | Trails and peaks, streets | OpenFreeMap vector | No | Port; trails matter most for ski touring |
-| Ski resort runs | OpenSnowMap | No | Port |
+| Ski resort runs | OpenSnowMap | No | Done on the backend: our own OSM vector tiles at `/tiles/ski` (runbook §7); the app needs the layer |
 | Satellite | Esri | No | Use USGS imagery (NAIP, public domain, same USGS server as the topo map), online and in offline packs. Esri's terms forbid offline saving. NAIP is summer imagery, so a winter Sentinel-2 layer could follow |
 | Slope, hillshade, CAIC zones, SNOTEL, my routes, Strava | Various | Yes | Keep |
 

@@ -1,0 +1,39 @@
+{
+  "layers": {
+    "ski_areas": {
+      "minzoom": 8,
+      "maxzoom": 14,
+      "simplify_below": 12,
+      "simplify_level": 0.0003,
+      "simplify_ratio": 2.0
+    },
+    "ski_lifts": {
+      "minzoom": 10,
+      "maxzoom": 14,
+      "simplify_below": 12,
+      "simplify_level": 0.0001,
+      "simplify_ratio": 2.0
+    },
+    "ski_runs": {
+      "minzoom": 11,
+      "maxzoom": 14,
+      "simplify_below": 13,
+      "simplify_level": 0.0001,
+      "simplify_ratio": 2.0
+    }
+  },
+  "settings": {
+    "minzoom": 8,
+    "maxzoom": 14,
+    "basezoom": 14,
+    "include_ids": false,
+    "compress": "gzip",
+    "name": "Whumpf ski runs",
+    "version": "1.0",
+    "description": "Ski runs, lifts and ski areas from OpenStreetMap",
+    "metadata": {
+      "attribution": "<a href=\"https://www.openstreetmap.org/copyright\">\u00a9 OpenStreetMap contributors</a>",
+      "type": "overlay"
+    }
+  }
+}

@@ -159,6 +159,52 @@ dem-pipeline-test:  ## quick smoke-test (0.5°×0.5° bbox near Silverton, ~2 mi
 dem-clean-cogs:  ## delete processed COGs so the next pipeline run recomputes from downloaded tiles
 	rm -rf $(DEM_WORKDIR)/cog
 
+# --- ski run tiles ------------------------------------------------------------
+# OSM extract -> tilemaker -> $(SKI_TILES_DIR)/ski_<region>.mbtiles, served by
+# Martin and proxied at /tiles/ski. Weekly via cron: docs/runbook.md "Ski run tiles".
+# SKI_WORKDIR must be on the same filesystem as SKI_TILES_DIR (atomic swap).
+
+REGION        ?= colorado
+SKI_WORKDIR   ?= /data/ski-work
+SKI_TILES_DIR ?= /data/martin-tiles
+CONTAINER     ?= podman
+# Only a `master` tag is published; pin the digest and bump it deliberately.
+TILEMAKER_IMAGE ?= ghcr.io/systemed/tilemaker@sha256:d3eda2790458de727bb0096eebce775984fc060f60901dac6dbfbbb79ae17370
+SKI = $(PYTHON) data/pipelines/ski_tiles.py --region $(REGION) --workdir $(SKI_WORKDIR) --tiles-dir $(SKI_TILES_DIR)
+
+.PHONY: restart-martin
+restart-martin:  ## restart Martin so it picks up new or replaced .mbtiles files
+	$(COMPOSE) restart martin
+
+.PHONY: ski-tiles-fetch
+ski-tiles-fetch:  ## download the region's OSM extract (skipped if the md5 is unchanged)
+	$(SKI) fetch
+
+.PHONY: ski-tiles-build
+ski-tiles-build:  ## run tilemaker on the downloaded extract into $(SKI_WORKDIR)/out
+	mkdir -p $(SKI_WORKDIR)/out
+	$(CONTAINER) run --rm --network none \
+		-v $(SKI_WORKDIR)/$(REGION)/download:/in:ro \
+		-v $(CURDIR)/data/pipelines/ski:/cfg:ro \
+		-v $(SKI_WORKDIR)/out:/out \
+		$(TILEMAKER_IMAGE) --quiet \
+		--input /in/$$(basename $$(ls $(SKI_WORKDIR)/$(REGION)/download/*.osm.pbf)) \
+		--output /out/ski_$(REGION).mbtiles.tmp.mbtiles \
+		--bbox $$($(SKI) bbox) \
+		--config /cfg/config.json --process /cfg/process.lua
+	mv $(SKI_WORKDIR)/out/ski_$(REGION).mbtiles.tmp.mbtiles $(SKI_WORKDIR)/out/ski_$(REGION).mbtiles
+
+.PHONY: ski-tiles
+ski-tiles: ski-tiles-fetch ski-tiles-build  ## fetch + build + validate (does not touch what is served)
+	$(SKI) validate
+
+.PHONY: ski-tiles-publish
+ski-tiles-publish:  ## validate the build, swap it into $(SKI_TILES_DIR), restart Martin; rolls back on failure
+	$(SKI) publish
+
+.PHONY: ski-tiles-refresh
+ski-tiles-refresh: ski-tiles ski-tiles-publish  ## the weekly job: fetch, build, validate, publish
+
 # --- tests / lint -----------------------------------------------------------
 
 .PHONY: test-api

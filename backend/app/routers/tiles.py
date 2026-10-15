@@ -721,3 +721,66 @@ async def terrain_rgb_tile(
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=86400"},
     )
+
+
+# ── ski runs (vector, from Martin) ─────────────────────────────────────────────
+# Built weekly by `make ski-tiles-refresh` into /data/martin-tiles/ski_<region>.mbtiles
+# (docs/runbook.md "Ski run tiles"). The file has z8–14; clients overzoom past 14.
+_SKI_MAX_Z = 14
+
+
+@router.get("/ski/{z}/{x}/{y}")
+async def ski_tile(
+    z: int, x: int, y: int,
+    region: str = "colorado",
+) -> Response:
+    """Ski runs, lifts and ski areas (layers ski_runs, ski_lifts, ski_areas).
+
+    Passes Martin's gzipped protobuf through as is. The Martin source name is
+    derived from the validated region, never taken from the request.
+    """
+    validate_region(region)
+    if z < 0 or z > _SKI_MAX_Z or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
+        raise HTTPException(400, "tile coordinates out of range")
+
+    settings = get_settings()
+    url = f"{settings.martin_url}/ski_{region}/{z}/{x}/{y}"
+
+    async def _do() -> tuple[int, bytes, str | None]:
+        req = _HTTP.build_request("GET", url, headers={"Accept-Encoding": "gzip"})
+        r = await _HTTP.send(req, stream=True)
+        try:
+            # 404: no ski file for this region. Not an upstream failure, so
+            # don't raise and count it against the breaker.
+            if r.status_code != 404:
+                r.raise_for_status()
+            # aiter_raw: keep Martin's gzip instead of inflating and re-encoding.
+            body = b"".join([chunk async for chunk in r.aiter_raw()])
+            return r.status_code, body, r.headers.get("content-encoding")
+        finally:
+            await r.aclose()
+
+    try:
+        status, body, encoding = await call_with_resilience("martin", _do)
+    except CircuitOpenError:
+        raise HTTPException(503, "tile server temporarily unavailable")
+    except httpx.RequestError as exc:
+        logger.error("Martin unreachable: %s", exc)
+        raise HTTPException(502, "tile server unreachable") from exc
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "Martin returned %d for ski tile %s %d/%d/%d",
+            exc.response.status_code, region, z, x, y,
+        )
+        raise HTTPException(502, f"Martin returned {exc.response.status_code}") from exc
+
+    if status == 404:
+        logger.warning("Martin has no ski_%s source; run make ski-tiles-refresh", region)
+        raise HTTPException(404, "no ski tiles for this region")
+    if status == 204 or not body:
+        return Response(status_code=204, headers={"Cache-Control": "public, max-age=86400"})
+
+    headers = {"Cache-Control": "public, max-age=86400"}
+    if encoding:
+        headers["Content-Encoding"] = encoding
+    return Response(content=body, media_type="application/x-protobuf", headers=headers)
