@@ -89,7 +89,9 @@ services:
   # minio-init — one-shot bucket bootstrap
   # ---------------------------------------------------------------------------
   minio-init:
-    image: quay.io/minio/mc:latest
+    # Pinned; MinIO no longer serves mc images anonymously, so this release
+    # must already be cached on the host. Keep scripts/backup.sh in step.
+    image: quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z
     container_name: whumpf-minio-init
     network_mode: host
     depends_on:

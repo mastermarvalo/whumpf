@@ -223,10 +223,17 @@ BACKUP_INCLUDE_COGS=false
 ```sh
 make backup
 ```
-Output should end with `whumpf backup … complete`. On Backblaze, the
-bucket should now contain:
-- `postgres/postgres-<timestamp>.sql.gz`
+Output should show `uploaded and verified postgres/whumpf-<utc>.dump (sha256 …)`
+and end with `whumpf backup … complete`. The bucket (currently Cloudflare R2,
+`whumpf-backups`) should now contain:
+- `postgres/whumpf-<utc>.dump`: the same `pg_dump -Fc` file as the local
+  `make db-dump` in `/data/backups`, read back after upload and compared by
+  sha256
 - `user-uploads/...` (mirrored)
+
+Never stream `pg_dump` through `podman exec` into the upload: podman cuts
+the stream short and still exits 0. Two uploads made that way on 2026-10-14
+were truncated (6 of 16 tables) yet reported `complete`.
 
 ### Schedule daily
 Installed in the user crontab (`crontab -l`), 03:00 server time (Mountain;
@@ -235,24 +242,35 @@ at the top of the crontab let `podman` work without a login session:
 ```
 0 3 * * * cd /home/ronkerflonk/whumpf && flock -n /data/backups/.backup.lock scripts/backup.sh >> /data/backups/backup.log 2>&1
 ```
-Until `BACKUP_S3_*` are set the script logs "nothing to do" and exits 0, so
-check `/data/backups/backup.log` for `complete` lines after configuring.
+Each run first makes a local `make db-dump` into `/data/backups` and deletes
+local dumps older than 14 days (this part runs even without `BACKUP_S3_*`),
+then uploads. Check `/data/backups/backup.log` for `complete` lines.
+
+The mc image is pinned to `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z`
+(here and in `compose.yml`). MinIO no longer serves mc images anonymously
+(quay.io and Docker Hub both refuse, checked 2026-10-14), so it only exists
+where it is already cached; on a new host it has to come from somewhere else
+(e.g. `podman save`/`load` from this one). Its entrypoint is `mc`, so shell
+snippets need `--entrypoint sh ... -c '...'`.
 The script self-prunes postgres dumps older than 30 days. `user-uploads/`
 mirrors are kept indefinitely (only new/changed files are uploaded each
 run — cheap incremental).
 
 ### Restoring (rehearse this once!)
 ```sh
-# 1. Download the dump
+# 1. Download a dump (list them with `mc ls backup/$BUCKET/postgres/`)
+set -a; . ./.env; set +a
 podman run --rm --network host \
     -e ENDPOINT=$BACKUP_S3_ENDPOINT -e KEY=$BACKUP_S3_ACCESS_KEY \
     -e SECRET=$BACKUP_S3_SECRET_KEY -e BUCKET=$BACKUP_S3_BUCKET \
-    -v /tmp:/out:Z quay.io/minio/mc:latest sh -c \
+    -v /data/backups:/out --entrypoint sh quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
     'mc alias set backup "$ENDPOINT" "$KEY" "$SECRET" >/dev/null && \
-     mc cp "backup/$BUCKET/postgres/postgres-LATEST.sql.gz" /out/restore.sql.gz'
+     mc cp "backup/$BUCKET/postgres/whumpf-<utc>.dump" /out/'
 
-# 2. Restore into a fresh postgres (or replace existing — destructive!)
-gunzip -c /tmp/restore.sql.gz | podman exec -i whumpf-postgis psql -U whumpf -d whumpf
+# 2. Restore (replaces the live DB — destructive; stop the api first)
+make stop-api
+make db-restore FILE=/data/backups/whumpf-<utc>.dump CONFIRM=yes
+make up
 ```
 **Rehearse this with a throwaway database before you need it for real.**
 

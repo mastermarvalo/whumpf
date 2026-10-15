@@ -261,9 +261,19 @@ scratch DB built from migrations).
 ### Backups and restore
 
 ```bash
-make backup                      # off-site dump (scripts/backup.sh, BACKUP_S3_*)
+make backup                      # local db-dump + off-site dump (scripts/backup.sh, BACKUP_S3_*)
 make db-dump                     # local pg_dump -Fc → /data/backups/whumpf-<utc>.dump
 ```
+
+`make backup` runs daily from cron at 03:00 server time
+(docs/external-services.md, "Schedule daily"): a local `db-dump` (copy out
+of the container checked by sha256; dumps older than 14 days deleted), then
+the same file uploaded to Cloudflare R2 (`whumpf-backups/postgres/`, 30-day
+retention) and read back by sha256, then `user-uploads` mirrored. It logs to
+`/data/backups/backup.log` and ends with a `complete` line. If the local dump
+fails, nothing goes up for postgres, uploads are still mirrored, and it exits 1.
+An off-site dump restores the same way as a local one (download it, then
+`make db-restore`).
 
 `db-dump` writes inside the postgis container, checks the file with
 `pg_restore --list`, then copies it out (no streaming through `exec`, which
@@ -293,8 +303,8 @@ Before deploy (old api keeps serving throughout):
 ```bash
 cd ~/whumpf
 git log --oneline -1                  # the Alembic commit is checked out
-make backup                           # off-site
-make db-dump                          # local; must print "tables with data: 15" and the file
+make backup                           # local db-dump + off-site
+make db-dump                          # local; prints "tables with data: N" and the file
 make psql                             # select count(*) from users; … routes; … trips;  (note them)
 make build-api                        # new image; running api untouched
 make schema-diff                      # must end with "✓ schema identical"

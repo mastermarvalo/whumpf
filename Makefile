@@ -114,14 +114,18 @@ schema-diff:  ## diff the live schema against a scratch DB built from migrations
 BACKUP_DIR ?= /data/backups
 
 .PHONY: db-dump
+# DUMP_NAME= fixes the file name (scripts/backup.sh uses it to upload the same file).
 db-dump:  ## local pg_dump (custom format) to $(BACKUP_DIR)/whumpf-<utc>.dump, then verify it reads back
 	@mkdir -p $(BACKUP_DIR)
-	@set -e; f=whumpf-$$(date -u +%Y%m%dT%H%M%SZ).dump; \
+	@set -e; f=$${DUMP_NAME:-whumpf-$$(date -u +%Y%m%dT%H%M%SZ).dump}; \
 	$(COMPOSE) exec -T postgis pg_dump -U $${POSTGRES_USER:-whumpf} -d $${POSTGRES_DB:-whumpf} -Fc -f /tmp/$$f; \
 	$(COMPOSE) exec -T postgis sh -c "pg_restore --list /tmp/$$f | grep -c 'TABLE DATA' | sed 's/^/tables with data: /'"; \
+	want=$$($(COMPOSE) exec -T postgis sha256sum /tmp/$$f | cut -d' ' -f1); \
 	$(COMPOSE) cp postgis:/tmp/$$f $(BACKUP_DIR)/$$f.partial; \
 	$(COMPOSE) exec -T postgis rm -f /tmp/$$f; \
-	mv $(BACKUP_DIR)/$$f.partial $(BACKUP_DIR)/$$f; ls -lh $(BACKUP_DIR)/$$f
+	got=$$(sha256sum $(BACKUP_DIR)/$$f.partial | cut -d' ' -f1); \
+	if [ "$$got" != "$$want" ]; then echo "db-dump: copy out of the container is corrupt ($$got != $$want)"; rm -f $(BACKUP_DIR)/$$f.partial; exit 1; fi; \
+	mv $(BACKUP_DIR)/$$f.partial $(BACKUP_DIR)/$$f; ls -lh $(BACKUP_DIR)/$$f; echo "sha256 $$got"
 
 .PHONY: db-restore
 db-restore:  ## restore a db-dump: make db-restore FILE=/data/backups/x.dump CONFIRM=yes (stop the api first)
