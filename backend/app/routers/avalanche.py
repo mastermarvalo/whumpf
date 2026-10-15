@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 import httpx
 from fastapi import APIRouter, HTTPException, Query
@@ -355,7 +355,11 @@ async def _do_fetch_obs() -> dict:
         raise RuntimeError(f"CAIC observations error: {exc}") from exc
     records = resp.json()
     features = [f for r in records if (f := _build_obs_feature(r)) is not None]
-    data = {"type": "FeatureCollection", "features": features}
+    data = {
+        "type": "FeatureCollection",
+        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "features": features,
+    }
     _obs_cache = (data, datetime.utcnow())
     logger.info("CAIC observations cached (%d features)", len(features))
     return data
