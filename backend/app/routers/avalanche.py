@@ -18,10 +18,12 @@ logger = logging.getLogger("whumpf.avalanche")
 _FORECAST_TTL = timedelta(hours=1)
 _OBS_TTL      = timedelta(minutes=30)
 _AVID_TTL     = timedelta(hours=1)
+_ZONES_TTL    = timedelta(hours=24)
 
 _MAPLAYER_URL = "https://api.avalanche.org/v2/public/products/map-layer"
 _AVID_URL     = "https://avalanche.state.co.us/api-proxy/avid"
 _OBS_URL      = "https://api.avalanche.state.co.us/api/v2/observation_reports"
+_ZONES_URL    = "https://api.avalanche.state.co.us/api/v2/zones"
 
 _HTTP = httpx.AsyncClient(
     timeout=15.0,
@@ -38,6 +40,9 @@ _obs_lock  = asyncio.Lock()
 
 _avid_cache: tuple[tuple[list, dict], datetime] | None = None
 _avid_lock  = asyncio.Lock()
+
+_zones_cache: tuple[list[tuple[str, dict]], datetime] | None = None
+_zones_lock  = asyncio.Lock()
 
 
 # ── map-layer forecast (polygon fill layer) ────────────────────────────────────
@@ -142,6 +147,84 @@ async def _fetch_avid() -> tuple[list, dict]:
         return await _do_fetch_avid()
 
 
+# ── named backcountry zones (labels for AVID forecast areas) ───────────────────
+# AVID forecast areas carry only a hash id. CAIC's named backcountry zones
+# ("Vail & Summit County") give the tapped point a human label. Polygons change
+# rarely, so they're cached 24 h; a failed refresh keeps the last good copy.
+
+async def _do_fetch_zones() -> list[tuple[str, dict]]:
+    global _zones_cache
+
+    async def _do() -> list[tuple[str, dict]]:
+        r = await _HTTP.get(_ZONES_URL)
+        r.raise_for_status()
+        leaves = [
+            z for z in r.json()
+            if z.get("category") == "backcountry" and z.get("is_leaf") and z.get("geojson_url")
+        ]
+        geo_resps = await asyncio.gather(*(_HTTP.get(z["geojson_url"]) for z in leaves))
+        zones: list[tuple[str, dict]] = []
+        for z, gr in zip(leaves, geo_resps):
+            gr.raise_for_status()
+            for feat in gr.json().get("features", []):
+                geom = feat.get("geometry") or {}
+                if geom.get("type") in ("Polygon", "MultiPolygon"):
+                    name = (feat.get("properties") or {}).get("name") or z.get("title") or ""
+                    zones.append((name, geom))
+        return zones
+
+    try:
+        zones = await call_with_resilience("caic-zones", _do)
+    except httpx.HTTPError as exc:
+        raise RuntimeError(f"CAIC zones error: {exc}") from exc
+    if not zones:
+        raise RuntimeError("CAIC zones response had no backcountry polygons")
+    _zones_cache = (zones, datetime.utcnow())
+    logger.info("CAIC zones cached (%d)", len(zones))
+    return zones
+
+
+async def _bg_refresh_zones() -> None:
+    if _zones_lock.locked():
+        return
+    async with _zones_lock:
+        if _zones_cache is not None:
+            _, fetched_at = _zones_cache
+            if datetime.utcnow() - fetched_at < _ZONES_TTL:
+                return
+        try:
+            await _do_fetch_zones()
+        except Exception as exc:
+            logger.warning("CAIC zones background refresh failed: %s", exc)
+
+
+async def get_zones() -> list[tuple[str, dict]]:
+    """SWR: return cached data instantly; refresh in background when stale."""
+    if _zones_cache is not None:
+        zones, fetched_at = _zones_cache
+        if datetime.utcnow() - fetched_at >= _ZONES_TTL:
+            asyncio.ensure_future(_bg_refresh_zones())
+        return zones
+    async with _zones_lock:
+        if _zones_cache is not None:
+            return _zones_cache[0]
+        return await _do_fetch_zones()
+
+
+async def _zone_name_for_point(lat: float, lng: float) -> str | None:
+    """Name of the CAIC backcountry zone containing (lat, lng), or None if the
+    point is outside all zones or the zones can't be loaded."""
+    try:
+        zones = await get_zones()
+    except Exception as exc:
+        logger.warning("CAIC zones unavailable, labelling by area id: %s", exc)
+        return None
+    for name, geom in zones:
+        if name and _in_multipolygon(lat, lng, geom):
+            return name
+    return None
+
+
 # ── point-in-polygon (ray casting) ────────────────────────────────────────────
 
 def _ray_cross(lat: float, lng: float, ring: list) -> bool:
@@ -237,7 +320,8 @@ def _build_zone_detail(product: dict) -> dict:
 
 async def get_zone_detail_for_point(lat: float, lng: float) -> dict | None:
     """Resolve the CAIC zone forecast at (lat, lng) → a CaicZoneDetail dict with
-    an added ``zone`` label (area name or areaId), or None if no zone matches.
+    an added ``zone`` label (CAIC backcountry zone name containing the point,
+    else the areaId) and ``zone_id`` (the areaId), or None if no zone matches.
 
     Point-in-polygon first, falling back to nearest centroid. Reused by the
     /zone_detail endpoint and by trip creation (to freeze a forecast snapshot).
@@ -254,10 +338,13 @@ async def get_zone_detail_for_point(lat: float, lng: float) -> dict | None:
                 "name": feat["properties"].get("name") or aid,
             }
 
+    zone_name = await _zone_name_for_point(lat, lng)
+
     def _detail(product: dict) -> dict:
         aid = product.get("areaId")
         out = _build_zone_detail(product)
-        out["zone"] = (area_map.get(aid, {}).get("name") if aid else None) or aid or ""
+        out["zone"] = zone_name or (area_map.get(aid, {}).get("name") if aid else None) or aid or ""
+        out["zone_id"] = aid or ""
         return out
 
     for product in products:

@@ -17,7 +17,7 @@ from app import __version__
 from app.config import get_settings
 from app.rate_limit import limiter
 from app.routers import auth, avalanche, friends, health, regions, routes, snowpack, status as status_router, strava, terrain, tile_tokens, tiles, trips
-from app.routers.avalanche import get_forecast, get_observations
+from app.routers.avalanche import get_forecast, get_observations, get_zones
 from app.services.snotel import fetch_stations_geojson
 
 logger = logging.getLogger("whumpf")
@@ -32,9 +32,10 @@ async def _prewarm() -> None:
         fetch_stations_geojson(),
         get_forecast(),
         get_observations(),
+        get_zones(),
         return_exceptions=True,
     )
-    names = ["SNOTEL", "CAIC forecast", "CAIC obs"]
+    names = ["SNOTEL", "CAIC forecast", "CAIC obs", "CAIC zones"]
     for name, result in zip(names, results):
         if isinstance(result, Exception):
             logger.warning("Pre-warm %s failed: %s", name, result)

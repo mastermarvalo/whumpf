@@ -246,3 +246,28 @@ def test_delete_trip_removes_waypoints_members_and_routes(make_client, db_sessio
         assert db_session.scalars(select(model).where(model.trip_id == tid)).all() == []
     # The route itself belongs to the owner, not the trip, so it survives.
     assert db_session.get(Route, rid) is not None
+
+
+def test_create_trip_stores_named_caic_zone(make_client, monkeypatch):
+    """The snapshot's zone label is the CAIC zone name, with the area id kept."""
+    from datetime import datetime
+
+    from app.routers import avalanche
+
+    square = {"type": "MultiPolygon", "coordinates": [[[
+        [-107.0, 38.5], [-106.0, 38.5], [-106.0, 39.5], [-107.0, 39.5], [-107.0, 38.5],
+    ]]]}
+    product = {
+        "type": "avalancheforecast", "areaId": "area-1",
+        "dangerRatings": {"days": [{"alp": "high"}]}, "avalancheProblems": {"days": [[]]},
+    }
+    areas = {"features": [{"geometry": square, "properties": {"id": "area-1", "centroid": [-106.5, 39.0]}}]}
+    monkeypatch.setattr(avalanche, "_avid_cache", (([product], areas), datetime.utcnow()))
+    monkeypatch.setattr(avalanche, "_zones_cache", ([("Aspen", square)], datetime.utcnow()))
+    monkeypatch.setattr("app.routers.trips.get_zone_detail_for_point", avalanche.get_zone_detail_for_point)
+
+    owner = make_client("owner")
+    body = _create_trip(owner, [_make_route(owner)]).json()
+    assert body["caic_zone"] == "Aspen"
+    assert body["forecast_snapshot"]["zone"] == "Aspen"
+    assert body["forecast_snapshot"]["zone_id"] == "area-1"
