@@ -252,6 +252,11 @@ test-api:  ## run backend pytest in a one-off api container (uses the whumpf_tes
 lock-api:  ## update backend/uv.lock after editing pyproject.toml (then make build-api)
 	$(COMPOSE) run --rm --no-deps -T -v $(CURDIR)/backend:/src:Z -w /src api uv lock
 
+.PHONY: check-env
+check-env:  ## fail if a setting in .env.example or config.py isn't passed through compose.yml (also in CI)
+	python3 scripts/check_env_passthrough.py
+	python3 -m unittest discover -s scripts -p "test_check_env*.py"
+
 .PHONY: lint-api
 lint-api:  ## ruff check the backend
 	$(API_RUN) uv run ruff check app tests migrations

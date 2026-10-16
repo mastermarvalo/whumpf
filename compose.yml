@@ -181,6 +181,9 @@ services:
     environment:
       WHUMPF_ENV: ${WHUMPF_ENV:-dev}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-whumpf}:${POSTGRES_PASSWORD}@localhost:5432/${POSTGRES_DB:-whumpf}
+      DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
+      DB_MAX_OVERFLOW: ${DB_MAX_OVERFLOW:-10}
+      DB_POOL_RECYCLE_S: ${DB_POOL_RECYCLE_S:-1800}
       JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
       JWT_ALGORITHM: HS256
       JWT_ACCESS_TTL_MIN: "60"
@@ -199,16 +202,22 @@ services:
       STRAVA_REDIRECT_URI: ${STRAVA_REDIRECT_URI:-http://localhost:8000/auth/strava/callback}
       STRAVA_SUCCESS_URL: ${STRAVA_SUCCESS_URL:-http://localhost:5173}
       STRAVA_TOKEN_KEY: ${STRAVA_TOKEN_KEY:-}
+      STRAVA_RETURN_TO_ALLOW_DEV: ${STRAVA_RETURN_TO_ALLOW_DEV:-false}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5173}
       MAIL_PROVIDER: ${MAIL_PROVIDER:-console}
       MAIL_FROM: ${MAIL_FROM:-whumpf <no-reply@whumpf.local>}
       RESEND_API_KEY: ${RESEND_API_KEY:-}
+      EMAIL_VERIFICATION_TTL_S: ${EMAIL_VERIFICATION_TTL_S:-86400}
+      PASSWORD_RESET_TTL_S: ${PASSWORD_RESET_TTL_S:-3600}
       LEGACY_EMAIL_LINKS: ${LEGACY_EMAIL_LINKS:-true}
       ADMIN_EMAILS: ${ADMIN_EMAILS:-}
       SKIP_EMAIL_VERIFICATION: ${SKIP_EMAIL_VERIFICATION:-false}
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD required}@localhost:6379
       TILES_ALLOW_TOKENLESS: ${TILES_ALLOW_TOKENLESS:-true}
       NOHRSC_USER_AGENT: ${NOHRSC_USER_AGENT:-whumpf/0.1 (+https://whumpf.co)}
+      WEATHER_USER_AGENT: ${WEATHER_USER_AGENT:-whumpf/0.1 (+https://whumpf.co)}
+      WINDY_WEBCAMS_API_KEY: ${WINDY_WEBCAMS_API_KEY:-}
+      NPS_API_KEY: ${NPS_API_KEY:-}
     volumes:
       - ./backend/app:/app/app
       # Tests aren't copied into the image; mount them so `make test-api` runs

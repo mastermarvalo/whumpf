@@ -36,7 +36,7 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 ## Definition of done
 - `make test-api` passes (it also fails if models and migrations differ). Add tests for any new authorization/visibility logic.
 - `make health` returns `"ready": true`.
-- New env vars go in `.env.example` with a comment.
+- New env vars go in `.env.example` with a comment, and every Settings field goes in `compose.yml`'s api `environment:` with the same default as `config.py`. `make check-env` (also in CI) fails otherwise.
 
 ## Where we are
 - Phase 2 backend is complete (refresh tokens, 6-digit email codes, password reset, change password/email, delete with password, Strava `return_to`). Next is Phase 3 (Fix and verify; backend CI is done and green: ruff config plus fixes, 241 tests, old-site lockfile fixed. Remaining: Strava iPhone redirect, phone test of type-checked-only code, `/docs` off in prod, make `whumpf-ios` private). TestFlight is now Phase 7, the last; its backend part is likely serving the privacy policy, terms and credits pages. Not built yet.

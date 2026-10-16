@@ -32,6 +32,11 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
+      - name: Env passthrough (.env.example and config.py vs compose.yml)
+        run: |
+          python3 scripts/check_env_passthrough.py
+          python3 -m unittest discover -s scripts -p "test_check_env*.py"
+
       - name: Install uv
         uses: astral-sh/setup-uv@v10.3.0
         with:
