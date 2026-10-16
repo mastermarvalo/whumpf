@@ -8,6 +8,7 @@ Keep that logic here so the two callers can't drift apart.
 
 from __future__ import annotations
 
+import itertools
 from collections import Counter
 
 from pydantic import BaseModel
@@ -74,7 +75,7 @@ def summarise(samples: list) -> dict:
     aspects_bucketed = [a for a in aspects_bucketed if a is not None]
 
     gain = loss = 0.0
-    for a, b in zip(elevs, elevs[1:]):
+    for a, b in itertools.pairwise(elevs):
         delta = b - a
         if delta > 0:
             gain += delta

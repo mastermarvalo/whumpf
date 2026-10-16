@@ -269,7 +269,6 @@ async def fetch_stations_geojson() -> dict[str, Any]:
     refresh is triggered automatically). Only blocks on the very first call when
     there is no cached data yet.
     """
-    global _cache
 
     if _cache is not None:
         data, fetched_at = _cache

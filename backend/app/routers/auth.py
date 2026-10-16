@@ -4,7 +4,7 @@ email, delete, current-user."""
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from fastapi.security import OAuth2PasswordRequestForm
@@ -39,8 +39,18 @@ from app.auth.service import (
 from app.config import get_settings
 from app.db import get_session
 from app.models import (
-    CodePurpose, EmailCode, Friendship, MemberRole, MemberStatus, RefreshToken, Route,
-    RouteShare, Trip, TripMember, TripRoute, Waypoint,
+    CodePurpose,
+    EmailCode,
+    Friendship,
+    MemberRole,
+    MemberStatus,
+    RefreshToken,
+    Route,
+    RouteShare,
+    Trip,
+    TripMember,
+    TripRoute,
+    Waypoint,
 )
 from app.models.strava import StravaConnection
 from app.models.user import User
@@ -66,7 +76,7 @@ _BAD_CODE = "Invalid or expired code"
 
 
 def _now() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 def _norm_email(raw: str) -> str:
@@ -122,7 +132,7 @@ class VerifyEmailConfirmIn(BaseModel):
     token: str | None = None
 
     @model_validator(mode="after")
-    def _code_or_token(self) -> "VerifyEmailConfirmIn":
+    def _code_or_token(self) -> VerifyEmailConfirmIn:
         if not (self.token or (self.email and self.code)):
             raise ValueError("Send email and code")
         return self

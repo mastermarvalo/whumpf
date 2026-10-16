@@ -6,7 +6,7 @@ deletion. These go through the real login, not the get_current_user override.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -66,7 +66,7 @@ def test_login_returns_refresh_token_stored_hashed(client, db_session, user):
     assert row.user_id == user.id
     assert row.token_hash != raw
     assert row.revoked_at is None
-    assert row.expires_at - datetime.now(timezone.utc) > timedelta(days=59)
+    assert row.expires_at - datetime.now(UTC) > timedelta(days=59)
 
 
 def test_login_still_sets_session_cookie(client, user):
@@ -109,7 +109,7 @@ def test_reuse_outside_grace_revokes_everything(client, db_session, user):
     t1 = _login(client)["refresh_token"]
     other_device = _login(client)["refresh_token"]
     t2 = _refresh(client, t1).json()["refresh_token"]
-    _row(db_session, t1).rotated_at = datetime.now(timezone.utc) - timedelta(seconds=61)
+    _row(db_session, t1).rotated_at = datetime.now(UTC) - timedelta(seconds=61)
     db_session.flush()
 
     assert _refresh(client, t1).status_code == 401
@@ -170,7 +170,7 @@ def test_logout_without_valid_token_still_clears_cookie(client, user, kwargs):
 
 def test_expired_refresh_token_rejected(client, db_session, user):
     t1 = _login(client)["refresh_token"]
-    _row(db_session, t1).expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    _row(db_session, t1).expires_at = datetime.now(UTC) - timedelta(seconds=1)
     db_session.flush()
     assert _refresh(client, t1).status_code == 401
 
@@ -190,7 +190,7 @@ def test_password_reset_revokes_all(client, db_session, user):
     t1 = _login(client)["refresh_token"]
     t2 = _login(client)["refresh_token"]
     user.password_reset_token = hash_link_token("reset-tok")
-    user.password_reset_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    user.password_reset_token_expires_at = datetime.now(UTC) + timedelta(hours=1)
     db_session.flush()
 
     r = client.post("/auth/password-reset/confirm",

@@ -2,9 +2,8 @@
 
 from __future__ import annotations
 
-import time
 import logging
-from datetime import datetime, timezone
+import time
 from urllib.parse import urlencode
 
 import httpx

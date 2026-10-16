@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import base64
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
@@ -152,7 +152,7 @@ def _b64(d: dict) -> str:
 def test_tampered_return_to_is_rejected(make_client):
     client = make_client()
     header, _payload, sig = _state(client, "whumpf://strava").split(".")
-    claims = jwt.get_unverified_claims(".".join([header, _payload, sig]))
+    claims = jwt.get_unverified_claims(f"{header}.{_payload}.{sig}")
     claims["rt"] = "https://evil.com/"
     forged = ".".join([header, _b64(claims), sig])
     resp = _callback(client, code="ok", state=forged)
@@ -161,7 +161,7 @@ def test_tampered_return_to_is_rejected(make_client):
 
 
 def test_state_signed_with_other_key_is_rejected(make_client, users):
-    exp = datetime.now(timezone.utc) + timedelta(minutes=5)
+    exp = datetime.now(UTC) + timedelta(minutes=5)
     forged = jwt.encode(
         {"purpose": "strava_oauth", "uid": users["owner"].id, "rt": "whumpf://x", "exp": exp},
         "not-the-secret",
@@ -172,7 +172,7 @@ def test_state_signed_with_other_key_is_rejected(make_client, users):
 
 def test_wrong_purpose_is_rejected(make_client, users):
     s = get_settings()
-    exp = datetime.now(timezone.utc) + timedelta(minutes=5)
+    exp = datetime.now(UTC) + timedelta(minutes=5)
     other = jwt.encode(
         {"purpose": "something_else", "uid": users["owner"].id, "rt": "whumpf://x", "exp": exp},
         s.jwt_secret,

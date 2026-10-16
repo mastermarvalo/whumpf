@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
-from typing import AsyncGenerator
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -16,7 +16,21 @@ from slowapi.middleware import SlowAPIMiddleware
 from app import __version__
 from app.config import get_settings
 from app.rate_limit import limiter
-from app.routers import auth, avalanche, friends, health, regions, routes, snowpack, status as status_router, strava, terrain, tile_tokens, tiles, trips
+from app.routers import (
+    auth,
+    avalanche,
+    friends,
+    health,
+    regions,
+    routes,
+    snowpack,
+    strava,
+    terrain,
+    tile_tokens,
+    tiles,
+    trips,
+)
+from app.routers import status as status_router
 from app.routers.avalanche import get_forecast, get_observations, get_zones
 from app.services.snotel import fetch_stations_geojson
 

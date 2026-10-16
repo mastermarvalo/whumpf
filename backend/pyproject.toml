@@ -55,3 +55,17 @@ dev = [
     "pytest>=8.0",
     "ruff>=0.6",
 ]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's dependency/param declarations are meant to be call defaults.
+extend-immutable-calls = [
+    "fastapi.Depends",
+    "fastapi.Query",
+    "fastapi.Body",
+    "fastapi.Path",
+    "fastapi.Header",
+    "fastapi.Cookie",
+    "fastapi.File",
+    "fastapi.Form",
+    "fastapi.Security",
+]

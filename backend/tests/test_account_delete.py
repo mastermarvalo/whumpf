@@ -5,7 +5,7 @@ clean up every referencing row itself.
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 from geoalchemy2.shape import from_shape
 from shapely.geometry import LineString, Point
@@ -13,8 +13,17 @@ from sqlalchemy import or_, select
 
 from app.auth.service import hash_password
 from app.models import (
-    Friendship, FriendStatus, MemberRole, MemberStatus, Route, RouteShare, Trip,
-    TripMember, TripRoute, User, Waypoint,
+    Friendship,
+    FriendStatus,
+    MemberRole,
+    MemberStatus,
+    Route,
+    RouteShare,
+    Trip,
+    TripMember,
+    TripRoute,
+    User,
+    Waypoint,
 )
 
 
@@ -41,14 +50,14 @@ def _member(trip, user, role=MemberRole.member, status=MemberStatus.accepted,
             invited=None, responded=None):
     return TripMember(
         trip_id=trip.id, user_id=user.id, invited_email=user.email, role=role,
-        status=status, invited_at=invited or datetime.now(timezone.utc),
+        status=status, invited_at=invited or datetime.now(UTC),
         responded_at=responded,
     )
 
 
 def test_delete_me_cleans_up_everything(db_session, users, make_client):
     owner, other, third = users["owner"], users["other"], users["third"]
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     route_a, route_b = _route(owner, "A"), _route(owner, "B")
     other_route = _route(other, "keep")
@@ -92,8 +101,8 @@ def test_delete_me_cleans_up_everything(db_session, users, make_client):
     ])
     db_session.flush()
     owner_id, owner_email = owner.id, owner.email
-    ids = {k: v.id for k, v in dict(t1=t1, t2=t2, t3=t3, t4=t4, ra=route_a, rb=route_b,
-                                    ro=other_route, other=other, third=third).items()}
+    ids = {k: v.id for k, v in {"t1": t1, "t2": t2, "t3": t3, "t4": t4, "ra": route_a, "rb": route_b,
+                                    "ro": other_route, "other": other, "third": third}.items()}
 
     owner.hashed_password = hash_password("owner password")
     db_session.flush()

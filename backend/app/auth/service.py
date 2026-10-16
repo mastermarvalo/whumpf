@@ -3,7 +3,7 @@ from __future__ import annotations
 import hashlib
 import logging
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import bcrypt
 from fastapi import Response
@@ -33,7 +33,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def create_access_token(subject: str) -> str:
     s = get_settings()
-    exp = datetime.now(timezone.utc) + timedelta(minutes=s.jwt_access_ttl_min)
+    exp = datetime.now(UTC) + timedelta(minutes=s.jwt_access_ttl_min)
     return jwt.encode({"sub": subject, "exp": exp}, s.jwt_secret, algorithm=s.jwt_algorithm)
 
 
@@ -72,7 +72,7 @@ def issue_refresh_token(session: Session, user_id: int, family_id: str | None = 
         user_id=user_id,
         family_id=family_id or secrets.token_hex(16),
         token_hash=_hash_refresh_token(raw),
-        expires_at=datetime.now(timezone.utc)
+        expires_at=datetime.now(UTC)
         + timedelta(days=get_settings().refresh_token_ttl_days),
     ))
     return raw
@@ -97,7 +97,7 @@ def rotate_refresh_token(session: Session, raw: str) -> tuple[User, str]:
     Raises RefreshTokenError. Caller commits — also on error, so a reuse
     revocation sticks.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # FOR UPDATE: two concurrent refreshes with the same token serialize here,
     # so the second sees the first's revocation (and takes the grace path).
     row = session.scalars(
@@ -143,7 +143,7 @@ def revoke_refresh_family(session: Session, raw: str) -> None:
     session.execute(
         update(RefreshToken)
         .where(RefreshToken.family_id == family_id, RefreshToken.revoked_at.is_(None))
-        .values(revoked_at=datetime.now(timezone.utc)),
+        .values(revoked_at=datetime.now(UTC)),
     )
 
 
@@ -155,7 +155,7 @@ def revoke_all_refresh_tokens(
     stmt = (
         update(RefreshToken)
         .where(RefreshToken.user_id == user_id, RefreshToken.revoked_at.is_(None))
-        .values(revoked_at=datetime.now(timezone.utc))
+        .values(revoked_at=datetime.now(UTC))
     )
     if keep_family is not None:
         stmt = stmt.where(RefreshToken.family_id != keep_family)
@@ -169,7 +169,7 @@ def live_refresh_family(session: Session, user_id: int, raw: str) -> str | None:
             RefreshToken.token_hash == _hash_refresh_token(raw),
             RefreshToken.user_id == user_id,
             RefreshToken.revoked_at.is_(None),
-            RefreshToken.expires_at > datetime.now(timezone.utc),
+            RefreshToken.expires_at > datetime.now(UTC),
         ),
     )
 

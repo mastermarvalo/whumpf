@@ -6,7 +6,6 @@ import logging
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
-
 from pyproj import Geod
 
 from app.auth.dependencies import get_current_user
@@ -17,6 +16,8 @@ from app.services.profile_summary import (
     ProfileSummary,
     SlopeSample,
     _aspect_bucket,
+)
+from app.services.profile_summary import (
     summarise as _summarise,
 )
 

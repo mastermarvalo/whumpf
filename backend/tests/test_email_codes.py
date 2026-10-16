@@ -6,7 +6,7 @@ through the real login, not the get_current_user override.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime, timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -102,7 +102,7 @@ def test_register_sends_code_and_link_stored_hashed(client, db_session, outbox):
     u = db_session.scalars(select(User).where(User.email == "new@example.com")).one()
     row = _code_row(db_session, u.id, CodePurpose.verify_email)
     assert code not in row.code_hash and row.code_hash != code
-    assert timedelta(minutes=14) < row.expires_at - datetime.now(timezone.utc) <= timedelta(minutes=15)
+    assert timedelta(minutes=14) < row.expires_at - datetime.now(UTC) <= timedelta(minutes=15)
     assert u.email_verification_token == hash_link_token(token)
     assert token not in u.email_verification_token
 
@@ -151,7 +151,7 @@ def test_expired_code_rejected(client, db_session, outbox, unverified):
     client.post("/auth/verify-email/request", json={"email": unverified.email})
     code = _last(outbox, "send_verification_email")["code"]
     row = _code_row(db_session, unverified.id, CodePurpose.verify_email)
-    row.expires_at = datetime.now(timezone.utc) - timedelta(seconds=1)
+    row.expires_at = datetime.now(UTC) - timedelta(seconds=1)
     db_session.flush()
     r = client.post("/auth/verify-email/confirm", json={"email": unverified.email, "code": code})
     assert r.status_code == 400
@@ -210,7 +210,7 @@ def test_legacy_links_off(client, db_session, outbox, unverified, monkeypatch):
     client.post("/auth/verify-email/request", json={"email": unverified.email})
     assert _last(outbox, "send_verification_email")["token"] is None
     unverified.email_verification_token = hash_link_token("old-link")
-    unverified.email_verification_token_expires_at = datetime.now(timezone.utc) + timedelta(hours=1)
+    unverified.email_verification_token_expires_at = datetime.now(UTC) + timedelta(hours=1)
     db_session.flush()
     assert client.post("/auth/verify-email/confirm", json={"token": "old-link"}).status_code == 400
 

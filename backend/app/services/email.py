@@ -76,9 +76,9 @@ def _provider() -> MailProvider:
 def _code_parts(code: str, purpose: str) -> tuple[str, str]:
     return (
         f"Your code to {purpose}: {code}\n\nIt expires in 15 minutes.",
-        f"<p>Your code to {purpose}:</p>"
+        (f"<p>Your code to {purpose}:</p>"
         f'<p style="font-size:24px;font-weight:bold;letter-spacing:4px">{code}</p>'
-        f"<p>It expires in 15 minutes.</p>",
+        f"<p>It expires in 15 minutes.</p>"),
     )
 
 

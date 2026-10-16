@@ -68,17 +68,17 @@ _TERRAIN_CACHE_MAX = 1024  # ~30 KB/tile (256×256 RGB PNG) → ~30 MB ceiling
 # before the first render completes, the second waits on the same Future instead
 # of launching a duplicate render.  asyncio is single-threaded per uvicorn worker
 # so this dict needs no lock.
-_TERRAIN_IN_FLIGHT: dict[tuple, "asyncio.Future[bytes | None]"] = {}
+_TERRAIN_IN_FLIGHT: dict[tuple, asyncio.Future[bytes | None]] = {}
 
 
-def _cache_get(store: "OrderedDict[tuple, bytes]", key: tuple) -> bytes | None:
+def _cache_get(store: OrderedDict[tuple, bytes], key: tuple) -> bytes | None:
     if key not in store:
         return None
     store.move_to_end(key)
     return store[key]
 
 
-def _cache_put(store: "OrderedDict[tuple, bytes]", key: tuple, val: bytes, limit: int) -> None:
+def _cache_put(store: OrderedDict[tuple, bytes], key: tuple, val: bytes, limit: int) -> None:
     if key in store:
         store.move_to_end(key)
     else:
@@ -257,12 +257,12 @@ _RENDER_PX = 512
 _OUT_PX = 256
 
 # Rasterio GDAL env vars for vsicurl access to the MinIO public bucket.
-_COG_ENV = dict(
-    GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
-    CPL_VSIL_CURL_USE_HEAD="FALSE",
-    GDAL_HTTP_MULTIPLEX="YES",
-    GDAL_HTTP_VERSION="2",
-)
+_COG_ENV = {
+    "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+    "CPL_VSIL_CURL_USE_HEAD": "FALSE",
+    "GDAL_HTTP_MULTIPLEX": "YES",
+    "GDAL_HTTP_VERSION": "2",
+}
 
 # Minor line: dark, semi-transparent, thin.  Major: darker, opaque-ish, thicker.
 # Pixel widths are at _RENDER_PX resolution (halved after LANCZOS downsample).
@@ -310,19 +310,18 @@ def _render_contours(
     dst_transform = from_bounds(xmin, ymin, xmax, ymax, _RENDER_PX, _RENDER_PX)
 
     try:
-        with rasterio.Env(**_COG_ENV):
-            with rasterio.open(dem_url) as src:
-                reproject(
-                    source=rasterio.band(src, 1),
-                    destination=data,
-                    src_transform=src.transform,
-                    src_crs=src.crs,
-                    src_nodata=src.nodata,
-                    dst_transform=dst_transform,
-                    dst_crs=_WM_CRS,
-                    dst_nodata=-9999.0,
-                    resampling=Resampling.bilinear,
-                )
+        with rasterio.Env(**_COG_ENV), rasterio.open(dem_url) as src:
+            reproject(
+                source=rasterio.band(src, 1),
+                destination=data,
+                src_transform=src.transform,
+                src_crs=src.crs,
+                src_nodata=src.nodata,
+                dst_transform=dst_transform,
+                dst_crs=_WM_CRS,
+                dst_nodata=-9999.0,
+                resampling=Resampling.bilinear,
+            )
     except Exception as exc:
         logger.debug("contour DEM read failed: %s", exc)
         return None
@@ -638,19 +637,18 @@ def _render_terrain_rgb(
 
     data = np.full((total, total), np.nan, dtype=np.float32)
     dst_transform = from_bounds(xmin_b, ymin_b, xmax_b, ymax_b, total, total)
-    with rasterio.Env(**_TERRAIN_COG_ENV):
-        with rasterio.open(dem_url) as src:
-            reproject(
-                source=rasterio.band(src, 1),
-                destination=data,
-                src_transform=src.transform,
-                src_crs=src.crs,
-                src_nodata=src.nodata,
-                dst_transform=dst_transform,
-                dst_crs=_WM_CRS,
-                dst_nodata=np.nan,
-                resampling=Resampling.bilinear,
-            )
+    with rasterio.Env(**_TERRAIN_COG_ENV), rasterio.open(dem_url) as src:
+        reproject(
+            source=rasterio.band(src, 1),
+            destination=data,
+            src_transform=src.transform,
+            src_crs=src.crs,
+            src_nodata=src.nodata,
+            dst_transform=dst_transform,
+            dst_crs=_WM_CRS,
+            dst_nodata=np.nan,
+            resampling=Resampling.bilinear,
+        )
 
     # Crop border pixels back to 256×256.
     data = data[buf:buf + _TERRAIN_PX, buf:buf + _TERRAIN_PX]

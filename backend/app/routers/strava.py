@@ -6,7 +6,7 @@ import logging
 import secrets
 import time
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -17,11 +17,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.dependencies import get_current_user
+from app.config import get_settings
 from app.db import get_session
 from app.models.strava import StravaConnection
 from app.models.user import User
 from app.services import strava as strava_svc
-from app.config import get_settings
 
 router = APIRouter(tags=["strava"])
 logger = logging.getLogger("whumpf.strava")
@@ -80,7 +80,7 @@ def _make_state(user_id: int, return_to: str | None) -> str:
         "uid": user_id,
         "rt": return_to,
         "nonce": secrets.token_urlsafe(8),
-        "exp": datetime.now(timezone.utc) + _STATE_TTL,
+        "exp": datetime.now(UTC) + _STATE_TTL,
     }
     return jwt.encode(payload, s.jwt_secret, algorithm=s.jwt_algorithm)
 

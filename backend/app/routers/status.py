@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -176,7 +176,7 @@ def resolve_banner(
     if not banner:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Banner not found")
     if banner.resolved_at is None:
-        banner.resolved_at = datetime.now(timezone.utc)
+        banner.resolved_at = datetime.now(UTC)
         session.commit()
         session.refresh(banner)
         logger.info("status banner resolved: id=%s by=%s", banner.id, admin.id)

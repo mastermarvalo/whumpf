@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -94,7 +94,6 @@ async def _bg_refresh_forecast() -> None:
 
 async def get_forecast() -> dict:
     """SWR: return cached data instantly; refresh in background when stale."""
-    global _forecast_cache
     if _forecast_cache is not None:
         data, fetched_at = _forecast_cache
         if datetime.utcnow() - fetched_at < _FORECAST_TTL:
@@ -145,7 +144,6 @@ async def _do_fetch_avid() -> tuple[list, dict]:
 
 
 async def _fetch_avid() -> tuple[list, dict]:
-    global _avid_cache
     if _avid_cache is not None:
         result, fetched_at = _avid_cache
         if datetime.utcnow() - fetched_at < _AVID_TTL:
@@ -455,7 +453,7 @@ async def _do_fetch_obs() -> dict:
     features = [f for r in records if (f := _build_obs_feature(r)) is not None]
     data = {
         "type": "FeatureCollection",
-        "fetched_at": datetime.now(timezone.utc).isoformat(),
+        "fetched_at": datetime.now(UTC).isoformat(),
         "features": features,
     }
     _obs_cache = (data, datetime.utcnow())
@@ -479,7 +477,6 @@ async def _bg_refresh_obs() -> None:
 
 async def get_observations() -> dict:
     """SWR: return cached data instantly; refresh in background when stale."""
-    global _obs_cache
     if _obs_cache is not None:
         data, fetched_at = _obs_cache
         if datetime.utcnow() - fetched_at < _OBS_TTL:

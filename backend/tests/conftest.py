@@ -27,18 +27,18 @@ os.environ["DATABASE_URL"] = (
 os.environ["MAIL_PROVIDER"] = "console"
 os.environ["RESEND_API_KEY"] = ""
 
-import pytest  # noqa: E402
-from alembic import command  # noqa: E402
-from alembic.config import Config  # noqa: E402
-from fastapi.testclient import TestClient  # noqa: E402
-from sqlalchemy import create_engine  # noqa: E402
-from sqlalchemy.orm import Session  # noqa: E402
+import pytest
+from alembic import command
+from alembic.config import Config
+from fastapi.testclient import TestClient
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 
-from app.auth.dependencies import get_current_user  # noqa: E402
-from app.config import get_settings  # noqa: E402
-from app.db import get_session  # noqa: E402
-from app.main import app  # noqa: E402
-from app.models import User  # noqa: E402
+from app.auth.dependencies import get_current_user
+from app.config import get_settings
+from app.db import get_session
+from app.main import app
+from app.models import User
 
 ALEMBIC_INI = Path(__file__).resolve().parents[1] / "alembic.ini"
 
@@ -122,7 +122,7 @@ def tile_rate_limits(monkeypatch):
     from limits.storage import MemoryStorage
     from limits.strategies import FixedWindowRateLimiter
 
-    import app.tile_tokens as tile_tokens
+    from app import tile_tokens
 
     monkeypatch.setattr(tile_tokens, "_rate_limiter", FixedWindowRateLimiter(MemoryStorage()))
 
@@ -134,7 +134,7 @@ def endpoint_rate_limits(monkeypatch):
     from limits.storage import MemoryStorage
     from limits.strategies import FixedWindowRateLimiter
 
-    import app.rate_limit as rate_limit
+    from app import rate_limit
     from app.rate_limit import limiter
 
     storage = MemoryStorage()

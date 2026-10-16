@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 from dataclasses import dataclass
 
 import numpy as np
@@ -38,12 +39,12 @@ def _sample_coords(
     # dem-cogs bucket has anonymous download, so we read via HTTP/vsicurl
     # rather than the S3 driver (avoids rasterio 1.4+ credential restrictions).
     base = f"{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{region}"
-    env_vars = dict(
-        GDAL_DISABLE_READDIR_ON_OPEN="EMPTY_DIR",
-        CPL_VSIL_CURL_USE_HEAD="FALSE",
-        GDAL_HTTP_MULTIPLEX="YES",
-        GDAL_HTTP_VERSION="2",
-    )
+    env_vars = {
+        "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+        "CPL_VSIL_CURL_USE_HEAD": "FALSE",
+        "GDAL_HTTP_MULTIPLEX": "YES",
+        "GDAL_HTTP_VERSION": "2",
+    }
 
     def _sample_one(name: str) -> list[float | None]:
         """Sample a COG along coords. Prefer hires per-point, fall back to the
@@ -124,7 +125,7 @@ def sample_polyline(
 
     # Cumulative geodetic distance at each vertex (breakpoints for interpolation).
     vdist = [0.0]
-    for (lng0, lat0), (lng1, lat1) in zip(vertices, vertices[1:]):
+    for (lng0, lat0), (lng1, lat1) in itertools.pairwise(vertices):
         _, _, m = _geod.inv(lng0, lat0, lng1, lat1)
         vdist.append(vdist[-1] + m)
     total_m = vdist[-1]

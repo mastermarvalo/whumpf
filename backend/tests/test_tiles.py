@@ -20,8 +20,8 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-import app.routers.tiles as tiles
 from app.main import app
+from app.routers import tiles
 
 
 def _png_bytes(w: int, h: int) -> bytes:

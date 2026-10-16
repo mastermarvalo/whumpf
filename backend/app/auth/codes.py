@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import secrets
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -47,7 +47,7 @@ def issue_code(session: Session, user_id: int, purpose: CodePurpose, email: str)
         purpose=purpose,
         email=email,
         code_hash=_hash_code(user_id, purpose, code),
-        expires_at=datetime.now(timezone.utc) + CODE_TTL,
+        expires_at=datetime.now(UTC) + CODE_TTL,
     ))
     return code
 
@@ -57,7 +57,7 @@ def check_code(session: Session, user_id: int, purpose: CodePurpose, code: str) 
     matches. A wrong guess uses up an attempt; the MAX_ATTEMPTS-th burns the
     code. Raises CodeError. Caller commits — also on error, so attempts stick.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     # FOR UPDATE: parallel guesses serialize, so none slip past MAX_ATTEMPTS.
     row = session.scalars(
         select(EmailCode)

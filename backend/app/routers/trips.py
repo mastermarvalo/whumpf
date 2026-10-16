@@ -431,7 +431,7 @@ def respond_invite(
     if member is None:
         raise HTTPException(404, "No pending invite for this trip")
     member.user_id = user.id
-    member.responded_at = dt.datetime.now(dt.timezone.utc)
+    member.responded_at = dt.datetime.now(dt.UTC)
     member.status = (
         MemberStatus.accepted if payload.action == "accept" else MemberStatus.declined
     )

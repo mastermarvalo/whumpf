@@ -1,19 +1,34 @@
+from app.models.email_code import CodePurpose, EmailCode
+from app.models.friendship import Friendship, FriendStatus
+from app.models.refresh_token import RefreshToken
+from app.models.route import Route, Visibility
+from app.models.route_share import RouteShare
+from app.models.status import StatusBanner
+from app.models.strava import StravaConnection
+from app.models.trip import Trip
+from app.models.trip_member import MemberRole, MemberStatus, TripMember
+from app.models.trip_route import TripRoute
 from app.models.user import Base, User
-from app.models.strava import StravaConnection  # noqa: F401 — registers table with Base
-from app.models.route import Route, Visibility  # noqa: F401 — registers table with Base
-from app.models.route_share import RouteShare  # noqa: F401 — registers table with Base
-from app.models.friendship import Friendship, FriendStatus  # noqa: F401
-from app.models.trip import Trip  # noqa: F401
-from app.models.trip_route import TripRoute  # noqa: F401
-from app.models.trip_member import TripMember, MemberStatus, MemberRole  # noqa: F401
-from app.models.waypoint import Waypoint, WaypointKind  # noqa: F401
-from app.models.refresh_token import RefreshToken  # noqa: F401
-from app.models.email_code import CodePurpose, EmailCode  # noqa: F401
-from app.models.status import StatusBanner  # noqa: F401
+from app.models.waypoint import Waypoint, WaypointKind
 
 __all__ = [
-    "Base", "User", "StravaConnection", "Route", "Visibility", "RouteShare",
-    "Friendship", "FriendStatus", "Trip", "TripRoute", "TripMember",
-    "MemberStatus", "MemberRole", "Waypoint", "WaypointKind", "RefreshToken",
-    "CodePurpose", "EmailCode", "StatusBanner",
+    "Base",
+    "CodePurpose",
+    "EmailCode",
+    "FriendStatus",
+    "Friendship",
+    "MemberRole",
+    "MemberStatus",
+    "RefreshToken",
+    "Route",
+    "RouteShare",
+    "StatusBanner",
+    "StravaConnection",
+    "Trip",
+    "TripMember",
+    "TripRoute",
+    "User",
+    "Visibility",
+    "Waypoint",
+    "WaypointKind",
 ]

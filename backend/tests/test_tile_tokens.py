@@ -14,13 +14,13 @@ from fastapi.testclient import TestClient
 from limits import parse
 from starlette.requests import Request
 
-import app.routers.tiles as tiles
-import app.tile_tokens as tile_tokens
+from app import tile_tokens
 from app.auth.service import SESSION_COOKIE, create_access_token, decode_token
 from app.config import get_settings
 from app.db import get_session
 from app.main import app
 from app.rate_limit import client_ip
+from app.routers import tiles
 from tests.test_tiles import _png_bytes
 
 TILE = "/tiles/slope/10/210/394?region=colorado"

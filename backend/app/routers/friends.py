@@ -7,7 +7,7 @@ A private party graph used to invite people to trips. No name search / discovery
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -94,7 +94,7 @@ def respond(
         raise HTTPException(404, "Friend request not found")
     if payload.action == "accept":
         fr.status = FriendStatus.accepted
-        fr.responded_at = datetime.now(timezone.utc)
+        fr.responded_at = datetime.now(UTC)
     else:
         session.delete(fr)
     session.commit()

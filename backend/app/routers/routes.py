@@ -6,9 +6,10 @@ Phase B: share-link create/revoke, token-scoped view, and clone.
 
 from __future__ import annotations
 
+import itertools
 import logging
 import secrets
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 import numpy as np
@@ -22,7 +23,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.auth.access import (
-    assert_can_edit, assert_can_view, has_valid_share_token, is_strava_sourced,
+    assert_can_edit,
+    assert_can_view,
+    has_valid_share_token,
+    is_strava_sourced,
 )
 from app.auth.dependencies import get_current_user
 from app.config import Settings, get_settings
@@ -161,7 +165,7 @@ def _to_list_item(route: Route) -> RouteListItem:
 def _vertex_distances(vertices: list[tuple[float, float]]) -> list[float]:
     """Cumulative geodetic distance (m) at each vertex."""
     dists = [0.0]
-    for (lng0, lat0), (lng1, lat1) in zip(vertices, vertices[1:]):
+    for (lng0, lat0), (lng1, lat1) in itertools.pairwise(vertices):
         _, _, m = _GEOD.inv(lng0, lat0, lng1, lat1)
         dists.append(dists[-1] + m)
     return dists
@@ -470,7 +474,7 @@ def revoke_share(
     if share is None:
         raise HTTPException(404, "Share link not found")
 
-    share.revoked_at = datetime.now(timezone.utc)
+    share.revoked_at = datetime.now(UTC)
     # Any *other* active links left? (Query excludes this token explicitly so it's
     # correct without relying on the unflushed revoked_at above.)
     others = session.scalars(

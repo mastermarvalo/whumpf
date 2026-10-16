@@ -6,7 +6,6 @@ Terrain sampling is mocked so these run without COG/network access.
 from __future__ import annotations
 
 import pytest
-
 from sqlalchemy import select
 
 from app.models.route_share import RouteShare

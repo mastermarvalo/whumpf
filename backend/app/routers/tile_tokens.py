@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Body, Depends, HTTPException, status
 from pydantic import BaseModel, Field
@@ -44,4 +44,4 @@ def create_tile_token(
             status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
             detail="install_id is required when not signed in",
         )
-    return TileTokenResponse(token=token, expires_at=datetime.fromtimestamp(exp, tz=timezone.utc))
+    return TileTokenResponse(token=token, expires_at=datetime.fromtimestamp(exp, tz=UTC))
