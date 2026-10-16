@@ -23,7 +23,7 @@ from app.db import get_session
 from app.models.status import StatusBanner
 from app.models.user import User
 from app.regions import REGIONS
-from app.services import snowfall
+from app.services import rasterlayer, snowdepth, snowfall
 
 router = APIRouter(prefix="/status", tags=["status"])
 logger = logging.getLogger("whumpf.status")
@@ -85,18 +85,41 @@ async def _check_snowfall() -> ServiceHealth:
     return ServiceHealth(name="snowfall", healthy=not problems, detail="; ".join(problems) or None)
 
 
+async def _check_layer(
+    name: str, read_pointer, stale_after: timedelta,
+) -> ServiceHealth:
+    """Healthy when every region's weather layer `name` (one served revision
+    in latest.json under "current") is newer than `stale_after`."""
+    problems: list[str] = []
+    now = datetime.now(UTC)
+    try:
+        for region in REGIONS:
+            entry = (await read_pointer(region) or {}).get("current") or {}
+            if problem := rasterlayer.age_problem(region, entry.get("valid"), stale_after, now):
+                problems.append(problem)
+    except Exception as exc:
+        logger.warning("status check failed (%s)", name, exc_info=True)
+        return ServiceHealth(name=name, healthy=False, detail=str(exc)[:200])
+    return ServiceHealth(name=name, healthy=not problems, detail="; ".join(problems) or None)
+
+
+async def _check_snowdepth() -> ServiceHealth:
+    return await _check_layer("snowdepth", snowdepth.read_pointer, snowdepth.STALE_AFTER)
+
+
 async def _check_services(session: Session) -> list[ServiceHealth]:
     # api is implicitly healthy if it's responding to this request, but we
     # report it explicitly so the frontend doesn't have to know that.
     api = ServiceHealth(name="api", healthy=True)
     postgres = await _check_postgres(session)
-    minio, titiler, martin, snow = await asyncio.gather(
+    minio, titiler, martin, snow, depth = await asyncio.gather(
         _probe("minio",   "http://localhost:9000/minio/health/live"),
         _probe("titiler", "http://localhost:8001/"),
         _probe("martin",  "http://localhost:3000/health"),
         _check_snowfall(),
+        _check_snowdepth(),
     )
-    return [api, postgres, minio, titiler, martin, snow]
+    return [api, postgres, minio, titiler, martin, snow, depth]
 
 
 def _overall(services: list[ServiceHealth], active_banner: StatusBanner | None) -> str:

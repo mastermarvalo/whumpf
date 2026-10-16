@@ -217,6 +217,15 @@ ski-tiles-refresh: ski-tiles ski-tiles-publish  ## the weekly job: fetch, build,
 snowfall-refresh:  ## fetch the newest NOHRSC 24 h/72 h snowfall into MinIO (the hourly job); ARGS=--dry-run writes nothing
 	$(API_RUN) uv run python -m app.jobs.snowfall_refresh $(ARGS)
 
+# --- weather layers ----------------------------------------------------------
+# NOAA snow depth, temperature and radar -> dem-cogs/<layer>/<region>/ in
+# MinIO, served under /tiles. Cron lines: docs/runbook.md "Weather layers".
+# ARGS=--dry-run downloads and validates but writes nothing.
+
+.PHONY: snowdepth-refresh
+snowdepth-refresh:  ## fetch the newest SNODAS snow depth into MinIO (hourly job); ARGS=--dry-run writes nothing
+	$(API_RUN) uv run python -m app.jobs.snowdepth_refresh $(ARGS)
+
 # --- tests / lint -----------------------------------------------------------
 
 .PHONY: test-api

@@ -29,6 +29,7 @@ from app.routers import (
     tile_tokens,
     tiles,
     trips,
+    weather_tiles,
 )
 from app.routers import status as status_router
 from app.routers.avalanche import get_forecast, get_observations, get_zones
@@ -106,6 +107,7 @@ def create_app() -> FastAPI:
     app.include_router(strava.router)
     app.include_router(tile_tokens.router)
     app.include_router(tiles.router)
+    app.include_router(weather_tiles.router)
     app.include_router(terrain.router)
     app.include_router(snowpack.router)
     app.include_router(avalanche.router)

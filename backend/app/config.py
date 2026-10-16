@@ -57,6 +57,11 @@ class Settings(BaseSettings):
     # Sent with every download. NOAA states no policy; a contact helps them.
     nohrsc_user_agent: str = "whumpf/0.1 (+https://whumpf.co)"
 
+    # --- NOAA weather layers and spot forecast (docs/runbook.md §9) ---------
+    # Sent to NSIDC, MRMS, RTMA and api.weather.gov. api.weather.gov requires
+    # a User-Agent and asks for contact details in it.
+    weather_user_agent: str = "whumpf/0.1 (+https://whumpf.co)"
+
     # --- Strava OAuth --------------------------------------------------------
     strava_client_id: str = ""
     strava_client_secret: str = ""

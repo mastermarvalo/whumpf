@@ -582,6 +582,100 @@ To start over, delete `dem-cogs/snowfall/<region>/latest.json` (MinIO
 console) and run `make snowfall-refresh`: it picks the newest issue from the
 last 3 days.
 
+## 9. Weather layers
+
+Snow depth, current temperature and radar, all from NOAA, built the same way
+as recent snowfall (§8). A cron job fetches the NOAA grid, validates it, clips
+it to each region's `max_bounds` and writes a COG plus `latest.json` to
+`dem-cogs/<layer>/<region>/` in MinIO. The API serves `meta` and
+TiTiler-rendered tiles under `/tiles`, so tile tokens, rate limits and the
+Cloudflare rule apply. The shared code is `app/services/rasterlayer.py`; the
+routes are in `app/routers/weather_tiles.py`.
+
+Downloads send `WEATHER_USER_AGENT` (`.env.example`). These layers are
+online-only and never go into offline packs.
+
+### Sources and credits
+
+All of it is US government data: free for any lawful use, including in an app
+with in-app purchases. Show the credit whenever the layer is on (`meta` gives
+`attribution` and `attribution_url`), don't use NOAA/NWS logos, and don't
+imply that NOAA endorses the app or that recoloured data is official NOAA
+output (<https://www.weather.gov/disclaimer>).
+
+| Layer | Source | Credit | Terms |
+| --- | --- | --- | --- |
+| Snow depth | NOHRSC SNODAS, daily, 1 km, distributed by NSIDC as G02158 | NOAA/NWS NOHRSC SNODAS | NSIDC asks for a citation as a condition of use: <https://nsidc.org/data/g02158/versions/1>. The app's credits page should carry: National Operational Hydrologic Remote Sensing Center. 2004. Snow Data Assimilation System (SNODAS) Data Products at NSIDC, Version 1. G02158. NSIDC. doi:10.7265/N5TB14TC |
+
+### Cron
+
+User crontab, next to the snowfall line (the `XDG_RUNTIME_DIR` and
+`DOCKER_HOST` lines at the top of the crontab are needed here too). Each
+job needs its directory (`mkdir -p /data/snowdepth`).
+
+```
+35 * * * * cd /home/ronkerflonk/whumpf && flock -n /data/snowdepth/.refresh.lock make snowdepth-refresh >> /data/snowdepth/refresh.log 2>&1
+```
+
+Every job takes `ARGS=--dry-run` (download and validate, write nothing) and
+`ARGS="--region colorado"`, and exits 1 if anything failed.
+
+### Snow depth
+
+```
+https://noaadata.apps.nsidc.org/NOAA/G02158/masked/YYYY/MM_Mon/SNODAS_YYYYMMDD.tar
+  -> make snowdepth-refresh (hourly at :35, app/jobs/snowdepth_refresh.py)
+  -> MinIO dem-cogs/snowdepth/<region>/<YYYYMMDD>-<sha8>.tif
+     MinIO dem-cogs/snowdepth/<region>/latest.json
+  -> GET /tiles/snowdepth/meta?region=colorado
+     GET /tiles/snowdepth/{z}/{x}/{y}?region=colorado&v=<revision>
+```
+
+- One analysis a day, valid at 06Z (midnight MDT); NSIDC posts the archive
+  around midday. The run asks for days newer than the served one and
+  re-checks the served day with `If-None-Match`, so most runs are one
+  304 or 404.
+- The archive is a ~8 MB tar of gzipped flat binaries. Only product 1036
+  (snow depth) is read: big-endian int16 millimetres, nodata -9999, 1/120°
+  grid whose extent comes from the `.txt` header. Served in **inches**.
+- Refused unless the header says int16 millimetres at 1/120°, the grid size
+  matches, the archive's date is the day asked for, at least half the
+  region has data, and values are 0–1000 in.
+- About 350 KB per region per day. `meta` sets `stale` after 48 h.
+
+Legend, inches (under 0.5 in is transparent; one list in
+`app/services/snowdepth.py`):
+
+| 0.5–6 | 6–12 | 12–24 | 24–36 | 36–48 | 48–72 | 72–96 | 96–120 | 120+ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `#dcebf7` | `#b3d3ee` | `#84b6e1` | `#5596d1` | `#3474bc` | `#2a52a0` | `#40388c` | `#5f2783` | `#7d1670` |
+
+### `meta` and tiles
+
+`GET /tiles/<layer>/meta?region=` returns `units`, `attribution`,
+`attribution_url`, `bounds`, `maxzoom` (overzoom past it), `legend` (`min`,
+`max`, `color`, `label`; `null` is an open end) and `available`. When data
+exists it also has `valid` (UTC), `revision`, `fetched`, `stale` and `tiles`
+(a URL template that already carries `v`; add `t`), plus the layer's stats.
+
+| Endpoint | Cache-Control |
+| --- | --- |
+| `meta` | 300 s; 60 s before the first ingest |
+| tile with the current `v` | 1 day |
+| tile without `v` or with an old one (serves the current data) | 15 min |
+| no data yet, or MinIO unreadable | 503 `no-store` |
+
+### Failures and recovery
+
+A refused file never replaces what is served, and a NOAA or NSIDC outage
+keeps the last good data; `meta` shows its age through `valid` and `stale`.
+`GET /status` has an item per layer (`snowdepth`, ...) that turns unhealthy
+past the same limit as `stale`. `/readyz` does not depend on them.
+
+Revisions not referenced by `latest.json` are deleted after 7 days. Nothing
+needs backing up; to start over, delete `dem-cogs/<layer>/<region>/latest.json`
+and run the job.
+
 ## Troubleshooting
 
 ### `api` container restarts repeatedly
