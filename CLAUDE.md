@@ -36,7 +36,7 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 - New env vars go in `.env.example` with a comment.
 
 ## Where we are
-- Phase 2 backend is complete (refresh tokens, 6-digit email codes, password reset, change password/email, delete with password, Strava `return_to`). Next is Phase 3 (Fix and verify: backend CI green via ruff config, Strava iPhone redirect, phone test of type-checked-only code, `/docs` off in prod, make `whumpf-ios` private). TestFlight is now Phase 7, the last; its backend part is likely serving the privacy policy, terms and credits pages. Not built yet.
+- Phase 2 backend is complete (refresh tokens, 6-digit email codes, password reset, change password/email, delete with password, Strava `return_to`). Next is Phase 3 (Fix and verify; backend CI is done and green: ruff config plus fixes, 241 tests, old-site lockfile fixed. Remaining: Strava iPhone redirect, phone test of type-checked-only code, `/docs` off in prod, make `whumpf-ios` private). TestFlight is now Phase 7, the last; its backend part is likely serving the privacy policy, terms and credits pages. Not built yet.
 - Retire with the old site: `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS` must be off (`LEGACY_EMAIL_LINKS` too). Details in `docs/runbook.md`.
 - Done: Alembic replaced `create_all` + `_SCHEMA_PATCHES`; prod is stamped at `0001_baseline`. Schema changes go through `make makemigration`; tests run on `whumpf_test` (`docs/runbook.md` §6).
 - Done: our own ski run tiles at `/tiles/ski`, rebuilt weekly (Tuesdays 04:00) with automatic rollback (`docs/runbook.md` §7).

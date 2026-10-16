@@ -66,7 +66,7 @@ Stabilize first, then build iPhone and web together.
 | 0. Stabilize (start here) | Push laptop fixes, fix tile retries, diagnose timeouts; smoke test the real API; refresh CLAUDE.md and STATUS.md | Map and taps work with the real API |
 | 1. Safe for friends | Strava routes owner-only; account deletion fixed; signed tile tokens and rate limits | No Strava data reaches another user |
 | 2. Accounts in the app | Sign-up, verify email, reset password, delete account; refresh tokens; Strava connect returns to the app | A friend signs up on the phone |
-| 3. Fix and verify | Backend CI green via a ruff config; Strava connect returns to the iPhone app; phone test of the code that was only type-checked; `/docs` off in prod; `whumpf-ios` made private | Everything built so far works on the phone and CI is green |
+| 3. Fix and verify | ~~Backend CI green via a ruff config~~ (done); Strava connect returns to the iPhone app; phone test of the code that was only type-checked; `/docs` off in prod; `whumpf-ios` made private | Everything built so far works on the phone and CI is green |
 | 4. Core features | Recent snowfall, layer order and opacity, weather, spot forecast, wind arrows, mountain cameras, outage banners, route hazard summary, Munter times, phone inclinometer, slope-above-you runout tap check, trip editing, in-app sharing, GPX, trip briefing, GPS recording, forecast-change alerts, Strava 7-day rules and deauth webhook, offline map downloads, offline 3D | Web covers the old site |
 | 5. Swap whumpf.co | Parity check, CORS update, email link routes; point whumpf.co at Expo web, delete old frontend | One codebase serves both |
 | 6. Polish | Before-and-after renders of each screen; pick designs, then prompt the changes | |
@@ -147,7 +147,7 @@ One prompt per change, in order. Each names its repo. Backend prompts let Claude
 ### Phase 3: Fix and verify
 
 ```text
-[whumpf] Get backend CI green: add a ruff config (the 181 errors), fix what is left in one commit with no behaviour changes, and run `make lint-api` in CI.
+[whumpf] ~~Get backend CI green~~ Done: ruff config, fixes, 241 tests passing, and the old site's lockfile fixed; Actions run is green.
 ```
 
 ```text
@@ -357,7 +357,7 @@ Dropping only the `t` parameter from the cache key is listed as an Enterprise op
 
 Backend work with no phase yet.
 
-- [ ] **Backend lint cleanup:** now Phase 3. 181 ruff errors; one commit with no behaviour changes, then run `make lint-api` in CI.
+- [x] **Backend lint cleanup:** done (Phase 3). Ruff config added and all errors fixed with no behaviour changes; CI runs ruff and pytest on every push.
 - [ ] **Restore rehearsal** from an R2 backup into a throwaway database.
 - [ ] **Replace `mc` with `rclone` in backups.** The mc image is pinned and saved to `/data/backups/images/`.
 - [ ] **Replace the MinIO server.** The community edition is discontinued and its images are no longer pullable. Options: R2/S3 directly, or Garage. Decide before moving hosts.
