@@ -40,6 +40,7 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 - Retire with the old site: `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS` must be off (`LEGACY_EMAIL_LINKS` too). Details in `docs/runbook.md`.
 - Done: Alembic replaced `create_all` + `_SCHEMA_PATCHES`; prod is stamped at `0001_baseline`. Schema changes go through `make makemigration`; tests run on `whumpf_test` (`docs/runbook.md` §6).
 - Done: our own ski run tiles at `/tiles/ski`, rebuilt weekly (Tuesdays 04:00) with automatic rollback (`docs/runbook.md` §7).
+- Done: recent snowfall backend: NOHRSC 24 h/72 h at `/tiles/snowfall/*` (hourly `make snowfall-refresh` cron at :25, COGs in `dem-cogs/snowfall/`) and new snow on SNOTEL stations (`docs/runbook.md` §8). The app layer is a Phase 4 prompt.
 - Done: daily backups at 03:00 (local 14-day dump plus Cloudflare R2, read back and checksum-verified). Cloudflare caches `/tiles/*` (verified).
 - Open work is in the "Later" list in `docs/PLAN.md`.
 

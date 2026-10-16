@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -22,6 +22,8 @@ from app.auth.dependencies import get_current_user
 from app.db import get_session
 from app.models.status import StatusBanner
 from app.models.user import User
+from app.regions import REGIONS
+from app.services import snowfall
 
 router = APIRouter(prefix="/status", tags=["status"])
 logger = logging.getLogger("whumpf.status")
@@ -56,17 +58,45 @@ async def _probe(name: str, url: str) -> ServiceHealth:
         return ServiceHealth(name=name, healthy=False, detail=str(exc)[:200])
 
 
+# NOHRSC issues every 12 h; this means several issues in a row were missed
+# (the hourly snowfall-refresh cron stopped, or NOAA stopped publishing).
+_SNOWFALL_STALE = timedelta(hours=36)
+
+
+async def _check_snowfall() -> ServiceHealth:
+    """Healthy when every region's 24 h and 72 h snowfall is recent."""
+    problems: list[str] = []
+    now = datetime.now(UTC)
+    try:
+        for region in REGIONS:
+            pointer = await snowfall.read_pointer(region) or {}
+            for period in snowfall.PERIODS:
+                entry = pointer.get("periods", {}).get(period)
+                if not entry:
+                    problems.append(f"{region} {period}: no data")
+                    continue
+                age = now - datetime.fromisoformat(entry["valid"])
+                if age > _SNOWFALL_STALE:
+                    hours = int(age.total_seconds() // 3600)
+                    problems.append(f"{region} {period}: valid {entry['valid']} ({hours} h old)")
+    except Exception as exc:
+        logger.warning("status check failed (snowfall)", exc_info=True)
+        return ServiceHealth(name="snowfall", healthy=False, detail=str(exc)[:200])
+    return ServiceHealth(name="snowfall", healthy=not problems, detail="; ".join(problems) or None)
+
+
 async def _check_services(session: Session) -> list[ServiceHealth]:
     # api is implicitly healthy if it's responding to this request, but we
     # report it explicitly so the frontend doesn't have to know that.
     api = ServiceHealth(name="api", healthy=True)
     postgres = await _check_postgres(session)
-    minio, titiler, martin = await asyncio.gather(
+    minio, titiler, martin, snow = await asyncio.gather(
         _probe("minio",   "http://localhost:9000/minio/health/live"),
         _probe("titiler", "http://localhost:8001/"),
         _probe("martin",  "http://localhost:3000/health"),
+        _check_snowfall(),
     )
-    return [api, postgres, minio, titiler, martin]
+    return [api, postgres, minio, titiler, martin, snow]
 
 
 def _overall(services: list[ServiceHealth], active_banner: StatusBanner | None) -> str:

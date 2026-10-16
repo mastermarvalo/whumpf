@@ -44,20 +44,20 @@ self-hosted app this is fine; do not rebroadcast to third parties.
 temperature at automated stations across the western U.S.
 
 - Landing page: <https://www.nrcs.usda.gov/programs-initiatives/sswsf-snow-survey-and-water-supply-forecasting-program>
-- Web service: AWDB SOAP API
+- Web service: AWDB REST API v1, `https://wcc.sc.egov.usda.gov/awdbRestApi/services/v1`
 - Station metadata & interactive map: <https://www.nrcs.usda.gov/resources/data-and-reports/air-and-water-database-report-generator>
 
-**Access pattern:** the AWDB web service is SOAP-based. Modern clients use
-one of:
+**Access pattern:** plain JSON over HTTP, no key (`app/services/snotel.py`).
+`/stations` (filter to `stateCode == CO`, `networkCode == SNTL` client-side;
+the API ignores those params) and `/data` with `duration=DAILY`,
+`centralTendencyType=MEDIAN`, in batches of 40 station triplets. The station
+list is cached for 6 h.
 
-- [`ulmo`](https://github.com/ulmo-dev/ulmo) — aging but functional Python
-  wrapper. Last serious maintenance window was 2021-ish; fine for stable
-  SOAP methods.
-- Direct `httpx` + `zeep` requests against the WSDL.
-
-The primary element codes for Whumpf are `WTEQ` (snow water equivalent),
-`SNWD` (snow depth), `PREC` (precipitation accumulation), and `TOBS`
-(observed air temperature). Most stations report every 1–3 hours.
+Element codes: `WTEQ` (snow water equivalent), `SNWD` (snow depth), `PREC`
+(precipitation accumulation), `TOBS` (observed air temperature). Whumpf
+fetches `WTEQ,SNWD,TOBS`. Daily `WTEQ`/`SNWD` are start-of-day (midnight)
+readings; the 24 h / 72 h new snow at each station is derived from them
+(docs/runbook.md §8).
 
 **Licensing:** U.S. federal government data, public domain.
 
@@ -87,6 +87,43 @@ re-resolve them periodically rather than caching indefinitely.
 
 **Update frequency:** `forecastGridData` updates roughly hourly; textual
 forecast ~6 hours.
+
+---
+
+### NOAA NOHRSC — National Snowfall Analysis
+
+**Use:** the Recent snowfall layer, 24 h and 72 h new snow (docs/runbook.md §8).
+
+- Product page: <https://www.nohrsc.noaa.gov/snowfall/>
+- Files: `https://www.nohrsc.noaa.gov/snowfall/data/YYYYMM/sfav2_CONUS_{6h,24h,48h,72h}_YYYYMMDDHH.{tif,nc,png}`,
+  plus season-to-date `sfav2_CONUS_<YYYYMMDD>12_to_<YYYYMMDD>12.*`
+- Product description: `snowfall/data/resources/documents/PDD_National Gridded Snowfall Analysis.pdf`
+
+**Access pattern:** hourly conditional GET of the GeoTIFFs (~0.25–0.5 MB
+each). There is no snowfall layer on `mapservices.weather.noaa.gov`
+(`snow/NOHRSC_Snow_Analysis` has snow depth and SWE only) and no WMS.
+
+**Gotchas:** files are overwritten in place for five days as late reports
+arrive (track `ETag`); TIFs are in inches but NetCDFs in metres; the 48 h /
+72 h TIFs lack the NoData tag (-99999); grid is EPSG:4326 at 0.04°, not a
+COG. `robots.txt` disallows `*.nc` and `*.png`.
+
+**Licensing:** NWS data, public domain (<https://www.weather.gov/disclaimer>):
+credit NOAA/NWS NOHRSC, don't imply endorsement.
+
+**Update frequency:** 24 h/48 h/72 h at 00Z and 12Z, 6 h every 6 hours;
+first file about an hour after the valid time, then reruns hourly.
+
+---
+
+### NOAA NOHRSC — Snow depth (map service)
+
+The old site's "Snow depth" overlay calls
+`https://mapservices.weather.noaa.gov/raster/rest/services/snow/NOHRSC_Snow_Analysis/MapServer/export`
+(`layers=show:0`, `bboxSR=imageSR=3857`) straight from the browser
+(`frontend/src/components/Map/layers/overlays.ts`). ~1 km, not time-enabled,
+updated at 01, 05, 11 and 17Z. Its WMS has no EPSG:3857, so use the REST
+export for web tiles.
 
 ---
 

@@ -208,6 +208,7 @@ services:
       SKIP_EMAIL_VERIFICATION: ${SKIP_EMAIL_VERIFICATION:-false}
       REDIS_URL: redis://:${REDIS_PASSWORD:?REDIS_PASSWORD required}@localhost:6379
       TILES_ALLOW_TOKENLESS: ${TILES_ALLOW_TOKENLESS:-true}
+      NOHRSC_USER_AGENT: ${NOHRSC_USER_AGENT:-whumpf/0.1 (+https://whumpf.co)}
     volumes:
       - ./backend/app:/app/app
       # Tests aren't copied into the image; mount them so `make test-api` runs

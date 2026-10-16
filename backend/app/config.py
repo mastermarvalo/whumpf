@@ -53,6 +53,10 @@ class Settings(BaseSettings):
     titiler_url: str = "http://titiler:8000"
     martin_url: str = "http://martin:3000"
 
+    # --- NOAA NOHRSC snowfall (app/jobs/snowfall_refresh.py) ----------------
+    # Sent with every download. NOAA states no policy; a contact helps them.
+    nohrsc_user_agent: str = "whumpf/0.1 (+https://whumpf.co)"
+
     # --- Strava OAuth --------------------------------------------------------
     strava_client_id: str = ""
     strava_client_secret: str = ""

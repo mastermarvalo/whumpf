@@ -169,6 +169,10 @@ Making `whumpf-ios` private is a GitHub setting, not a prompt: do it, then attac
 Build order is flexible. Suggested grouping: layers (recent snowfall, order and opacity, weather, spot forecast, wind arrows, cameras, outage banners); terrain on the phone (route hazard summary, inclinometer, slope-above-you runout tap check, Munter times); trips (editing, in-app sharing, GPX, briefing); recording and alerts (GPS recording, forecast-change alerts); Strava compliance (7-day rules, deauthorization webhook); offline (map downloads, then offline 3D).
 
 ```text
+[whumpf-ios] Add the Recent snowfall layer. The backend is done (whumpf docs/runbook.md §8): GET /tiles/snowfall/meta?region=colorado gives per period (24h, 72h) the window start and valid time (UTC), a tile URL template that already carries ?v= (add ?t= in tiles.ts as for every tile), maxzoom 10, bounds, the legend in inches and the NOAA attribution. Add it to the Layers sheet with a 24 h / 72 h switch and the stepped legend, and always show the window in local time (e.g. "72 h to 6 am Oct 15") plus "NOAA/NWS NOHRSC" while it is on. Refetch meta when the app comes to the foreground. In the SNOTEL point sheet show new_snow_24h_in / new_snow_72h_in (and new SWE) with new_snow_as_of; null means unknown, not zero.
+```
+
+```text
 [whumpf-ios] Add a CAIC observations layer from GET /avalanche/observations: markers by type (caught, avalanche, other), a toggle in the Layers sheet, and a tap card. Show when the data was fetched.
 ```
 
@@ -375,7 +379,7 @@ Pull from this list as you go. Wind arrows, recent snowfall, the phone inclinome
 | Slope above you | Shades flat ground that sits under 30°+ slopes: runouts and terrain traps a slope map misses | Elevation tiles, on the phone | Medium |
 | Sun and shade by time | When a slope gets sun today: corn timing, wet-slide risk, where it stays cold | Elevation tiles + sun position, on the phone | Medium |
 | Wind arrows | Forecast wind speed and direction drawn on the map, tied to the lee-aspect filter you already have | NOAA NDFD wind | Small |
-| Recent snowfall | 24 h and 72 h new snow as a layer, plus new snow at each SNOTEL station | NOAA NOHRSC, SNOTEL | Small |
+| Recent snowfall | 24 h and 72 h new snow as a layer, plus new snow at each SNOTEL station | NOAA NOHRSC, SNOTEL | Small. Backend done (Oct 15, runbook §8); app prompt in Phase 4 |
 | Avalanche paths | Named slide paths overlaid on the map | Check what CAIC or CDOT publish | Unknown |
 | ATES ratings | Simple, challenging or complex terrain where ratings exist | Check Colorado coverage | Unknown |
 | Phone inclinometer | Lay the phone on the snow to read slope angle | Phone motion sensor | Small |

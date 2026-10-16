@@ -161,7 +161,9 @@ curl -sI "https://api.whumpf.co/tiles/slope/10/210/394?region=colorado" | grep -
 
 Each tile token (`?t=`) gets its own cache entry: removing a single query
 parameter from the cache key needs Enterprise (docs/PLAN.md, Tile access).
-After changing what a tile endpoint returns, purge `/tiles/*`.
+After changing what a tile endpoint returns, purge `/tiles/*`. Snowfall
+tiles carry their data revision in the URL (§8), so new snowfall data needs
+no purge.
 
 ### Loopback-only services
 
@@ -476,6 +478,109 @@ the Makefile, run `make ski-tiles` and compare the counts with
 `published.json`. Known quirks of the pinned version: numeric attributes are
 float32, `AttributeInteger` silently drops the field, and its own
 "Generated ... lines: 0" summary line is wrong.
+
+## 8. Recent snowfall
+
+New snow over the last 24 h and 72 h from the NOAA NOHRSC National Snowfall
+Analysis, clipped to each region and served as raster tiles. There is no NOAA
+map service for snowfall (the `NOHRSC_Snow_Analysis` MapServer only has snow
+depth and SWE), so the GeoTIFFs are fetched hourly.
+
+```
+https://www.nohrsc.noaa.gov/snowfall/data/YYYYMM/sfav2_CONUS_{24h,72h}_YYYYMMDDHH.tif
+  -> make snowfall-refresh (hourly cron, app/jobs/snowfall_refresh.py)
+       validate, clip to the region's max_bounds, write a COG
+  -> MinIO dem-cogs/snowfall/<region>/<period>/<YYYYMMDDHH>-<sha8>.tif
+     MinIO dem-cogs/snowfall/<region>/latest.json        what is served
+  -> GET /tiles/snowfall/meta?region=colorado            TiTiler renders the tiles
+     GET /tiles/snowfall/{24h|72h}/{z}/{x}/{y}?region=colorado&v=<revision>
+```
+
+### Source facts
+
+- Issues at 00Z and 12Z (6 pm / 6 am MDT). The newest issue is shown, and
+  `meta` gives its window (`start` → `valid`, UTC) so the app can always
+  show which window it covers.
+- NOHRSC reruns each analysis hourly for five days to pick up late reports
+  and **overwrites the file in place**. The job re-checks the served issue
+  every run with `If-None-Match`; a changed file becomes a new revision.
+- 0.04° (~4 km) grid, EPSG:4326. The GeoTIFFs are in **inches** (the NetCDF
+  twins are in metres). Nodata is -99999; the 48 h/72 h TIFs omit the NoData
+  tag, so the job sets it.
+- Public domain (<https://www.weather.gov/disclaimer>). Show
+  "NOAA/NWS NOHRSC National Snowfall Analysis" with the valid time whenever
+  the layer is on; don't imply NOAA endorses the app. `robots.txt`
+  disallows `*.nc` and `*.png` but not the TIFs.
+
+### API
+
+All under `/tiles`, so tile tokens, rate limits and the Cloudflare rule apply.
+
+| Endpoint | Cache-Control |
+| --- | --- |
+| `GET /tiles/snowfall/meta?region=` | 300 s; 60 s while a period has no data |
+| `GET /tiles/snowfall/{period}/{z}/{x}/{y}?region=&v=` with the current revision | 1 day |
+| same, without `v` or with an old one (serves the current data) | 15 min |
+| no data yet, or MinIO unreadable | 503 `no-store` |
+
+`meta` returns `units` (`in`), `attribution`, `attribution_url`, `bounds`,
+`maxzoom` (10; overzoom past it), `legend` (`min`, `max`, `color`, `label`)
+and per period `available`, `start`, `valid`, `revision`, `max_in`,
+`fetched` and `tiles` (a URL template that already carries `v`; add `t`).
+A new revision is a new tile URL, so Cloudflare never needs a purge for this
+layer.
+
+Colour scale, inches (one list in `app/services/snowfall.py` feeds both the
+legend and TiTiler; under 0.1 in is transparent):
+
+| 0.1–1 | 1–2 | 2–4 | 4–6 | 6–8 | 8–12 | 12–18 | 18–24 | 24–36 | 36+ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `#d6e9f8` | `#a6cfee` | `#6aaee0` | `#3a86c8` | `#1f5aa8` | `#4b3a9e` | `#7b3fa6` | `#a8389a` | `#cf2f7c` | `#8c0f45` |
+
+SNOTEL stations (`GET /snowpack/stations`) also carry `new_snow_24h_in`,
+`new_snow_72h_in`, `new_swe_24h_in`, `new_swe_72h_in` and `new_snow_as_of`.
+They come from SNOTEL's daily start-of-day readings (midnight local), so the
+window is midnight to midnight, not NOHRSC's 12Z one. Only rises count
+(settling isn't negative snow), a depth rise under 1 in counts as zero
+(sensor noise), and a missing day makes the value null.
+
+### Hourly refresh
+
+User crontab, next to the ski and backup lines (the `XDG_RUNTIME_DIR` and
+`DOCKER_HOST` lines at the top of the crontab are needed here too):
+
+```
+25 * * * * cd /home/ronkerflonk/whumpf && flock -n /data/snowfall/.refresh.lock make snowfall-refresh >> /data/snowfall/refresh.log 2>&1
+```
+
+`/data/snowfall/` must exist (`mkdir -p /data/snowfall`). A run takes a few
+seconds and logs about three lines (`unchanged`, `published <revision> (max
+N in)`, or an error). It exits 1 if anything failed. The log grows by
+about 10 MB a year; truncate it whenever.
+
+`make snowfall-refresh ARGS=--dry-run` downloads and validates but writes
+nothing. `ARGS="--region colorado"` limits it to one region.
+
+### Validation and failures
+
+A file is refused (and whatever was served stays) unless it is one band,
+EPSG:4326, 0.04° pixels, covers the region, is at least half real data in
+the region window, and has values from 0 to 200 in. A refused newer issue
+falls back to the served one; NOAA being down keeps the served one.
+
+`GET /status` has a `snowfall` item that turns unhealthy when a period's
+newest issue is more than 36 h old (cron stopped, or NOAA stopped
+publishing) or missing. `/readyz` does not depend on it.
+
+### Storage and recovery
+
+Revisions not referenced by `latest.json` are deleted after 7 days. Nothing
+here needs backing up: `scripts/backup.sh` only copies `dem-cogs` with
+`BACKUP_INCLUDE_COGS=true`, and a lost prefix is rebuilt by the next run.
+
+To start over, delete `dem-cogs/snowfall/<region>/latest.json` (MinIO
+console) and run `make snowfall-refresh`: it picks the newest issue from the
+last 3 days.
 
 ## Troubleshooting
 

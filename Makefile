@@ -209,6 +209,14 @@ ski-tiles-publish:  ## validate the build, swap it into $(SKI_TILES_DIR), restar
 .PHONY: ski-tiles-refresh
 ski-tiles-refresh: ski-tiles ski-tiles-publish  ## the weekly job: fetch, build, validate, publish
 
+# --- recent snowfall ---------------------------------------------------------
+# NOAA NOHRSC 24 h / 72 h snowfall -> dem-cogs/snowfall/<region>/ in MinIO,
+# served at /tiles/snowfall. Hourly via cron: docs/runbook.md "Recent snowfall".
+
+.PHONY: snowfall-refresh
+snowfall-refresh:  ## fetch the newest NOHRSC 24 h/72 h snowfall into MinIO (the hourly job); ARGS=--dry-run writes nothing
+	$(API_RUN) uv run python -m app.jobs.snowfall_refresh $(ARGS)
+
 # --- tests / lint -----------------------------------------------------------
 
 .PHONY: test-api

@@ -9,12 +9,14 @@ import logging
 import math
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
+from typing import Literal
 
 import httpx
 import numpy as np
 import rasterio
 from contourpy import contour_generator
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
+from fastapi.responses import JSONResponse
 from PIL import Image, ImageDraw
 from pyproj import Transformer
 from rasterio.crs import CRS
@@ -23,6 +25,8 @@ from rasterio.warp import Resampling, reproject
 
 from app.config import get_settings, validate_region
 from app.http_retry import CircuitOpenError, call_with_resilience
+from app.regions import REGIONS
+from app.services import snowfall
 from app.tile_tokens import require_tile_access
 
 # Web-mercator tile coordinates are bounded by z (we serve at most z16) and
@@ -809,3 +813,123 @@ async def ski_tile(
     if encoding:
         headers["Content-Encoding"] = encoding
     return Response(content=body, media_type="application/x-protobuf", headers=headers)
+
+
+# ── recent snowfall (NOAA NOHRSC, raster via TiTiler) ──────────────────────────
+# COGs and latest.json are written hourly by `make snowfall-refresh`
+# (app/services/snowfall.py, docs/runbook.md §8). Tile URLs from /meta carry
+# the revision (?v=): a tile of the current revision is cached for a day, and
+# a new revision is a new URL, so Cloudflare never needs a purge. Without ?v=
+# (or with an old one) the current data is served with a short max-age.
+
+_SNOWFALL_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
+_SNOWFALL_CACHE_MAX = 512  # ~5 KB/tile, mostly transparent
+_SNOWFALL_MAXZOOM = 10     # 0.04° (~4 km) grid; clients overzoom past this
+_SNOWFALL_CURRENT = {"Cache-Control": "public, max-age=86400"}
+_SNOWFALL_UNVERSIONED = {"Cache-Control": "public, max-age=900"}
+_NO_STORE = {"Cache-Control": "no-store"}
+
+
+async def _snowfall_pointer(region: str) -> dict:
+    try:
+        return await snowfall.read_pointer(region) or {}
+    except (CircuitOpenError, httpx.HTTPError, ValueError) as exc:
+        logger.warning("snowfall latest.json unreadable for %s: %r", region, exc)
+        raise HTTPException(503, "snowfall data temporarily unavailable", headers=_NO_STORE) from exc
+
+
+@router.get("/snowfall/meta")
+async def snowfall_meta(region: str = "colorado") -> JSONResponse:
+    """What the snowfall layer is showing: per period the window it covers
+    (start → valid, UTC), the versioned tile URL, plus the legend in inches."""
+    validate_region(region)
+    pointer = await _snowfall_pointer(region)
+    periods: dict[str, dict] = {}
+    for period in snowfall.PERIODS:
+        e = pointer.get("periods", {}).get(period)
+        if not e:
+            periods[period] = {"available": False}
+            continue
+        periods[period] = {
+            "available": True,
+            "valid": e["valid"],
+            "start": e["start"],
+            "revision": e["revision"],
+            "max_in": e.get("max_in"),
+            "fetched": e.get("fetched"),
+            "tiles": f"/tiles/snowfall/{period}/{{z}}/{{x}}/{{y}}?region={region}&v={e['revision']}",
+        }
+    complete = all(p["available"] for p in periods.values())
+    return JSONResponse(
+        {
+            "region": region,
+            "units": "in",
+            "attribution": snowfall.ATTRIBUTION,
+            "attribution_url": snowfall.ATTRIBUTION_URL,
+            "bounds": REGIONS[region].max_bounds,
+            "maxzoom": _SNOWFALL_MAXZOOM,
+            "legend": snowfall.legend(),
+            "periods": periods,
+        },
+        headers={"Cache-Control": f"public, max-age={300 if complete else 60}"},
+    )
+
+
+@router.get("/snowfall/{period}/{z}/{x}/{y}")
+async def snowfall_tile(
+    period: Literal["24h", "72h"],
+    z: int, x: int, y: int,
+    region: str = "colorado",
+    v: str | None = None,
+) -> Response:
+    """New snow in the last 24 h or 72 h as a stepped colour PNG (inches,
+    see snowfall.SCALE). Under 0.1 in is transparent."""
+    validate_region(region)
+    if z < 0 or z > _MAX_Z or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
+        raise HTTPException(400, "tile coordinates out of range")
+
+    entry = (await _snowfall_pointer(region)).get("periods", {}).get(period)
+    if not entry:
+        raise HTTPException(503, "no snowfall data yet", headers=_NO_STORE)
+    headers = _SNOWFALL_CURRENT if v == entry["revision"] else _SNOWFALL_UNVERSIONED
+
+    cache_key = (period, region, entry["revision"], z, x, y)
+    if cached := _cache_get(_SNOWFALL_CACHE, cache_key):
+        return Response(content=cached, media_type="image/png", headers=headers)
+
+    settings = get_settings()
+    cog_url = f"/vsicurl/{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{entry['key']}"
+
+    async def _do() -> httpx.Response:
+        r = await _HTTP.get(
+            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png",
+            params={
+                "url": cog_url,
+                "nodata": str(int(snowfall.NODATA)),
+                "colormap": snowfall.TITILER_COLORMAP,
+                "reproject": "bilinear",
+            },
+        )
+        if r.status_code != 404:
+            r.raise_for_status()
+        return r
+
+    try:
+        resp = await call_with_resilience("titiler", _do)
+    except CircuitOpenError:
+        raise HTTPException(503, "tile server temporarily unavailable", headers=_NO_STORE)
+    except httpx.RequestError as exc:
+        logger.error("TiTiler unreachable: %s", exc)
+        raise HTTPException(502, "tile server unreachable") from exc
+    except httpx.HTTPStatusError as exc:
+        logger.warning(
+            "TiTiler returned %d for snowfall tile %s %d/%d/%d",
+            exc.response.status_code, period, z, x, y,
+        )
+        raise HTTPException(502, f"TiTiler returned {exc.response.status_code}") from exc
+
+    if resp.status_code == 404:  # outside the region's COG
+        return Response(status_code=204, headers=headers)
+
+    _cache_put(_SNOWFALL_CACHE, cache_key, resp.content, _SNOWFALL_CACHE_MAX)
+    return Response(content=resp.content, media_type="image/png", headers=headers)

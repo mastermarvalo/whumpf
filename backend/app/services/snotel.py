@@ -124,6 +124,69 @@ def _extract_latest(station_data: list[dict], element_cd: str) -> tuple[float | 
     return None, None
 
 
+# ── new snow ───────────────────────────────────────────────────────────────────
+# From the daily series already fetched for the station list. SNOTEL's daily
+# SNWD and WTEQ are start-of-day (midnight local) readings, so the 24 h value
+# as of day D is what fell during D-1. Only rises count: settling and melt
+# are not "negative new snow". A daily rise below the noise floor counts as
+# zero (depth sensors wander by about an inch). A missing day makes the value
+# null, never 0.
+_DEPTH_NOISE_IN = 1.0
+_SWE_NOISE_IN = 0.1
+
+
+def _daily_series(station_data: list[dict], element_cd: str) -> dict[date, float]:
+    """{date: value} for one element, skipping nulls and -9999."""
+    out: dict[date, float] = {}
+    for item in station_data:
+        elem = item.get("stationElement") or {}
+        if elem.get("elementCode") != element_cd:
+            continue
+        for entry in item.get("values") or []:
+            try:
+                d = date.fromisoformat(str(entry["date"])[:10])
+                v = float(entry["value"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if v != -9999.0:
+                out[d] = v
+    return out
+
+
+def _new_snow(series: dict[date, float], as_of: date, days: int, noise_in: float) -> float | None:
+    """Sum of daily rises over the `days` days ending at `as_of`."""
+    total = 0.0
+    for i in range(days):
+        day = as_of - timedelta(days=i)
+        cur, before = series.get(day), series.get(day - timedelta(days=1))
+        if cur is None or before is None:
+            return None
+        rise = cur - before
+        # Tolerance: 10.3 - 10.2 is 0.0999… in floats.
+        if rise >= noise_in - 1e-6:
+            total += rise
+    return round(total, 1)
+
+
+def _new_snow_props(station_data: list[dict]) -> dict[str, Any]:
+    depth = _daily_series(station_data, "SNWD")
+    swe = _daily_series(station_data, "WTEQ")
+    if not depth:
+        return {
+            "new_snow_24h_in": None, "new_snow_72h_in": None,
+            "new_swe_24h_in": None, "new_swe_72h_in": None,
+            "new_snow_as_of": None,
+        }
+    as_of = max(depth)
+    return {
+        "new_snow_24h_in": _new_snow(depth, as_of, 1, _DEPTH_NOISE_IN),
+        "new_snow_72h_in": _new_snow(depth, as_of, 3, _DEPTH_NOISE_IN),
+        "new_swe_24h_in": _new_snow(swe, as_of, 1, _SWE_NOISE_IN),
+        "new_swe_72h_in": _new_snow(swe, as_of, 3, _SWE_NOISE_IN),
+        "new_snow_as_of": as_of.isoformat(),
+    }
+
+
 def _build_data_index(results: list[dict]) -> dict[str, list[dict]]:
     return {r["stationTriplet"]: r.get("data") or [] for r in results}
 
@@ -179,6 +242,7 @@ async def _do_fetch() -> dict:
                 "color": _pct_color(pct),
                 "label": f'{swe:.1f}"' if swe is not None else "—",
                 "updated": today,
+                **_new_snow_props(d),
             },
         })
 
