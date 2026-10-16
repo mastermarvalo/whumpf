@@ -152,11 +152,15 @@ From the NAS's NPM instance, point your domains at the VM's IP:
 `api.whumpf.co` is proxied by Cloudflare. A Cache Rule makes
 `https://api.whumpf.co/tiles/*` Eligible for cache (tile URLs have no file
 extension, so Cloudflare would not cache them by default). Cloudflare follows
-the API's `Cache-Control` (a day for most tiles). Check it with:
+the API's `Cache-Control` (a day for most tiles). The rule's Browser TTL is
+set to respect origin: otherwise Cloudflare raises any `max-age` under 4 h to
+`max-age=14400`, and browsers keep radar meta (60 s) for 4 hours. Check it with:
 
 ```bash
 curl -sI "https://api.whumpf.co/tiles/slope/10/210/394?region=colorado" | grep -i cf-cache-status
 # first request MISS, then HIT; DYNAMIC means the rule is not applying
+curl -sI "https://api.whumpf.co/tiles/radar/meta?region=colorado" | grep -i cache-control
+# max-age=60; max-age=14400 means Browser TTL is overriding the origin again
 ```
 
 Each tile token (`?t=`) gets its own cache entry: removing a single query
