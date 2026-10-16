@@ -29,6 +29,7 @@ Checked against `whumpf` at 65846e8. This covers the backend repo only; the app 
 - **Own ski tiles, done:** `/tiles/ski` serves our own OSM ski run tiles, rebuilt weekly on Tuesdays at 04:00 with rollback if Martin doesn't come back (0a52151, `docs/runbook.md` §7).
 - **Backups, done:** daily at 03:00 from cron; a local dump kept 14 days plus Cloudflare R2, each read back and checked by sha256 (3a86dca, 65846e8).
 - **Cloudflare `/tiles/*` cache, done and verified** (MISS then HIT; 65e9f50).
+- **Weather backend, done (Oct 16):** a shared raster layer module (5e77765); snow depth from NOHRSC SNODAS (8ba8c50), current temperature from NOAA RTMA (8662bf8), radar from NOAA MRMS in 10-minute frames for 2 h (d7dde54), and the spot forecast `GET /weather/forecast` from api.weather.gov (0cfa61d). `docs/runbook.md` §9.
 - **Next: Phase 3 (Fix and verify).** TestFlight is now Phase 7, the last one. Its likely backend part, serving the privacy policy, terms and credits pages, moves with it. Not built.
 
 **Turn off when the old website is retired:** `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS`. See "Settings added in Phase 2" in `docs/runbook.md`.
@@ -221,11 +222,11 @@ Most of the old website's layers are not in the app yet. Observations need no ba
 | Layer | Old website source | In the app | Plan |
 | --- | --- | --- | --- |
 | CAIC field observations and caught-in incidents | Backend `GET /avalanche/observations` | No | Markers by type (caught, avalanche seen, field obs), tap card with observer, date, zone, description |
-| Precipitation radar, past 2 h with time slider | RainViewer tiles | No | Replace the source. Since Jan 1, 2026 RainViewer's free API is for personal and educational use only, past radar only, max zoom 7 ([RainViewer FAQ](https://rainviewer.com/api/transition-faq.html)). Use NOAA radar instead |
+| Precipitation radar, past 2 h with time slider | RainViewer tiles | No | Backend done (Oct 16): NOAA MRMS, 10-minute frames for the last 2 h at `/tiles/radar` (runbook §9). RainViewer's free API is personal and educational use only since Jan 1, 2026 ([RainViewer FAQ](https://rainviewer.com/api/transition-faq.html)). The app needs the layer and slider |
 | Precipitation total, last hour | NOAA MRMS (mapservices.weather.noaa.gov) | No | Port as is |
-| Temperature, +3 h and 24 h forecast | NOAA NDFD | No | Port as is |
-| Snow depth | NOAA NOHRSC | No | Port as is |
-| Spot forecast on tap | api.weather.gov | Wind only (slope filter) | Add a forecast card to the tap sheet |
+| Temperature | NOAA NDFD (+3 h and 24 h forecast) | No | Backend done (Oct 16): current temperature from NOAA RTMA at `/tiles/temperature` (runbook §9). The forecast layers are dropped; the spot forecast covers future temperatures. NBM is in "Later" |
+| Snow depth | NOAA NOHRSC | No | Backend done (Oct 16): NOHRSC SNODAS at `/tiles/snowdepth` (runbook §9) |
+| Spot forecast on tap | api.weather.gov | Wind only (slope filter) | Backend done (Oct 16): `GET /weather/forecast` (runbook §9). Add a forecast card to the tap sheet |
 | Aspect | TiTiler COG | No | Port; it is a natural partner to slope |
 | Contours | Backend `/tiles/contours` | No | Port after fixing the lag the website has |
 | Trails and peaks, streets | OpenFreeMap vector | No | Port; trails matter most for ski touring |
@@ -251,7 +252,7 @@ Most of the old website's layers are not in the app yet. Observations need no ba
 ```
 
 ```text
-[whumpf-ios] Port the old website's weather layers from frontend/src/components/Map/layers/overlays.ts (NOAA MRMS, NDFD temperature, NOHRSC snow depth). For radar, find a NOAA radar service that allows our use and supports a past-2-hours time slider; don't use RainViewer. Add a spot forecast card to the tap sheet from api.weather.gov.
+[whumpf-ios] Add the weather layers and the spot forecast. The backend is done (whumpf docs/runbook.md §9); every URL needs ?t= as for every tile. Layers: radar (GET /tiles/radar/meta?region=: frames oldest first, each with time, observed and a tiles template; a time slider over the frames, default to the newest, "radar unavailable" when frames is empty), current temperature (/tiles/temperature/meta, °F, label it as an analysis) and snow depth (/tiles/snowdepth/meta, inches). Each meta gives the legend, maxzoom, bounds and attribution: show the valid time in local time, the attribution and a stale warning while a layer is on, refetch meta on foreground, and mark the layers online-only. Spot forecast: GET /weather/forecast?lat=&lon=&t= on the tap sheet: the next 48 h (temperature, wind and gusts with direction, precipitation chance), snow in its 6 h blocks, the text periods, and "forecast for 10,200 ft (you tapped 12,400 ft)" from grid.elevation_ft and point_elevation_ft. Show "NOAA/National Weather Service", a stale note when stale is true, and handle 404 (no NWS forecast here) and 429.
 ```
 
 ## Feature plan: accounts in the app
@@ -367,6 +368,8 @@ Backend work with no phase yet.
 - [ ] **Replace the MinIO server.** The community edition is discontinued and its images are no longer pullable. Options: R2/S3 directly, or Garage. Decide before moving hosts.
 - [ ] **`/readyz` shows `"postgis": "0\""`,** so the PostGIS version is read wrong. Fix it.
 - [ ] **Phase 5 cleanup:** turn off `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS`, then purge `/tiles/*` in Cloudflare.
+- [ ] **Radar rain vs snow:** colour radar frames by precipitation type from MRMS `PrecipFlag` (one small extra file per frame, same 10-minute marks). Runbook §9.
+- [ ] **Forecast temperature layers:** if wanted later, build them from the NOAA National Blend of Models (NBM) with the same raster layer pipeline as current temperature (`app/services/rasterlayer.py`). The old website's NDFD +3 h / 24 h layers were dropped in Phase 4.
 
 ## Idea backlog
 
