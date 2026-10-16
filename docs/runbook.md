@@ -588,13 +588,14 @@ last 3 days.
 
 ## 9. Weather layers
 
-Snow depth, current temperature and radar, all from NOAA, built the same way
-as recent snowfall (§8). A cron job fetches the NOAA grid, validates it, clips
+Snow depth, current temperature, wind now and radar, all from NOAA, built the
+same way as recent snowfall (§8). A cron job fetches the NOAA grid, validates it, clips
 it to each region's `max_bounds` and writes a COG plus `latest.json` to
 `dem-cogs/<layer>/<region>/` in MinIO. The API serves `meta` and
 TiTiler-rendered tiles under `/tiles`, so tile tokens, rate limits and the
 Cloudflare rule apply. The shared code is `app/services/rasterlayer.py`; the
-routes are in `app/routers/weather_tiles.py`.
+routes are in `app/routers/weather_tiles.py`. Wind is the one exception to
+"COG plus tiles": it is a GeoJSON file of arrows (see Wind now).
 
 Downloads send `WEATHER_USER_AGENT` (`.env.example`). These layers are
 online-only and never go into offline packs.
@@ -611,6 +612,7 @@ output (<https://www.weather.gov/disclaimer>).
 | --- | --- | --- | --- |
 | Snow depth | NOHRSC SNODAS, daily, 1 km, distributed by NSIDC as G02158 | NOAA/NWS NOHRSC SNODAS | NSIDC asks for a citation as a condition of use: <https://nsidc.org/data/g02158/versions/1>. The app's credits page should carry: National Operational Hydrologic Remote Sensing Center. 2004. Snow Data Assimilation System (SNODAS) Data Products at NSIDC, Version 1. G02158. NSIDC. doi:10.7265/N5TB14TC |
 | Current temperature | RTMA 2.5 km hourly analysis, 2 m temperature, from NOAA's AWS bucket (NOMADS as fallback) | NOAA/NWS RTMA | <https://registry.opendata.aws/noaa-rtma/> (NOAA Open Data Dissemination: use as desired, attribution requested) |
+| Wind now | RTMA 2.5 km hourly analysis, 10 m wind direction, speed and gust, from the same file as current temperature | NOAA/NWS RTMA | As current temperature |
 | Radar | MRMS merged base reflectivity (QC), 0.01°, every 2 min, from NCEP (NOAA's AWS bucket as fallback) | NOAA/NWS MRMS | <https://registry.opendata.aws/noaa-mrms-pds/> (NOAA Open Data Dissemination: use as desired, attribution requested) |
 | Spot forecast | api.weather.gov (`/points`, `/gridpoints`, `/forecast`) | NOAA/National Weather Service | <https://www.weather.gov/documentation/services-web-api> ("open data, free to use for any purpose"; a User-Agent is required) |
 
@@ -688,12 +690,63 @@ https://noaa-rtma-pds.s3.amazonaws.com/rtma2p5.YYYYMMDD/rtma2p5.tHHz.2dvaranl_nd
   60 °C.
 - In the mountains the analysis can be several degrees off in valley
   inversions; the app should label it as an analysis.
+- The same run also publishes wind now (below) from the same file. Each
+  layer has its own `latest.json` and is published on its own: a refused
+  wind file doesn't hold back temperature, and an hour one layer missed is
+  filled in later without fetching the other again.
 
 Legend, °F (one list in `app/services/temperature.py`, open at both ends):
 
 | < -10 | -10–0 | 0–10 | 10–20 | 20–32 | 32–40 | 40–50 | 50–60 | 60–70 | 70–80 | 80+ |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `#4a2a7a` | `#6c4fb0` | `#4560c8` | `#3f8fd2` | `#7fc6e8` | `#b7e2b1` | `#e6f2a2` | `#fee08b` | `#fdae61` | `#f46d43` | `#c2304a` |
+
+### Wind now
+
+```
+same RTMA file as current temperature
+  -> make temperature-refresh (the same hourly run at :50)
+  -> MinIO dem-cogs/wind/<region>/<YYYYMMDDHH>-<sha8>.geojson.gz
+     MinIO dem-cogs/wind/<region>/latest.json
+  -> GET /tiles/wind/meta?region=colorado
+     GET /tiles/wind/<revision>.geojson?region=colorado
+```
+
+- The `WDIR`, `WIND` and `GUST` messages at 10 m sit next to each other in
+  the file, so they are one extra Range request (~17 MB) next to the
+  temperature (~6 MB): about 550 MB a day for both.
+- Arrows, not tiles: one gzipped GeoJSON FeatureCollection of points per
+  region and hour on a 0.05° grid (Colorado: 16,000 points, ~120 KB
+  gzipped). One request per hour shown, whatever the zoom, so it barely
+  touches the tile rate limits; vector tiles would cost a dozen per view per
+  hour.
+- Each point has `dir` (degrees true the wind blows **from**; `null` in calm
+  air), `mph`, `gust_mph` (`null` where RTMA has none) and `lvl`: 0 on
+  every 4th row and column (0.2°), 1 on every 2nd (0.1°), else 2. `meta`'s
+  `levels` give the zoom band for each `max_lvl`; the app shows
+  `lvl <= max_lvl`, so arrows thin out when zoomed out and stay put when
+  zooming in.
+- Direction is never interpolated (350° and 10° would average to 180°): the
+  job turns direction and speed into east/north components on RTMA's grid,
+  reprojects those (bilinear) to 0.025°, and averages 2×2 cells per arrow.
+  Speed is the mean speed, gust the highest gust in the block.
+- Refused unless the three messages are `WDIR` in `[deg true]` and `WIND`
+  and `GUST` in `[m/s]` for the hour asked for, on the same projected
+  2.5 km grid, cover at least half the region, directions are 0–360° and
+  speeds 0–200 mph.
+- `meta` has `units` (`mph`), `direction` (`from`), `attribution`,
+  `attribution_url`, `bounds`, `step_deg`, `levels` and `available`; with
+  data also `valid`, `revision`, `fetched`, `source`, `max_mph`,
+  `max_gust_mph`, `points`, `stale` (after 3 h) and `hours`: a list of
+  `time`, `kind` (`analysis`) and `url`. Forecast hours (NBM, docs/PLAN.md
+  "Later") would join that list.
+- `<revision>.geojson` is served with `Content-Encoding: gzip` and cached
+  for a day (the revision is in the path). Any revision still in MinIO is
+  served, so an app holding a meta from before the last run still works;
+  404 (cached 60 s) once it has been cleaned up after 7 days, or if the
+  revision isn't `YYYYMMDDHH-<8 hex>`.
+- 10 m wind in a 2.5 km analysis is smoothed over ridges and gullies: it
+  shows the flow the terrain sits in, not what a ridgeline feels.
 
 ### Radar
 
@@ -750,7 +803,7 @@ Legend, dBZ (one list in `app/services/radar.py`; under 5 is transparent):
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `#04e9e7` | `#019ff4` | `#0300f4` | `#02fd02` | `#01c501` | `#008e00` | `#fdf802` | `#e5bc00` | `#fd9500` | `#fd0000` | `#d40000` | `#bc0000` | `#f800fd` |
 
-### `meta` and tiles (snow depth, temperature)
+### `meta` and tiles (snow depth, temperature; wind is above)
 
 `GET /tiles/<layer>/meta?region=` returns `units`, `attribution`,
 `attribution_url`, `bounds`, `maxzoom` (overzoom past it), `legend` (`min`,
@@ -801,7 +854,7 @@ exists it also has `valid` (UTC), `revision`, `fetched`, `stale` and `tiles`
 
 A refused file never replaces what is served, and a NOAA or NSIDC outage
 keeps the last good data; `meta` shows its age through `valid` and `stale`.
-`GET /status` has an item per layer (`snowdepth`, `temperature`, `radar`) that turns unhealthy
+`GET /status` has an item per layer (`snowdepth`, `temperature`, `wind`, `radar`) that turns unhealthy
 past the same limit as `stale`. `/readyz` does not depend on them.
 
 Revisions not referenced by `latest.json` are deleted after 7 days. Nothing
