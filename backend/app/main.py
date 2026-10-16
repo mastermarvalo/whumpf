@@ -67,12 +67,15 @@ async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
 
 def create_app() -> FastAPI:
     settings = get_settings()
+    # Interactive docs and the OpenAPI schema are dev-only; redoc is never served.
+    docs_enabled = settings.whumpf_env != "prod"
 
     app = FastAPI(
         title="Whumpf API",
         version=__version__,
         description="Backcountry terrain intelligence.",
-        docs_url="/docs",
+        docs_url="/docs" if docs_enabled else None,
+        openapi_url="/openapi.json" if docs_enabled else None,
         redoc_url=None,
         lifespan=lifespan,
     )
