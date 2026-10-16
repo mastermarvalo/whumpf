@@ -285,7 +285,9 @@ def client() -> TestClient:
 
 
 def test_meta_has_valid_hour_versioned_tiles_and_open_ended_legend(client, pointer):
-    body = client.get("/tiles/temperature/meta?region=colorado").json()
+    resp = client.get("/tiles/temperature/meta?region=colorado")
+    assert resp.headers["cache-control"] == "public, max-age=300"
+    body = resp.json()
     assert body["available"] is True and body["stale"] is False
     assert body["units"] == "F" and body["attribution"] == "NOAA/NWS RTMA"
     assert body["maxzoom"] == 9
