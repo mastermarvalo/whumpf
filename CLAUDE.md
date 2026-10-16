@@ -15,6 +15,7 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
   - Deliberate public exceptions (don't flag these; anything new needs the same reasoning and a limit):
     - `/tiles/*`: a tile token (`app/tile_tokens.py`) instead of sign-in. `POST /tiles/token` is open with a per-IP limit.
     - `/avalanche/*`: public CAIC data used by signed-out users and the old site. Per-IP limit (`avalanche` bucket in `tile_tokens.BUCKETS`).
+    - `GET /weather/forecast` (spot forecast): public NWS data for signed-out installs too. Needs a tile token instead of sign-in (so it isn't an open proxy to api.weather.gov under our User-Agent), plus a per-IP limit (`weather` bucket, 60/min and 600/h).
     - `/healthz`, `/readyz`, and `GET /status` (the service status and banner page).
     - The `/auth/*` endpoints that sign you in or recover an account (register, token, refresh, verify-email, password-reset), each with `@limiter.limit`. The Strava OAuth callback is protected by its signed `state`.
 - **Visibility enum is `private | shared | unlisted`.** Deliberately no `public`, no feed/discovery. New objects default to `private`.
@@ -41,6 +42,7 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 - Done: Alembic replaced `create_all` + `_SCHEMA_PATCHES`; prod is stamped at `0001_baseline`. Schema changes go through `make makemigration`; tests run on `whumpf_test` (`docs/runbook.md` §6).
 - Done: our own ski run tiles at `/tiles/ski`, rebuilt weekly (Tuesdays 04:00) with automatic rollback (`docs/runbook.md` §7).
 - Done: recent snowfall backend: NOHRSC 24 h/72 h at `/tiles/snowfall/*` (hourly `make snowfall-refresh` cron at :25, COGs in `dem-cogs/snowfall/`) and new snow on SNOTEL stations (`docs/runbook.md` §8). The app layer is a Phase 4 prompt.
+- Done: weather backend (`docs/runbook.md` §9): snow depth (NOHRSC SNODAS, `/tiles/snowdepth/*`, hourly at :35), current temperature (NOAA RTMA, `/tiles/temperature/*`, hourly at :50), radar (NOAA MRMS, 10-min frames for 2 h at `/tiles/radar/*`, every 5 min) and the spot forecast `GET /weather/forecast` (api.weather.gov). Shared raster layer code: `app/services/rasterlayer.py`. The app layers are a Phase 4 prompt.
 - Done: daily backups at 03:00 (local 14-day dump plus Cloudflare R2, read back and checksum-verified). Cloudflare caches `/tiles/*` (verified).
 - Open work is in the "Later" list in `docs/PLAN.md`.
 

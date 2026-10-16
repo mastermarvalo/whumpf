@@ -161,9 +161,9 @@ curl -sI "https://api.whumpf.co/tiles/slope/10/210/394?region=colorado" | grep -
 
 Each tile token (`?t=`) gets its own cache entry: removing a single query
 parameter from the cache key needs Enterprise (docs/PLAN.md, Tile access).
-After changing what a tile endpoint returns, purge `/tiles/*`. Snowfall
-tiles carry their data revision in the URL (§8), so new snowfall data needs
-no purge.
+After changing what a tile endpoint returns, purge `/tiles/*`. Snowfall,
+snow depth and temperature tiles carry their data revision in the URL, and
+radar tiles their frame time (§8, §9), so new weather data needs no purge.
 
 ### Loopback-only services
 
@@ -608,6 +608,7 @@ output (<https://www.weather.gov/disclaimer>).
 | Snow depth | NOHRSC SNODAS, daily, 1 km, distributed by NSIDC as G02158 | NOAA/NWS NOHRSC SNODAS | NSIDC asks for a citation as a condition of use: <https://nsidc.org/data/g02158/versions/1>. The app's credits page should carry: National Operational Hydrologic Remote Sensing Center. 2004. Snow Data Assimilation System (SNODAS) Data Products at NSIDC, Version 1. G02158. NSIDC. doi:10.7265/N5TB14TC |
 | Current temperature | RTMA 2.5 km hourly analysis, 2 m temperature, from NOAA's AWS bucket (NOMADS as fallback) | NOAA/NWS RTMA | <https://registry.opendata.aws/noaa-rtma/> (NOAA Open Data Dissemination: use as desired, attribution requested) |
 | Radar | MRMS merged base reflectivity (QC), 0.01°, every 2 min, from NCEP (NOAA's AWS bucket as fallback) | NOAA/NWS MRMS | <https://registry.opendata.aws/noaa-mrms-pds/> (NOAA Open Data Dissemination: use as desired, attribution requested) |
+| Spot forecast | api.weather.gov (`/points`, `/gridpoints`, `/forecast`) | NOAA/National Weather Service | <https://www.weather.gov/documentation/services-web-api> ("open data, free to use for any purpose"; a User-Agent is required) |
 
 ### Cron
 
@@ -759,6 +760,38 @@ exists it also has `valid` (UTC), `revision`, `fetched`, `stale` and `tiles`
 | tile with the current `v` | 1 day |
 | tile without `v` or with an old one (serves the current data) | 15 min |
 | no data yet, or MinIO unreadable | 503 `no-store` |
+
+### Spot forecast
+
+`GET /weather/forecast?lat=&lon=&t=<tile token>` (`app/routers/weather.py`,
+`app/services/nws.py`). Not under `/tiles` and not cached by Cloudflare.
+
+- **Access:** a valid tile token of either tier (signed-out installs have
+  one; tokenless is never allowed, whatever `TILES_ALLOW_TOKENLESS` says),
+  then the per-IP `weather` bucket, 60/min and 600/h. 401 without a token,
+  429 with `Retry-After` over the limit. A public exception, listed in
+  CLAUDE.md.
+- **NWS calls:** `/points/{lat},{lon}` maps the tap to a 2.5 km grid cell
+  (cached 7 days, taps rounded to 3 decimals, ~100 m; "not covered" is
+  cached too). `/gridpoints/{office}/{x},{y}` (hourly values) and its
+  `/forecast` (text) are fetched together and cached per grid cell for
+  45 min, so every tap in a cell shares one fetch. Retries and a circuit
+  breaker (`nws`) via `call_with_resilience`. NWS's own responses say
+  `max-age=3600`.
+- **Response:** `hours` (48 entries from the current UTC hour: `temp_f`,
+  `wind_mph`, `gust_mph`, `wind_dir_deg`, `pop_pct`; `null` where NWS has no
+  value), `snow` (NWS's own blocks, usually 6 h, as `start`, `end`,
+  `snow_in`, not split into hours), `periods` (the next four text periods:
+  `name`, `start`, `end`, `short`, `detailed`), `grid` (`office`, `x`, `y`,
+  `elevation_ft`: the one elevation NWS forecasts for in that cell),
+  `point_elevation_ft` (the tapped point from our DEM; `null` outside our
+  regions or if the DEM is slow), `updated` (NWS), `fetched`, `stale`,
+  `units`, `attribution`. `Cache-Control: private, max-age=300`.
+- **Failures:** a point NWS doesn't cover is 404. If NWS fails, a cached
+  forecast up to 12 h old is served with `stale: true` and its `fetched`
+  time; otherwise 502 `no-store`. If only the text forecast fails (NWS's
+  `/forecast` often 500s on its own), `periods` is `null` and the hours are
+  still served. Unexpected units from NWS are a 502, not wrong numbers.
 
 ### Failures and recovery
 

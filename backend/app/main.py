@@ -29,6 +29,7 @@ from app.routers import (
     tile_tokens,
     tiles,
     trips,
+    weather,
     weather_tiles,
 )
 from app.routers import status as status_router
@@ -108,6 +109,7 @@ def create_app() -> FastAPI:
     app.include_router(tile_tokens.router)
     app.include_router(tiles.router)
     app.include_router(weather_tiles.router)
+    app.include_router(weather.router)
     app.include_router(terrain.router)
     app.include_router(snowpack.router)
     app.include_router(avalanche.router)

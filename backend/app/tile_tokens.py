@@ -59,6 +59,9 @@ BUCKETS: dict[str, tuple[RateLimitItem, ...]] = {
     # but the same fail-open counting and 429 shape. Cloudflare doesn't cache
     # these, so every map load and zone tap counts.
     "avalanche": (parse("120/minute"), parse("2000/hour")),
+    # Per client IP, GET /weather/forecast (spot forecast, needs a tile
+    # token). Each tap is one request; Cloudflare doesn't cache it.
+    "weather": (parse("60/minute"), parse("600/hour")),
 }
 
 _NO_STORE = {"Cache-Control": "no-store"}

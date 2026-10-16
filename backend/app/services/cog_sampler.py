@@ -26,6 +26,54 @@ class TerrainSample:
     aspect_deg: float | None
 
 
+# dem-cogs bucket has anonymous download, so we read via HTTP/vsicurl
+# rather than the S3 driver (avoids rasterio 1.4+ credential restrictions).
+_VSICURL_ENV = {
+    "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
+    "CPL_VSIL_CURL_USE_HEAD": "FALSE",
+    "GDAL_HTTP_MULTIPLEX": "YES",
+    "GDAL_HTTP_VERSION": "2",
+}
+
+
+def _region_base(region: str, settings: Settings) -> str:
+    return f"{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{region}"
+
+
+def _sample_cog(base: str, name: str, coords_3857: list[tuple[float, float]]) -> list[float | None]:
+    """Sample a COG at coords. Prefer hires per-point, fall back to the
+    base 10m COG where hires is nodata. Call inside rasterio.Env(**_VSICURL_ENV).
+
+    Hires coverage is a strict subset of the region bbox (currently the
+    western half of Colorado — Front Range, Colorado Springs, plains are
+    outside). A point can be inside hires extent for some COGs and outside
+    for others, so we always sample both and merge per-point.
+    """
+    n = len(coords_3857)
+    hires_vals: list[float | None] = [None] * n
+    base_vals: list[float | None] = [None] * n
+    for suffix, target in (("_hires", hires_vals), ("", base_vals)):
+        try:
+            with rasterio.open(f"/vsicurl/{base}/{name}{suffix}.tif") as ds:
+                nd = ds.nodata
+                raw = [float(v[0]) for v in ds.sample(coords_3857)]
+            for i, v in enumerate(raw):
+                target[i] = None if (nd is not None and v == nd) else v
+        except Exception:
+            # Variant doesn't exist / read failed → leave target all-None.
+            logger.debug("COG variant %s%s unreadable", name, suffix, exc_info=True)
+    return [
+        hires_vals[i] if hires_vals[i] is not None else base_vals[i]
+        for i in range(n)
+    ]
+
+
+def sample_elevation(lon: float, lat: float, region: str, settings: Settings) -> float | None:
+    """DEM elevation in metres at one WGS84 point, or None outside the DEM."""
+    with rasterio.Env(**_VSICURL_ENV):
+        return _sample_cog(_region_base(region, settings), "dem", [_to_3857.transform(lon, lat)])[0]
+
+
 def _sample_coords(
     coords_3857: list[tuple[float, float]],
     distances: list[float],
@@ -38,47 +86,11 @@ def _sample_coords(
     metres along the path). Returns one TerrainSample per coord.
     """
     n = len(coords_3857)
-
-    # dem-cogs bucket has anonymous download, so we read via HTTP/vsicurl
-    # rather than the S3 driver (avoids rasterio 1.4+ credential restrictions).
-    base = f"{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{region}"
-    env_vars = {
-        "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
-        "CPL_VSIL_CURL_USE_HEAD": "FALSE",
-        "GDAL_HTTP_MULTIPLEX": "YES",
-        "GDAL_HTTP_VERSION": "2",
-    }
-
-    def _sample_one(name: str) -> list[float | None]:
-        """Sample a COG along coords. Prefer hires per-point, fall back to the
-        base 10m COG where hires is nodata.
-
-        Hires coverage is a strict subset of the region bbox (currently the
-        western half of Colorado — Front Range, Colorado Springs, plains are
-        outside). A point can be inside hires extent for some COGs and outside
-        for others, so we always sample both and merge per-point.
-        """
-        hires_vals: list[float | None] = [None] * n
-        base_vals: list[float | None] = [None] * n
-        for suffix, target in (("_hires", hires_vals), ("", base_vals)):
-            try:
-                with rasterio.open(f"/vsicurl/{base}/{name}{suffix}.tif") as ds:
-                    nd = ds.nodata
-                    raw = [float(v[0]) for v in ds.sample(coords_3857)]
-                for i, v in enumerate(raw):
-                    target[i] = None if (nd is not None and v == nd) else v
-            except Exception:
-                # Variant doesn't exist / read failed → leave target all-None.
-                logger.debug("COG variant %s%s unreadable", name, suffix, exc_info=True)
-        return [
-            hires_vals[i] if hires_vals[i] is not None else base_vals[i]
-            for i in range(n)
-        ]
-
-    with rasterio.Env(**env_vars):
-        slopes  = _sample_one("slope")
-        elevs   = _sample_one("dem")
-        aspects = _sample_one("aspect")
+    base = _region_base(region, settings)
+    with rasterio.Env(**_VSICURL_ENV):
+        slopes  = _sample_cog(base, "slope", coords_3857)
+        elevs   = _sample_cog(base, "dem", coords_3857)
+        aspects = _sample_cog(base, "aspect", coords_3857)
 
     return [
         TerrainSample(
