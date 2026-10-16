@@ -23,7 +23,7 @@ from app.db import get_session
 from app.models.status import StatusBanner
 from app.models.user import User
 from app.regions import REGIONS
-from app.services import radar, rasterlayer, snowdepth, snowfall, temperature
+from app.services import radar, rasterlayer, snowdepth, snowfall, temperature, wind
 
 router = APIRouter(prefix="/status", tags=["status"])
 logger = logging.getLogger("whumpf.status")
@@ -111,6 +111,10 @@ async def _check_temperature() -> ServiceHealth:
     return await _check_layer("temperature", temperature.read_pointer, temperature.STALE_AFTER)
 
 
+async def _check_wind() -> ServiceHealth:
+    return await _check_layer("wind", wind.read_pointer, wind.STALE_AFTER)
+
+
 async def _check_radar() -> ServiceHealth:
     """Healthy when every region's newest radar frame is recent."""
     problems: list[str] = []
@@ -132,16 +136,17 @@ async def _check_services(session: Session) -> list[ServiceHealth]:
     # report it explicitly so the frontend doesn't have to know that.
     api = ServiceHealth(name="api", healthy=True)
     postgres = await _check_postgres(session)
-    minio, titiler, martin, snow, depth, temp, rad = await asyncio.gather(
+    minio, titiler, martin, snow, depth, temp, wnd, rad = await asyncio.gather(
         _probe("minio",   "http://localhost:9000/minio/health/live"),
         _probe("titiler", "http://localhost:8001/"),
         _probe("martin",  "http://localhost:3000/health"),
         _check_snowfall(),
         _check_snowdepth(),
         _check_temperature(),
+        _check_wind(),
         _check_radar(),
     )
-    return [api, postgres, minio, titiler, martin, snow, depth, temp, rad]
+    return [api, postgres, minio, titiler, martin, snow, depth, temp, wnd, rad]
 
 
 def _overall(services: list[ServiceHealth], active_banner: StatusBanner | None) -> str:

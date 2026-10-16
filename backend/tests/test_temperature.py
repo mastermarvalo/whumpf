@@ -10,9 +10,7 @@ from datetime import UTC, datetime, timedelta
 import numpy as np
 import pytest
 from fastapi.testclient import TestClient
-from pyproj import Transformer
 from rasterio.io import MemoryFile
-from rasterio.transform import from_origin
 from tenacity import wait_none
 
 from app import http_retry
@@ -24,10 +22,13 @@ from app.services import temperature
 from tests.weather_fakes import (
     FakeServer,
     FakeStore,
+    add_rtma_hour,
     fake_pointer,
     fake_titiler,
     reset_breakers,
+    wind_messages,
 )
+from tests.weather_fakes import rtma_message as fake_rtma_message
 
 CO = REGIONS["colorado"]
 NOW = datetime(2026, 10, 16, 3, 50, tzinfo=UTC)
@@ -50,53 +51,16 @@ def _fresh(monkeypatch):
 
 
 # ── an RTMA-like message ──────────────────────────────────────────────────────
-# A GeoTIFF on the NDFD Lambert grid with the band tags GDAL reports for an
-# RTMA GRIB2 message (the job only looks at those, not the driver).
 
-LCC = (
-    "+proj=lcc +lat_0=25 +lon_0=-95 +lat_1=25 +lat_2=25 +x_0=0 +y_0=0 "
-    "+a=6371200 +b=6371200 +units=m +no_defs"
-)
-RES_M = 2539.703
-
-
-def rtma_message(
-    hour: datetime = HOUR, *, celsius: float = 5.0, element: str = "TMP", unit: str = "[C]",
-    crs: str = LCC, res: float = RES_M,
-) -> bytes:
+def rtma_message(hour: datetime = HOUR, *, celsius: float = 5.0, **kwargs) -> bytes:
     """`celsius` everywhere over Colorado and around it, with -10 °C in the
     north-west corner."""
-    to_lcc = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
-    xs, ys = to_lcc.transform([-111, -111, -99, -99], [35, 43, 35, 43])
-    x0, y1 = min(xs), max(ys)
-    w, h = int((max(xs) - x0) / res) + 1, int((y1 - min(ys)) / res) + 1
-    data = np.full((h, w), celsius, dtype=np.float64)
-    data[: h // 4, : w // 4] = -10.0
-    with MemoryFile() as mem:
-        with mem.open(
-            driver="GTiff", width=w, height=h, count=1, dtype="float64", crs=crs,
-            transform=from_origin(x0, y1, res, res),
-        ) as dst:
-            dst.write(data, 1)
-            dst.update_tags(1, GRIB_ELEMENT=element, GRIB_UNIT=unit,
-                            GRIB_VALID_TIME=str(int(hour.timestamp())))
-        return mem.read()
+    return fake_rtma_message(hour, value=celsius, **kwargs)
 
 
 def add_hour(server: FakeServer, base: str, hour: datetime, message: bytes) -> None:
-    """The full analysis file with HGT and PRES before TMP and DPT after it,
-    plus its .idx."""
-    body = b"H" * 100 + b"P" * 50 + message + b"D" * 70
-    d = f"d={hour:%Y%m%d%H}"
-    idx = "\n".join([
-        f"1:0:{d}:HGT:surface:anl:",
-        f"2:100:{d}:PRES:surface:anl:",
-        f"3:150:{d}:TMP:2 m above ground:anl:",
-        f"4:{150 + len(message)}:{d}:DPT:2 m above ground:anl:",
-    ]) + "\n"
-    url = job.file_url(base, hour)
-    server.add(url, body)
-    server.add(f"{url}.idx", idx.encode())
+    """The full analysis file (with a steady west wind) plus its .idx."""
+    add_rtma_hour(server, job.file_url(base, hour), hour, {"TMP": message, **wind_messages(hour)})
 
 
 # ── index + conversion ────────────────────────────────────────────────────────
@@ -185,9 +149,10 @@ def test_run_publishes_the_newest_hour_with_a_range_request(noaa):
     assert e["source"] == "rtma-aws"
     assert (e["min_f"], e["max_f"]) == (14, 41)
     assert store.get(e["key"]) is not None
-    assert [u for u, _ in noaa.requests] == [
-        job.file_url(AWS, HOUR) + ".idx", job.file_url(AWS, HOUR),
-    ]
+    # The index, then the temperature and the three wind messages as two ranges.
+    url = job.file_url(AWS, HOUR)
+    assert [u for u, _ in noaa.requests] == [url + ".idx", url, url]
+    assert noaa.ranges[0] is None and len(noaa.ranges) == 3
 
 
 def test_served_hour_costs_no_requests(noaa):

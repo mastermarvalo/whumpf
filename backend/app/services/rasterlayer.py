@@ -208,12 +208,14 @@ def save_pointer(store: Store, key: str, pointer: dict, now: datetime) -> None:
     store.put(key, json.dumps(pointer, indent=1).encode(), "application/json")
 
 
-def cleanup(store: Store, prefix: str, keep: set[str], older_than: datetime) -> int:
-    """Delete .tif files under `prefix` that aren't in `keep` and were written
-    before `older_than`. Returns how many went."""
+def cleanup(
+    store: Store, prefix: str, keep: set[str], older_than: datetime, suffix: str = ".tif",
+) -> int:
+    """Delete `suffix` files under `prefix` that aren't in `keep` and were
+    written before `older_than`. Returns how many went."""
     old = [
         key for key, modified in store.list(prefix)
-        if key.endswith(".tif") and key not in keep and modified < older_than
+        if key.endswith(suffix) and key not in keep and modified < older_than
     ]
     if old:
         store.delete(old)

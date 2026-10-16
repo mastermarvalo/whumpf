@@ -227,7 +227,7 @@ snowdepth-refresh:  ## fetch the newest SNODAS snow depth into MinIO (hourly job
 	$(API_RUN) uv run python -m app.jobs.snowdepth_refresh $(ARGS)
 
 .PHONY: temperature-refresh
-temperature-refresh:  ## fetch the newest RTMA 2 m temperature into MinIO (hourly job); ARGS=--dry-run writes nothing
+temperature-refresh:  ## fetch the newest RTMA 2 m temperature and 10 m wind into MinIO (hourly job); ARGS=--dry-run writes nothing
 	$(API_RUN) uv run python -m app.jobs.temperature_refresh $(ARGS)
 
 .PHONY: radar-refresh

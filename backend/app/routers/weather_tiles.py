@@ -1,4 +1,4 @@
-"""Weather map layers: snow depth, current temperature and radar.
+"""Weather map layers: snow depth, current temperature, wind now and radar.
 
 Same pattern as /tiles/snowfall (routers/tiles.py): cron jobs write COGs and
 a latest.json per region into MinIO (app/services/rasterlayer.py), and these
@@ -6,7 +6,9 @@ routes serve `meta` plus TiTiler-rendered tiles. Everything is under /tiles,
 so the tile token, its rate limits and the Cloudflare cache rule apply.
 
 Tile URLs from `meta` carry the revision (?v=) or, for radar, the frame time
-in the path, so they can be cached for a day and never need a purge.
+in the path, so they can be cached for a day and never need a purge. Wind
+is not tiles but one GeoJSON file of arrows per region and hour, with its
+revision in the path (app/services/wind.py).
 docs/runbook.md §9.
 """
 
@@ -27,7 +29,7 @@ from app.config import validate_region
 from app.http_retry import CircuitOpenError
 from app.regions import REGIONS
 from app.routers.tiles import _MAX_Z, cog_tile
-from app.services import radar, snowdepth, temperature
+from app.services import radar, snowdepth, temperature, wind
 from app.tile_tokens import require_tile_access
 
 router = APIRouter(
@@ -164,6 +166,65 @@ async def temperature_meta(region: str = "colorado") -> JSONResponse:
 async def temperature_tile(z: int, x: int, y: int, region: str = "colorado", v: str | None = None) -> Response:
     """2 m temperature as a stepped colour PNG (°F, see temperature.SCALE)."""
     return await _layer_tile(TEMPERATURE, region, z, x, y, v)
+
+
+# ── wind now (RTMA) ───────────────────────────────────────────────────────────
+# One gzipped GeoJSON file per region and hour instead of tiles: one request
+# per hour shown, whatever the zoom (app/services/wind.py). `hours` is a list
+# so forecast hours can join the analysis later without a new endpoint.
+
+_WIND_GONE = {"Cache-Control": "public, max-age=60"}
+
+
+@router.get("/wind/meta")
+async def wind_meta(region: str = "colorado") -> JSONResponse:
+    """10 m wind analysis: valid hour, the arrow file per hour, the zoom
+    bands for thinning the arrows (`levels`), speeds in mph and directions
+    in degrees true the wind blows from."""
+    validate_region(region)
+    entry = (await _pointer("wind", wind.read_pointer, region)).get("current")
+    body: dict[str, Any] = {
+        "region": region,
+        "units": "mph",
+        "direction": "from",
+        "attribution": wind.ATTRIBUTION,
+        "attribution_url": wind.ATTRIBUTION_URL,
+        "bounds": REGIONS[region].max_bounds,
+        "step_deg": wind.STEP_DEG,
+        "levels": wind.LEVELS,
+        "available": entry is not None,
+        "hours": [],
+    }
+    if entry:
+        body.update({k: entry[k] for k in ("valid", "revision", "fetched", "source", "max_mph", "max_gust_mph", "points")})
+        body["stale"] = _is_stale(entry["valid"], wind.STALE_AFTER)
+        body["hours"] = [{
+            "time": entry["valid"],
+            "kind": "analysis",
+            "url": f"/tiles/wind/{entry['revision']}.geojson?region={region}",
+        }]
+    return JSONResponse(body, headers={"Cache-Control": f"public, max-age={300 if entry else 60}"})
+
+
+@router.get("/wind/{revision}.geojson")
+async def wind_arrows(revision: str, region: str = "colorado") -> Response:
+    """The arrows for one hour as GeoJSON points with `dir` (degrees, from),
+    `mph`, `gust_mph` and `lvl`. Never changes once written, so it is cached
+    for a day. 404 once the file has been cleaned up (after 7 days)."""
+    validate_region(region)
+    if not wind.REVISION.match(revision):
+        raise HTTPException(404, "no such wind hour", headers=_WIND_GONE)
+    try:
+        body = await wind.read_arrows(region, revision)
+    except (CircuitOpenError, httpx.HTTPError) as exc:
+        logger.warning("wind %s unreadable for %s: %r", revision, region, exc)
+        raise HTTPException(503, "wind data temporarily unavailable", headers=_NO_STORE) from exc
+    if body is None:
+        raise HTTPException(404, "no such wind hour", headers=_WIND_GONE)
+    return Response(
+        content=body, media_type="application/geo+json",
+        headers={**_CURRENT, "Content-Encoding": "gzip"},
+    )
 
 
 # ── radar (MRMS) ──────────────────────────────────────────────────────────────
