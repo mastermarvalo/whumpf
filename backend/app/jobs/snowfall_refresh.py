@@ -10,7 +10,8 @@ reruns each analysis hourly for five days and overwrites the file in place.
 A file that fails validation is never published; whatever was served stays.
 Exits 1 if anything failed, so the cron log shows it.
 
-Layout and pointer format: app/services/snowfall.py.
+Layout and pointer format: app/services/snowfall.py; the shared storage,
+download and COG helpers are in app/services/rasterlayer.py.
 """
 
 from __future__ import annotations
@@ -18,25 +19,20 @@ from __future__ import annotations
 import argparse
 import asyncio
 import hashlib
-import json
 import logging
 import math
 import sys
 from datetime import UTC, datetime, timedelta
-from typing import Protocol
 
-import boto3
 import httpx
 import numpy as np
 import rasterio
-from botocore.config import Config
-from botocore.exceptions import ClientError
 from rasterio.io import MemoryFile
-from rasterio.windows import Window
 
 from app.config import get_settings
-from app.http_retry import call_with_resilience
 from app.regions import REGIONS
+from app.services import rasterlayer
+from app.services.rasterlayer import BadFile, DryRunStore, S3Store, Store
 from app.services.snowfall import NODATA, PERIODS, cog_key, pointer_key, prefix
 
 logger = logging.getLogger("whumpf.snowfall_refresh")
@@ -55,82 +51,9 @@ MIN_VALID_SHARE = 0.5
 KEEP = timedelta(days=7)
 
 
-class BadFile(Exception):
-    """The download isn't a NOHRSC snowfall grid we're willing to serve."""
-
-
-# ── storage ───────────────────────────────────────────────────────────────────
-
-class Store(Protocol):
-    def get(self, key: str) -> bytes | None: ...
-    def put(self, key: str, body: bytes, content_type: str) -> None: ...
-    def list(self, prefix: str) -> list[tuple[str, datetime]]: ...
-    def delete(self, keys: list[str]) -> None: ...
-
-
-class S3Store:
-    """The dem-cogs bucket in MinIO."""
-
-    def __init__(self) -> None:
-        settings = get_settings()
-        self._bucket = settings.s3_bucket_dem_cogs
-        self._s3 = boto3.client(
-            "s3",
-            endpoint_url=settings.s3_endpoint,
-            aws_access_key_id=settings.s3_access_key,
-            aws_secret_access_key=settings.s3_secret_key,
-            region_name="us-east-1",
-            config=Config(s3={"addressing_style": "path"}),
-        )
-
-    def get(self, key: str) -> bytes | None:
-        try:
-            return self._s3.get_object(Bucket=self._bucket, Key=key)["Body"].read()
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
-                return None
-            raise
-
-    def put(self, key: str, body: bytes, content_type: str) -> None:
-        self._s3.put_object(Bucket=self._bucket, Key=key, Body=body, ContentType=content_type)
-
-    def list(self, prefix: str) -> list[tuple[str, datetime]]:
-        out = []
-        for page in self._s3.get_paginator("list_objects_v2").paginate(Bucket=self._bucket, Prefix=prefix):
-            out.extend((o["Key"], o["LastModified"]) for o in page.get("Contents", []))
-        return out
-
-    def delete(self, keys: list[str]) -> None:
-        for i in range(0, len(keys), 1000):
-            self._s3.delete_objects(
-                Bucket=self._bucket,
-                Delete={"Objects": [{"Key": k} for k in keys[i:i + 1000]], "Quiet": True},
-            )
-
-
-class DryRunStore:
-    """Reads from `inner`, logs what it would write or delete."""
-
-    def __init__(self, inner: Store) -> None:
-        self._inner = inner
-
-    def get(self, key: str) -> bytes | None:
-        return self._inner.get(key)
-
-    def put(self, key: str, body: bytes, content_type: str) -> None:
-        logger.info("dry run: would write %s (%d bytes)", key, len(body))
-
-    def list(self, prefix: str) -> list[tuple[str, datetime]]:
-        return self._inner.list(prefix)
-
-    def delete(self, keys: list[str]) -> None:
-        logger.info("dry run: would delete %s", keys)
-
-
 # ── NOHRSC ────────────────────────────────────────────────────────────────────
 
-def _iso(dt: datetime) -> str:
-    return dt.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+_iso = rasterlayer.iso
 
 
 def issue_times(now: datetime) -> list[datetime]:
@@ -150,19 +73,7 @@ def file_url(base: str, period: str, valid: datetime) -> str:
 
 async def _download(client: httpx.AsyncClient, url: str, etag: str | None) -> tuple[int, bytes, dict]:
     """(status, body, headers). 404 and 304 are answers, not errors."""
-    async def _do() -> tuple[int, bytes, dict]:
-        headers = {"If-None-Match": etag} if etag else {}
-        async with client.stream("GET", url, headers=headers) as r:
-            if r.status_code not in (304, 404):
-                r.raise_for_status()
-            body = bytearray()
-            async for chunk in r.aiter_bytes():
-                body += chunk
-                if len(body) > MAX_BYTES:
-                    raise BadFile(f"{url} is over {MAX_BYTES} bytes")
-            return r.status_code, bytes(body), dict(r.headers)
-
-    return await call_with_resilience("nohrsc", _do)
+    return await rasterlayer.download(client, url, upstream="nohrsc", max_bytes=MAX_BYTES, etag=etag)
 
 
 # ── validate + clip ───────────────────────────────────────────────────────────
@@ -174,21 +85,13 @@ def clip_to_cog(src_bytes: bytes, bounds: tuple[float, float, float, float]) -> 
     Nodata is set explicitly: the 48 h / 72 h files carry -99999 without a
     NoData tag.
     """
-    west, south, east, north = bounds
     try:
         with MemoryFile(src_bytes) as mem, mem.open() as src:
             if src.count != 1 or src.crs is None or src.crs.to_epsg() != 4326:
                 raise BadFile(f"expected 1 band in EPSG:4326, got {src.count} in {src.crs}")
             if not all(math.isclose(r, RESOLUTION_DEG, abs_tol=1e-6) for r in src.res):
                 raise BadFile(f"expected {RESOLUTION_DEG}° pixels, got {src.res}")
-            inv = ~src.transform
-            col0, row0 = inv * (west, north)
-            col1, row1 = inv * (east, south)
-            col0, row0 = math.floor(col0 + 1e-6), math.floor(row0 + 1e-6)
-            col1, row1 = math.ceil(col1 - 1e-6), math.ceil(row1 - 1e-6)
-            if col0 < 0 or row0 < 0 or col1 > src.width or row1 > src.height:
-                raise BadFile("region is not inside the grid")
-            window = Window(col0, row0, col1 - col0, row1 - row0)
+            window = rasterlayer.region_window(src.transform, src.width, src.height, bounds)
             data = src.read(1, window=window).astype(np.float32)
             transform = src.window_transform(window)
     except rasterio.errors.RasterioIOError as exc:
@@ -203,15 +106,8 @@ def clip_to_cog(src_bytes: bytes, bounds: tuple[float, float, float, float]) -> 
     if lo < -0.01 or hi > MAX_INCHES:
         raise BadFile(f"values {lo:.2f}..{hi:.2f} in are out of range")
 
-    out = np.where(valid, np.maximum(data, 0.0), NODATA).astype(np.float32)
-    with MemoryFile() as mem:
-        with mem.open(
-            driver="COG", width=out.shape[1], height=out.shape[0], count=1,
-            dtype="float32", crs="EPSG:4326", transform=transform, nodata=NODATA,
-            compress="deflate",
-        ) as dst:
-            dst.write(out, 1)
-        cog = mem.read()
+    out = np.where(valid, np.maximum(data, 0.0), NODATA)
+    cog = rasterlayer.write_cog(out, transform, NODATA)
     return cog, {"max_in": round(hi, 1), "snow_share": round(float((values >= 0.1).mean()), 3)}
 
 
@@ -273,13 +169,8 @@ async def refresh_period(
 
 def cleanup(store: Store, region: str, pointer: dict, now: datetime) -> None:
     keep = {e["key"] for e in pointer.get("periods", {}).values()}
-    old = [
-        key for key, modified in store.list(f"{prefix(region)}/")
-        if key.endswith(".tif") and key not in keep and modified < now - KEEP
-    ]
-    if old:
-        store.delete(old)
-        logger.info("%s: deleted %d old revisions", region, len(old))
+    if n := rasterlayer.cleanup(store, f"{prefix(region)}/", keep, now - KEEP):
+        logger.info("%s: deleted %d old revisions", region, n)
 
 
 async def run(
@@ -290,8 +181,7 @@ async def run(
     now = now or datetime.now(UTC)
     ok = True
     for region in regions:
-        raw = store.get(pointer_key(region))
-        pointer = json.loads(raw) if raw else {"region": region, "periods": {}}
+        pointer = rasterlayer.load_pointer(store, pointer_key(region), {"region": region, "periods": {}})
         changed = False
         for period in PERIODS:
             try:
@@ -307,8 +197,7 @@ async def run(
                 pointer["periods"][period] = new
                 changed = True
         if changed:
-            pointer["updated"] = _iso(now)
-            store.put(pointer_key(region), json.dumps(pointer, indent=1).encode(), "application/json")
+            rasterlayer.save_pointer(store, pointer_key(region), pointer, now)
         try:
             cleanup(store, region, pointer, now)
         except Exception:

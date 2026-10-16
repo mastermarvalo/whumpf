@@ -893,22 +893,31 @@ async def snowfall_tile(
         raise HTTPException(503, "no snowfall data yet", headers=_NO_STORE)
     headers = _SNOWFALL_CURRENT if v == entry["revision"] else _SNOWFALL_UNVERSIONED
 
-    cache_key = (period, region, entry["revision"], z, x, y)
-    if cached := _cache_get(_SNOWFALL_CACHE, cache_key):
+    return await cog_tile(
+        _SNOWFALL_CACHE, _SNOWFALL_CACHE_MAX, (period, region, entry["revision"], z, x, y),
+        entry["key"], {"nodata": str(int(snowfall.NODATA)), "colormap": snowfall.TITILER_COLORMAP},
+        headers, f"snowfall {period}", z, x, y,
+    )
+
+
+async def cog_tile(
+    cache: OrderedDict[tuple, bytes], cache_max: int, cache_key: tuple,
+    key: str, params: dict[str, str], headers: dict[str, str],
+    what: str, z: int, x: int, y: int,
+) -> Response:
+    """A PNG tile of the dem-cogs COG at `key`, rendered by TiTiler with
+    `params` (nodata, colormap, ...), kept in this worker's `cache`. Used by
+    the snowfall layer and the weather layers (routers/weather_tiles.py)."""
+    if cached := _cache_get(cache, cache_key):
         return Response(content=cached, media_type="image/png", headers=headers)
 
     settings = get_settings()
-    cog_url = f"/vsicurl/{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{entry['key']}"
+    cog_url = f"/vsicurl/{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{key}"
 
     async def _do() -> httpx.Response:
         r = await _HTTP.get(
             f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png",
-            params={
-                "url": cog_url,
-                "nodata": str(int(snowfall.NODATA)),
-                "colormap": snowfall.TITILER_COLORMAP,
-                "reproject": "bilinear",
-            },
+            params={"url": cog_url, **params, "reproject": "bilinear"},
         )
         if r.status_code != 404:
             r.raise_for_status()
@@ -923,13 +932,13 @@ async def snowfall_tile(
         raise HTTPException(502, "tile server unreachable") from exc
     except httpx.HTTPStatusError as exc:
         logger.warning(
-            "TiTiler returned %d for snowfall tile %s %d/%d/%d",
-            exc.response.status_code, period, z, x, y,
+            "TiTiler returned %d for %s tile %d/%d/%d",
+            exc.response.status_code, what, z, x, y,
         )
         raise HTTPException(502, f"TiTiler returned {exc.response.status_code}") from exc
 
     if resp.status_code == 404:  # outside the region's COG
         return Response(status_code=204, headers=headers)
 
-    _cache_put(_SNOWFALL_CACHE, cache_key, resp.content, _SNOWFALL_CACHE_MAX)
+    _cache_put(cache, cache_key, resp.content, cache_max)
     return Response(content=resp.content, media_type="image/png", headers=headers)
