@@ -606,15 +606,17 @@ output (<https://www.weather.gov/disclaimer>).
 | Layer | Source | Credit | Terms |
 | --- | --- | --- | --- |
 | Snow depth | NOHRSC SNODAS, daily, 1 km, distributed by NSIDC as G02158 | NOAA/NWS NOHRSC SNODAS | NSIDC asks for a citation as a condition of use: <https://nsidc.org/data/g02158/versions/1>. The app's credits page should carry: National Operational Hydrologic Remote Sensing Center. 2004. Snow Data Assimilation System (SNODAS) Data Products at NSIDC, Version 1. G02158. NSIDC. doi:10.7265/N5TB14TC |
+| Current temperature | RTMA 2.5 km hourly analysis, 2 m temperature, from NOAA's AWS bucket (NOMADS as fallback) | NOAA/NWS RTMA | <https://registry.opendata.aws/noaa-rtma/> (NOAA Open Data Dissemination: use as desired, attribution requested) |
 
 ### Cron
 
 User crontab, next to the snowfall line (the `XDG_RUNTIME_DIR` and
 `DOCKER_HOST` lines at the top of the crontab are needed here too). Each
-job needs its directory (`mkdir -p /data/snowdepth`).
+job needs its directory (`mkdir -p /data/snowdepth /data/temperature`).
 
 ```
 35 * * * * cd /home/ronkerflonk/whumpf && flock -n /data/snowdepth/.refresh.lock make snowdepth-refresh >> /data/snowdepth/refresh.log 2>&1
+50 * * * * cd /home/ronkerflonk/whumpf && flock -n /data/temperature/.refresh.lock make temperature-refresh >> /data/temperature/refresh.log 2>&1
 ```
 
 Every job takes `ARGS=--dry-run` (download and validate, write nothing) and
@@ -650,6 +652,42 @@ Legend, inches (under 0.5 in is transparent; one list in
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `#dcebf7` | `#b3d3ee` | `#84b6e1` | `#5596d1` | `#3474bc` | `#2a52a0` | `#40388c` | `#5f2783` | `#7d1670` |
 
+### Current temperature
+
+```
+https://noaa-rtma-pds.s3.amazonaws.com/rtma2p5.YYYYMMDD/rtma2p5.tHHz.2dvaranl_ndfd.grb2_wexp(.idx)
+  (fallback https://nomads.ncep.noaa.gov/pub/data/nccf/com/rtma/prod/...)
+  -> make temperature-refresh (hourly at :50, app/jobs/temperature_refresh.py)
+  -> MinIO dem-cogs/temperature/<region>/<YYYYMMDDHH>-<sha8>.tif
+     MinIO dem-cogs/temperature/<region>/latest.json
+  -> GET /tiles/temperature/meta?region=colorado
+     GET /tiles/temperature/{z}/{x}/{y}?region=colorado&v=<revision>
+```
+
+- RTMA is an hourly analysis (what the temperature is, not a forecast) on
+  the 2.5 km NDFD Lambert grid. Hour H appears about 40 min after H, hence
+  :50. An analysis file is ~100 MB; the job reads its `.idx` and downloads
+  only the `TMP:2 m above ground` message (~6 MB) with a Range request, so
+  about 150 MB a day.
+- AWS is tried first, then NOMADS. One unreachable source isn't a failure
+  if the other has the hour; a refused file is. Hours newer than the served
+  one are tried newest first (6 h back); analyses aren't rewritten, so a
+  run with nothing new makes no requests at all.
+- Reprojected (bilinear) to a 0.025° lon/lat grid over the region and served
+  in **°F**. `meta` adds `min_f`, `max_f` and `source`, and sets `stale`
+  after 3 h.
+- Refused unless it is one `TMP` band in `[C]` for the hour asked for, on a
+  projected 2.5 km grid, covers at least half the region, and is -60 to
+  60 °C.
+- In the mountains the analysis can be several degrees off in valley
+  inversions; the app should label it as an analysis.
+
+Legend, °F (one list in `app/services/temperature.py`, open at both ends):
+
+| < -10 | -10–0 | 0–10 | 10–20 | 20–32 | 32–40 | 40–50 | 50–60 | 60–70 | 70–80 | 80+ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `#4a2a7a` | `#6c4fb0` | `#4560c8` | `#3f8fd2` | `#7fc6e8` | `#b7e2b1` | `#e6f2a2` | `#fee08b` | `#fdae61` | `#f46d43` | `#c2304a` |
+
 ### `meta` and tiles
 
 `GET /tiles/<layer>/meta?region=` returns `units`, `attribution`,
@@ -669,7 +707,7 @@ exists it also has `valid` (UTC), `revision`, `fetched`, `stale` and `tiles`
 
 A refused file never replaces what is served, and a NOAA or NSIDC outage
 keeps the last good data; `meta` shows its age through `valid` and `stale`.
-`GET /status` has an item per layer (`snowdepth`, ...) that turns unhealthy
+`GET /status` has an item per layer (`snowdepth`, `temperature`, ...) that turns unhealthy
 past the same limit as `stale`. `/readyz` does not depend on them.
 
 Revisions not referenced by `latest.json` are deleted after 7 days. Nothing

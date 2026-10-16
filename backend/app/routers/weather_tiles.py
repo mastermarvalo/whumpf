@@ -27,7 +27,7 @@ from app.config import validate_region
 from app.http_retry import CircuitOpenError
 from app.regions import REGIONS
 from app.routers.tiles import _MAX_Z, cog_tile
-from app.services import snowdepth
+from app.services import snowdepth, temperature
 from app.tile_tokens import require_tile_access
 
 router = APIRouter(
@@ -69,6 +69,19 @@ SNOWDEPTH = Layer(
     legend=snowdepth.legend,
     read_pointer=lambda region: snowdepth.read_pointer(region),
     stale_after=snowdepth.STALE_AFTER,
+)
+
+TEMPERATURE = Layer(
+    name="temperature",
+    units="F",
+    attribution=temperature.ATTRIBUTION,
+    attribution_url=temperature.ATTRIBUTION_URL,
+    maxzoom=temperature.MAXZOOM,
+    nodata=temperature.NODATA,
+    colormap=temperature.TITILER_COLORMAP,
+    legend=temperature.legend,
+    read_pointer=lambda region: temperature.read_pointer(region),
+    stale_after=temperature.STALE_AFTER,
 )
 
 
@@ -137,3 +150,17 @@ async def snowdepth_meta(region: str = "colorado") -> JSONResponse:
 async def snowdepth_tile(z: int, x: int, y: int, region: str = "colorado", v: str | None = None) -> Response:
     """Snow depth as a stepped colour PNG (inches, see snowdepth.SCALE)."""
     return await _layer_tile(SNOWDEPTH, region, z, x, y, v)
+
+
+# ── current temperature (RTMA) ────────────────────────────────────────────────
+
+@router.get("/temperature/meta")
+async def temperature_meta(region: str = "colorado") -> JSONResponse:
+    """2 m temperature analysis: valid hour, versioned tile URL, legend in °F."""
+    return await _layer_meta(TEMPERATURE, region)
+
+
+@router.get("/temperature/{z}/{x}/{y}")
+async def temperature_tile(z: int, x: int, y: int, region: str = "colorado", v: str | None = None) -> Response:
+    """2 m temperature as a stepped colour PNG (°F, see temperature.SCALE)."""
+    return await _layer_tile(TEMPERATURE, region, z, x, y, v)

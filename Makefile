@@ -226,6 +226,10 @@ snowfall-refresh:  ## fetch the newest NOHRSC 24 h/72 h snowfall into MinIO (the
 snowdepth-refresh:  ## fetch the newest SNODAS snow depth into MinIO (hourly job); ARGS=--dry-run writes nothing
 	$(API_RUN) uv run python -m app.jobs.snowdepth_refresh $(ARGS)
 
+.PHONY: temperature-refresh
+temperature-refresh:  ## fetch the newest RTMA 2 m temperature into MinIO (hourly job); ARGS=--dry-run writes nothing
+	$(API_RUN) uv run python -m app.jobs.temperature_refresh $(ARGS)
+
 # --- tests / lint -----------------------------------------------------------
 
 .PHONY: test-api
