@@ -29,7 +29,7 @@ Checked against `whumpf` at 65846e8. This covers the backend repo only; the app 
 - **Own ski tiles, done:** `/tiles/ski` serves our own OSM ski run tiles, rebuilt weekly on Tuesdays at 04:00 with rollback if Martin doesn't come back (0a52151, `docs/runbook.md` §7).
 - **Backups, done:** daily at 03:00 from cron; a local dump kept 14 days plus Cloudflare R2, each read back and checked by sha256 (3a86dca, 65846e8).
 - **Cloudflare `/tiles/*` cache, done and verified** (MISS then HIT; 65e9f50).
-- **Next: Phase 3 (TestFlight).** The likely backend part is serving the privacy policy, terms and credits pages. Upcoming, not built.
+- **Next: Phase 3 (Fix and verify).** TestFlight is now Phase 7, the last one. Its likely backend part, serving the privacy policy, terms and credits pages, moves with it. Not built.
 
 **Turn off when the old website is retired:** `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS`. See "Settings added in Phase 2" in `docs/runbook.md`.
 
@@ -66,10 +66,11 @@ Stabilize first, then build iPhone and web together.
 | 0. Stabilize (start here) | Push laptop fixes, fix tile retries, diagnose timeouts; smoke test the real API; refresh CLAUDE.md and STATUS.md | Map and taps work with the real API |
 | 1. Safe for friends | Strava routes owner-only; account deletion fixed; signed tile tokens and rate limits | No Strava data reaches another user |
 | 2. Accounts in the app | Sign-up, verify email, reset password, delete account; refresh tokens; Strava connect returns to the app | A friend signs up on the phone |
-| 3. TestFlight | App Store Connect record, icon, privacy policy; invite friends and collect feedback | Feedback sorted into Phase 4 |
-| 4. Core features | Observations, weather, layer order and opacity; recording, sharing, trip editing, then offline | Web covers the old site |
+| 3. Fix and verify | Backend CI green via a ruff config; Strava connect returns to the iPhone app; phone test of the code that was only type-checked; `/docs` off in prod; `whumpf-ios` made private | Everything built so far works on the phone and CI is green |
+| 4. Core features | Recent snowfall, layer order and opacity, weather, spot forecast, wind arrows, mountain cameras, outage banners, route hazard summary, Munter times, phone inclinometer, slope-above-you runout tap check, trip editing, in-app sharing, GPX, trip briefing, GPS recording, forecast-change alerts, Strava 7-day rules and deauth webhook, offline map downloads, offline 3D | Web covers the old site |
 | 5. Swap whumpf.co | Parity check, CORS update, email link routes; point whumpf.co at Expo web, delete old frontend | One codebase serves both |
 | 6. Polish | Before-and-after renders of each screen; pick designs, then prompt the changes | |
+| 7. TestFlight (last) | App Store Connect record, icon, privacy policy, safety disclaimer, credits, crash reporting, EAS Update; invite friends and collect feedback | Feedback sorted into fixes |
 
 Web track: runs alongside phases 1 to 4. Each feature ships on iPhone and web together, with X.web.tsx only where the code must differ. The old whumpf.co stays up until Phase 5.
 
@@ -143,13 +144,29 @@ One prompt per change, in order. Each names its repo. Backend prompts let Claude
 [whumpf] + [whumpf-ios] Make Strava connect return to the app: callback redirects to whumpf://strava?status=..., the app opens it with WebBrowser.openAuthSessionAsync, and the web build keeps a web URL. Build both parts, web included.
 ```
 
-### Phase 3: TestFlight
+### Phase 3: Fix and verify
 
 ```text
-[whumpf-ios] Walk me through a TestFlight build: App Store Connect app record, eas.json production profile, app icon and splash, privacy policy URL, and the App Store privacy answers for location, email and Strava data.
+[whumpf] Get backend CI green: add a ruff config (the 181 errors), fix what is left in one commit with no behaviour changes, and run `make lint-api` in CI.
 ```
 
+```text
+[whumpf-ios] Make the Strava iPhone redirect work end to end: connect returns to whumpf://strava?status=... and the app shows the result. List what I should check on the phone.
+```
+
+```text
+[whumpf-ios] List every change that has only been type-checked and never run on the phone, with a step-by-step checklist for me to run through. Add it to docs/SMOKE_TEST.md.
+```
+
+```text
+[whumpf] Turn off /docs, /redoc and /openapi.json in prod (keep them in dev), with a test. Add or update the env var in .env.example.
+```
+
+Making `whumpf-ios` private is a GitHub setting, not a prompt: do it, then attach the repo with GitHub access for future Claude sessions.
+
 ### Phase 4: Core features
+
+Build order is flexible. Suggested grouping: layers (recent snowfall, order and opacity, weather, spot forecast, wind arrows, cameras, outage banners); terrain on the phone (route hazard summary, inclinometer, slope-above-you runout tap check, Munter times); trips (editing, in-app sharing, GPX, briefing); recording and alerts (GPS recording, forecast-change alerts); Strava compliance (7-day rules, deauthorization webhook); offline (map downloads, then offline 3D).
 
 ```text
 [whumpf-ios] Add a CAIC observations layer from GET /avalanche/observations: markers by type (caught, avalanche, other), a toggle in the Layers sheet, and a tap card. Show when the data was fetched.
@@ -175,6 +192,12 @@ One prompt per change, in order. Each names its repo. Backend prompts let Claude
 
 ```text
 [whumpf-ios] Add routes for the email links (/verify, /reset, /trip-invite) and plan deploying npx expo export -p web to beta.whumpf.co.
+```
+
+### Phase 7: TestFlight (last)
+
+```text
+[whumpf-ios] Walk me through a TestFlight build: App Store Connect app record, eas.json production profile, app icon and splash, privacy policy URL, and the App Store privacy answers for location, email and Strava data.
 ```
 
 ### Docs (do first, and after each phase)
@@ -256,22 +279,22 @@ Apple requires an in-app delete option for any app that lets people create accou
 
 ## Also worth planning
 
-The two items that block TestFlight are a privacy policy and a safety disclaimer; the rest can slot into phases as listed.
+The two items that block TestFlight are a privacy policy and a safety disclaimer; the rest can slot into phases as listed. TestFlight is now Phase 7, so the TestFlight items are there.
 
 | Item | Why | Phase |
 | --- | --- | --- |
-| Safety disclaimer and terms | An avalanche terrain tool needs a clear "not a substitute for training, forecasts or judgement" on first run and in the app | 3 |
-| Privacy policy | Required for TestFlight and the App Store; must cover location, email and Strava data | 3 |
-| Data credits screen | USGS, NOAA, CAIC, OpenStreetMap and Strava each expect credit; Strava requires its own "Connect with Strava" button and branding | 3 |
-| Crash reporting | The old website used Sentry; the app reports nothing, so friends' crashes would go unseen | 3 |
-| Fixes without a rebuild | EAS Update pushes JavaScript-only fixes to testers in minutes | 3 |
-| App CI | The backend runs CI on every push; `whumpf-ios` has none. Run the type check and terrain checks on push | 1 |
-| Outage notices | The backend has status banners (`/status`); the app never shows them | 2 |
+| Safety disclaimer and terms | An avalanche terrain tool needs a clear "not a substitute for training, forecasts or judgement" on first run and in the app || 7 |
+| Privacy policy | Required for TestFlight and the App Store; must cover location, email and Strava data || 7 |
+| Data credits screen | USGS, NOAA, CAIC, OpenStreetMap and Strava each expect credit; Strava requires its own "Connect with Strava" button and branding || 7 |
+| Crash reporting | The old website used Sentry; the app reports nothing, so friends' crashes would go unseen || 7 |
+| Fixes without a rebuild | EAS Update pushes JavaScript-only fixes to testers in minutes || 7 |
+| App CI | The backend runs CI on every push; `whumpf-ios` has none. Run the type check and terrain checks on push | 3 |
+| Outage notices | The backend has status banners (`/status`); the app never shows them | 4 |
 | Server health | Tile cache lives only in memory per worker; add an uptime check (`scripts/backup.sh` now runs daily from cron) | 0 to 1 |
 | Place search | The old website searched places in Colorado (Photon); the app cannot | 4 |
 | GPX import and export | Lets people share their own tracks without touching Strava data | 4 |
 | API types kept in sync | `types.ts` is copied by hand from the backend; generating it from the backend's OpenAPI schema stops drift | 4 |
-| Danger-change alerts | A push notification when the CAIC rating changes for a zone in an upcoming trip | Later |
+| Danger-change alerts | A push notification when the CAIC rating changes for a zone in an upcoming trip | 4 |
 | Units setting | Feet or meters, °F or °C; `format.ts` already keeps formatting in one place | 6 |
 
 ```text
@@ -334,7 +357,7 @@ Dropping only the `t` parameter from the cache key is listed as an Enterprise op
 
 Backend work with no phase yet.
 
-- [ ] **Backend lint cleanup:** 181 ruff errors. One commit with no behaviour changes, then run `make lint-api` in CI.
+- [ ] **Backend lint cleanup:** now Phase 3. 181 ruff errors; one commit with no behaviour changes, then run `make lint-api` in CI.
 - [ ] **Restore rehearsal** from an R2 backup into a throwaway database.
 - [ ] **Replace `mc` with `rclone` in backups.** The mc image is pinned and saved to `/data/backups/images/`.
 - [ ] **Replace the MinIO server.** The community edition is discontinued and its images are no longer pullable. Options: R2/S3 directly, or Garage. Decide before moving hosts.
@@ -343,7 +366,7 @@ Backend work with no phase yet.
 
 ## Idea backlog
 
-Pull from this list as you go; nothing here is scheduled. The ideas marked "on the phone" reuse the terrain math you already have, so they work offline once elevation tiles are saved. Effort is a rough guess.
+Pull from this list as you go. Wind arrows, recent snowfall, the phone inclinometer, slope above you, time estimates, trip briefing and forecast-change alerts are now in Phase 4; the rest is not scheduled. The ideas marked "on the phone" reuse the terrain math you already have, so they work offline once elevation tiles are saved. Effort is a rough guess.
 
 ### Terrain and hazard
 
