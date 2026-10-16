@@ -323,7 +323,7 @@ def _render_contours(
                 resampling=Resampling.bilinear,
             )
     except Exception as exc:
-        logger.debug("contour DEM read failed: %s", exc)
+        logger.debug("contour DEM read failed: %s", exc, exc_info=True)
         return None
 
     valid = data[data != -9999.0]
@@ -380,6 +380,7 @@ def _render_contours_with_fallback(
     try:
         return _render_contours(dem_url, xmin, ymin, xmax, ymax, z, interval_m)
     except Exception:
+        logger.debug("contour render from primary DEM failed", exc_info=True)
         if fallback_url:
             return _render_contours(fallback_url, xmin, ymin, xmax, ymax, z, interval_m)
         return None
@@ -519,7 +520,7 @@ def _render_terrain_filter(
                     resampling=Resampling.nearest,
                 )
     except Exception as exc:
-        logger.warning("terrain_filter read failed: %s", exc)
+        logger.warning("terrain_filter read failed: %s", exc, exc_info=True)
         return None
 
     valid = (slope_arr != -9999.0) & (aspect_arr != -9999.0)
@@ -713,7 +714,7 @@ async def terrain_rgb_tile(
             png = await asyncio.wait_for(
                 asyncio.shield(_TERRAIN_IN_FLIGHT[cache_key]), _TERRAIN_TIMEOUT_S)
         except Exception as exc:
-            logger.warning("terrain_rgb %s unavailable: %r", cache_key, exc)
+            logger.warning("terrain_rgb %s unavailable: %r", cache_key, exc, exc_info=True)
             return Response(status_code=503, headers={"Cache-Control": "no-store"})
         return Response(content=png or _FLAT_TERRAIN_PNG, media_type="image/png",
                         headers=_TERRAIN_HEADERS)
@@ -734,7 +735,7 @@ async def terrain_rgb_tile(
     try:
         png = await asyncio.wait_for(asyncio.shield(fut), _TERRAIN_TIMEOUT_S)
     except Exception as exc:
-        logger.warning("terrain_rgb %s unavailable: %r", cache_key, exc)
+        logger.warning("terrain_rgb %s unavailable: %r", cache_key, exc, exc_info=True)
         return Response(status_code=503, headers={"Cache-Control": "no-store"})
     finally:
         _TERRAIN_IN_FLIGHT.pop(cache_key, None)

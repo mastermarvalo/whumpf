@@ -332,7 +332,7 @@ async def _notify(user_id: int, to: str, what: str) -> None:
     try:
         await send_security_notice(to=to, what=what)
     except Exception as exc:
-        logger.warning("Security notice send failed for user %s: %s", user_id, exc)
+        logger.warning("Security notice send failed for user %s: %s", user_id, exc, exc_info=True)
 
 
 # ── email verification ─────────────────────────────────────────────────────────
@@ -351,7 +351,7 @@ async def _send_verification(session: Session, user: User) -> None:
     try:
         await send_verification_email(to=user.email, code=code, token=token)
     except Exception as exc:
-        logger.warning("Verification email send failed for user %s: %s", user.id, exc)
+        logger.warning("Verification email send failed for user %s: %s", user.id, exc, exc_info=True)
 
 
 def _clear_verification(session: Session, user: User) -> None:
@@ -438,7 +438,7 @@ async def password_reset_request(
         try:
             await send_password_reset_email(to=user.email, code=code, token=token)
         except Exception as exc:
-            logger.warning("Password-reset email send failed for user %s: %s", user.id, exc)
+            logger.warning("Password-reset email send failed for user %s: %s", user.id, exc, exc_info=True)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -521,7 +521,7 @@ async def change_email_request(
     try:
         await send_email_change_code(to=new_email, code=code)
     except Exception as exc:
-        logger.warning("Email-change code send failed for user %s: %s", user.id, exc)
+        logger.warning("Email-change code send failed for user %s: %s", user.id, exc, exc_info=True)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
@@ -666,7 +666,7 @@ async def delete_me(
             await strava_svc.deauthorize(access_token)
         except Exception as exc:
             logger.warning("Strava deauthorize failed during account delete for user %s: %s",
-                           user.id, exc)
+                           user.id, exc, exc_info=True)
         session.delete(conn)
 
     _purge_user_data(session, user)

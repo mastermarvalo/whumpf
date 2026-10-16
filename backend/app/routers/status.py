@@ -43,6 +43,7 @@ async def _check_postgres(session: Session) -> ServiceHealth:
         session.execute(text("SELECT 1"))
         return ServiceHealth(name="postgres", healthy=True)
     except Exception as exc:
+        logger.warning("status check failed (postgres)", exc_info=True)
         return ServiceHealth(name="postgres", healthy=False, detail=str(exc)[:200])
 
 
@@ -51,6 +52,7 @@ async def _probe(name: str, url: str) -> ServiceHealth:
         r = await _HTTP.get(url)
         return ServiceHealth(name=name, healthy=r.status_code < 500)
     except Exception as exc:
+        logger.warning("status probe failed (%s)", name, exc_info=True)
         return ServiceHealth(name=name, healthy=False, detail=str(exc)[:200])
 
 

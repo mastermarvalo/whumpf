@@ -186,8 +186,8 @@ async def strava_callback(
 
     try:
         token_data = await strava_svc.exchange_code(code)
-    except Exception as exc:
-        logger.error("Strava token exchange failed: %s", exc)
+    except Exception:
+        logger.exception("Strava token exchange failed")
         return fail("token_exchange_failed", "error")
 
     athlete = token_data.get("athlete", {})
@@ -235,7 +235,7 @@ async def strava_disconnect(
         access_token = await strava_svc.refresh_token(conn, session)
         await strava_svc.deauthorize(access_token)
     except Exception as exc:
-        logger.warning("Strava deauthorize failed for user %s: %s", user.id, exc)
+        logger.warning("Strava deauthorize failed for user %s: %s", user.id, exc, exc_info=True)
     session.delete(conn)
     session.commit()
 

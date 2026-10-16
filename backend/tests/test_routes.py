@@ -125,12 +125,12 @@ def test_owner_can_patch_and_delete(make_client):
 def test_delete_route_used_in_trip_with_share_link(make_client, db_session, monkeypatch):
     # Trip creation snapshots the CAIC forecast: serve AVID and the zones from
     # cache so the test makes no network calls.
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from app.routers import avalanche
 
-    monkeypatch.setattr(avalanche, "_avid_cache", (([], {"features": []}), datetime.utcnow()))
-    monkeypatch.setattr(avalanche, "_zones_cache", ([], datetime.utcnow()))
+    monkeypatch.setattr(avalanche, "_avid_cache", (([], {"features": []}), datetime.now(UTC)))
+    monkeypatch.setattr(avalanche, "_zones_cache", ([], datetime.now(UTC)))
     client = make_client("owner")
     rid = _create(client).json()["id"]
     keep = _create(client, name="Keep").json()["id"]

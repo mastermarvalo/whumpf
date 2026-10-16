@@ -282,7 +282,7 @@ async def create_trip(payload: TripCreate, session: SessionDep, user: UserDep) -
             try:
                 detail = await get_zone_detail_for_point(lat, lng)
             except Exception as exc:
-                logger.warning("forecast snapshot fetch failed: %s", exc)
+                logger.warning("forecast snapshot fetch failed: %s", exc, exc_info=True)
                 detail = None
             if detail:
                 trip.caic_zone = detail.get("zone")
@@ -415,7 +415,7 @@ async def invite_member(
             to=email, trip_name=trip.name, inviter_email=user.email, trip_id=trip.id,
         )
     except Exception as exc:
-        logger.warning("Trip-invite email failed for %s: %s", email, exc)
+        logger.warning("Trip-invite email failed for %s: %s", email, exc, exc_info=True)
     response.status_code = 201
     return MemberOut(
         id=member.id, user_id=member.user_id, email=member.invited_email,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import itertools
+import logging
 from dataclasses import dataclass
 
 import numpy as np
@@ -10,6 +11,8 @@ import rasterio
 from pyproj import Geod, Transformer
 
 from app.config import Settings
+
+logger = logging.getLogger("whumpf.cog_sampler")
 
 _to_3857 = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
 _geod = Geod(ellps="WGS84")
@@ -66,7 +69,7 @@ def _sample_coords(
                     target[i] = None if (nd is not None and v == nd) else v
             except Exception:
                 # Variant doesn't exist / read failed → leave target all-None.
-                pass
+                logger.debug("COG variant %s%s unreadable", name, suffix, exc_info=True)
         return [
             hires_vals[i] if hires_vals[i] is not None else base_vals[i]
             for i in range(n)

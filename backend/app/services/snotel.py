@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import date, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from typing import Any
 
 import httpx
@@ -183,7 +183,7 @@ async def _do_fetch() -> dict:
         })
 
     geojson: dict[str, Any] = {"type": "FeatureCollection", "features": features}
-    _cache = (geojson, datetime.utcnow())
+    _cache = (geojson, datetime.now(UTC))
     logger.info("SNOTEL: %d stations loaded, cached %dh", len(features), int(_CACHE_TTL.total_seconds() / 3600))
     return geojson
 
@@ -196,12 +196,12 @@ async def _bg_refresh() -> None:
         # Re-check inside the lock: another task may have just refreshed.
         if _cache is not None:
             _, fetched_at = _cache
-            if datetime.utcnow() - fetched_at < _CACHE_TTL:
+            if datetime.now(UTC) - fetched_at < _CACHE_TTL:
                 return
         try:
             await _do_fetch()
         except Exception as exc:
-            logger.warning("SNOTEL background refresh failed: %s", exc)
+            logger.warning("SNOTEL background refresh failed: %s", exc, exc_info=True)
 
 
 # ── public interface ───────────────────────────────────────────────────────────
@@ -272,7 +272,7 @@ async def fetch_stations_geojson() -> dict[str, Any]:
 
     if _cache is not None:
         data, fetched_at = _cache
-        if datetime.utcnow() - fetched_at < _CACHE_TTL:
+        if datetime.now(UTC) - fetched_at < _CACHE_TTL:
             return data
         # Stale: serve immediately and refresh in background.
         asyncio.ensure_future(_bg_refresh())

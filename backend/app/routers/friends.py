@@ -80,7 +80,7 @@ async def send_request(payload: FriendRequestIn, session: SessionDep, user: User
     try:
         await send_friend_request(to=target.email, requester_email=user.email)
     except Exception as exc:
-        logger.warning("Friend-request email failed for %s: %s", target.email, exc)
+        logger.warning("Friend-request email failed for %s: %s", target.email, exc, exc_info=True)
     return {"status": "requested"}
 
 

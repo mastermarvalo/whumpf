@@ -250,7 +250,7 @@ def test_delete_trip_removes_waypoints_members_and_routes(make_client, db_sessio
 
 def test_create_trip_stores_named_caic_zone(make_client, monkeypatch):
     """The snapshot's zone label is the CAIC zone name, with the area id kept."""
-    from datetime import datetime
+    from datetime import UTC, datetime
 
     from app.routers import avalanche
 
@@ -262,8 +262,8 @@ def test_create_trip_stores_named_caic_zone(make_client, monkeypatch):
         "dangerRatings": {"days": [{"alp": "high"}]}, "avalancheProblems": {"days": [[]]},
     }
     areas = {"features": [{"geometry": square, "properties": {"id": "area-1", "centroid": [-106.5, 39.0]}}]}
-    monkeypatch.setattr(avalanche, "_avid_cache", (([product], areas), datetime.utcnow()))
-    monkeypatch.setattr(avalanche, "_zones_cache", ([("Aspen", square)], datetime.utcnow()))
+    monkeypatch.setattr(avalanche, "_avid_cache", (([product], areas), datetime.now(UTC)))
+    monkeypatch.setattr(avalanche, "_zones_cache", ([("Aspen", square)], datetime.now(UTC)))
     monkeypatch.setattr("app.routers.trips.get_zone_detail_for_point", avalanche.get_zone_detail_for_point)
 
     owner = make_client("owner")

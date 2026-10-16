@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 
 import httpx
 import pytest
@@ -102,7 +102,7 @@ class _JsonResp:
 @pytest.fixture
 def _zones_env(monkeypatch):
     monkeypatch.setattr(avalanche, "_zones_cache", None)
-    monkeypatch.setattr(avalanche, "_avid_cache", ((_PRODUCTS, _AREAS), datetime.utcnow()))
+    monkeypatch.setattr(avalanche, "_avid_cache", ((_PRODUCTS, _AREAS), datetime.now(UTC)))
     monkeypatch.setattr(http_retry, "wait_exponential_jitter", lambda **_: __import__("tenacity").wait_none())
     monkeypatch.delitem(http_retry._BREAKERS, "caic-zones", raising=False)
     requested: list[str] = []
@@ -184,7 +184,7 @@ def test_avalanche_is_public_and_rate_limited_per_ip(monkeypatch):
     from app.main import app
     from app.tile_tokens import BUCKETS
 
-    monkeypatch.setattr(avalanche, "_forecast_cache", ({"features": []}, datetime.utcnow()))
+    monkeypatch.setattr(avalanche, "_forecast_cache", ({"features": []}, datetime.now(UTC)))
     monkeypatch.setitem(BUCKETS, "avalanche", (__import__("limits").parse("3/minute"),))
     client = TestClient(app)  # no auth override: signed-out
     for _ in range(3):
@@ -196,3 +196,42 @@ def test_avalanche_is_public_and_rate_limited_per_ip(monkeypatch):
     # A different client IP has its own counter.
     other = client.get("/avalanche/forecast", headers={"x-forwarded-for": "203.0.113.9"})
     assert other.status_code == 200
+
+
+# ── cache timestamps are timezone-aware UTC (naive/aware mixes raise TypeError) ──
+
+def test_cache_timestamps_are_aware_and_fresh_check_works(monkeypatch):
+    class _ForecastResp(_Resp):
+        def json(self) -> dict:
+            return {"features": []}
+
+    async def ok(*a, **k):
+        is_forecast = k.get("params", {}).get("type") == "forecast"
+        return _ForecastResp() if is_forecast else _Resp()
+
+    monkeypatch.setattr(avalanche._HTTP, "get", ok)
+    monkeypatch.setattr(avalanche, "_forecast_cache", None)
+    monkeypatch.setattr(avalanche, "_obs_cache", None)
+    monkeypatch.delitem(http_retry._BREAKERS, "caic-forecast", raising=False)
+
+    async def run():
+        await avalanche.get_forecast()
+        await avalanche.get_observations()
+        # second calls hit the freshness comparison against the stored stamp
+        await avalanche.get_forecast()
+        await avalanche.get_observations()
+
+    asyncio.run(run())
+    for cache in (avalanche._forecast_cache, avalanche._obs_cache):
+        assert cache is not None
+        assert cache[1].tzinfo is not None
+        assert cache[1].utcoffset() == timedelta(0)
+
+
+def test_no_naive_utcnow_in_app_code():
+    """utcnow() is naive; mixing it with aware stamps raises TypeError at compare time."""
+    from pathlib import Path
+
+    root = Path(avalanche.__file__).resolve().parents[1]
+    offenders = [str(p) for p in root.rglob("*.py") if "utcnow(" in p.read_text()]
+    assert offenders == []

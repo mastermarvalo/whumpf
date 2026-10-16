@@ -73,7 +73,7 @@ async def _do_fetch_forecast() -> dict:
     raw = resp.json()
     features = [f for f in raw.get("features", []) if f.get("properties", {}).get("center_id") == "CAIC"]
     data = {**raw, "features": features}
-    _forecast_cache = (data, datetime.utcnow())
+    _forecast_cache = (data, datetime.now(UTC))
     logger.info("CAIC forecast cached (%d zones)", len(features))
     return data
 
@@ -84,19 +84,19 @@ async def _bg_refresh_forecast() -> None:
     async with _forecast_lock:
         if _forecast_cache is not None:
             _, fetched_at = _forecast_cache
-            if datetime.utcnow() - fetched_at < _FORECAST_TTL:
+            if datetime.now(UTC) - fetched_at < _FORECAST_TTL:
                 return
         try:
             await _do_fetch_forecast()
         except Exception as exc:
-            logger.warning("CAIC forecast background refresh failed: %s", exc)
+            logger.warning("CAIC forecast background refresh failed: %s", exc, exc_info=True)
 
 
 async def get_forecast() -> dict:
     """SWR: return cached data instantly; refresh in background when stale."""
     if _forecast_cache is not None:
         data, fetched_at = _forecast_cache
-        if datetime.utcnow() - fetched_at < _FORECAST_TTL:
+        if datetime.now(UTC) - fetched_at < _FORECAST_TTL:
             return data
         asyncio.ensure_future(_bg_refresh_forecast())
         return data
@@ -139,19 +139,19 @@ async def _do_fetch_avid() -> tuple[list, dict]:
     products = [p for p in products_resp.json() if p.get("type") == "avalancheforecast"]
     areas = areas_resp.json()
     result = (products, areas)
-    _avid_cache = (result, datetime.utcnow())
+    _avid_cache = (result, datetime.now(UTC))
     return result
 
 
 async def _fetch_avid() -> tuple[list, dict]:
     if _avid_cache is not None:
         result, fetched_at = _avid_cache
-        if datetime.utcnow() - fetched_at < _AVID_TTL:
+        if datetime.now(UTC) - fetched_at < _AVID_TTL:
             return result
     async with _avid_lock:
         if _avid_cache is not None:
             result, fetched_at = _avid_cache
-            if datetime.utcnow() - fetched_at < _AVID_TTL:
+            if datetime.now(UTC) - fetched_at < _AVID_TTL:
                 return result
         return await _do_fetch_avid()
 
@@ -188,7 +188,7 @@ async def _do_fetch_zones() -> list[tuple[str, dict]]:
         raise RuntimeError(f"CAIC zones error: {exc}") from exc
     if not zones:
         raise RuntimeError("CAIC zones response had no backcountry polygons")
-    _zones_cache = (zones, datetime.utcnow())
+    _zones_cache = (zones, datetime.now(UTC))
     logger.info("CAIC zones cached (%d)", len(zones))
     return zones
 
@@ -199,19 +199,19 @@ async def _bg_refresh_zones() -> None:
     async with _zones_lock:
         if _zones_cache is not None:
             _, fetched_at = _zones_cache
-            if datetime.utcnow() - fetched_at < _ZONES_TTL:
+            if datetime.now(UTC) - fetched_at < _ZONES_TTL:
                 return
         try:
             await _do_fetch_zones()
         except Exception as exc:
-            logger.warning("CAIC zones background refresh failed: %s", exc)
+            logger.warning("CAIC zones background refresh failed: %s", exc, exc_info=True)
 
 
 async def get_zones() -> list[tuple[str, dict]]:
     """SWR: return cached data instantly; refresh in background when stale."""
     if _zones_cache is not None:
         zones, fetched_at = _zones_cache
-        if datetime.utcnow() - fetched_at >= _ZONES_TTL:
+        if datetime.now(UTC) - fetched_at >= _ZONES_TTL:
             asyncio.ensure_future(_bg_refresh_zones())
         return zones
     async with _zones_lock:
@@ -226,7 +226,7 @@ async def _zone_name_for_point(lat: float, lng: float) -> str | None:
     try:
         zones = await get_zones()
     except Exception as exc:
-        logger.warning("CAIC zones unavailable, labelling by area id: %s", exc)
+        logger.warning("CAIC zones unavailable, labelling by area id: %s", exc, exc_info=True)
         return None
     for name, geom in zones:
         if name and _in_multipolygon(lat, lng, geom):
@@ -434,7 +434,7 @@ def _build_obs_feature(r: dict) -> dict | None:
 
 async def _do_fetch_obs() -> dict:
     global _obs_cache
-    since = (datetime.utcnow() - timedelta(days=7)).strftime("%Y-%m-%d")
+    since = (datetime.now(UTC) - timedelta(days=7)).strftime("%Y-%m-%d")
 
     async def _do() -> httpx.Response:
         r = await _HTTP.get(_OBS_URL, params={
@@ -456,7 +456,7 @@ async def _do_fetch_obs() -> dict:
         "fetched_at": datetime.now(UTC).isoformat(),
         "features": features,
     }
-    _obs_cache = (data, datetime.utcnow())
+    _obs_cache = (data, datetime.now(UTC))
     logger.info("CAIC observations cached (%d features)", len(features))
     return data
 
@@ -467,19 +467,19 @@ async def _bg_refresh_obs() -> None:
     async with _obs_lock:
         if _obs_cache is not None:
             _, fetched_at = _obs_cache
-            if datetime.utcnow() - fetched_at < _OBS_TTL:
+            if datetime.now(UTC) - fetched_at < _OBS_TTL:
                 return
         try:
             await _do_fetch_obs()
         except Exception as exc:
-            logger.warning("CAIC observations background refresh failed: %s", exc)
+            logger.warning("CAIC observations background refresh failed: %s", exc, exc_info=True)
 
 
 async def get_observations() -> dict:
     """SWR: return cached data instantly; refresh in background when stale."""
     if _obs_cache is not None:
         data, fetched_at = _obs_cache
-        if datetime.utcnow() - fetched_at < _OBS_TTL:
+        if datetime.now(UTC) - fetched_at < _OBS_TTL:
             return data
         asyncio.ensure_future(_bg_refresh_obs())
         return data
