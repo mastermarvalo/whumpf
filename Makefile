@@ -230,6 +230,10 @@ snowdepth-refresh:  ## fetch the newest SNODAS snow depth into MinIO (hourly job
 temperature-refresh:  ## fetch the newest RTMA 2 m temperature into MinIO (hourly job); ARGS=--dry-run writes nothing
 	$(API_RUN) uv run python -m app.jobs.temperature_refresh $(ARGS)
 
+.PHONY: radar-refresh
+radar-refresh:  ## fill missing 10-min MRMS radar frames in MinIO (every-5-min job); ARGS=--dry-run writes nothing
+	$(API_RUN) uv run python -m app.jobs.radar_refresh $(ARGS)
+
 # --- tests / lint -----------------------------------------------------------
 
 .PHONY: test-api

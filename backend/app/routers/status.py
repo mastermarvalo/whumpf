@@ -23,7 +23,7 @@ from app.db import get_session
 from app.models.status import StatusBanner
 from app.models.user import User
 from app.regions import REGIONS
-from app.services import rasterlayer, snowdepth, snowfall, temperature
+from app.services import radar, rasterlayer, snowdepth, snowfall, temperature
 
 router = APIRouter(prefix="/status", tags=["status"])
 logger = logging.getLogger("whumpf.status")
@@ -111,20 +111,37 @@ async def _check_temperature() -> ServiceHealth:
     return await _check_layer("temperature", temperature.read_pointer, temperature.STALE_AFTER)
 
 
+async def _check_radar() -> ServiceHealth:
+    """Healthy when every region's newest radar frame is recent."""
+    problems: list[str] = []
+    now = datetime.now(UTC)
+    try:
+        for region in REGIONS:
+            frames = (await radar.read_pointer(region) or {}).get("frames") or []
+            newest = frames[-1]["observed"] if frames else None
+            if problem := rasterlayer.age_problem(region, newest, radar.STALE_AFTER, now):
+                problems.append(problem)
+    except Exception as exc:
+        logger.warning("status check failed (radar)", exc_info=True)
+        return ServiceHealth(name="radar", healthy=False, detail=str(exc)[:200])
+    return ServiceHealth(name="radar", healthy=not problems, detail="; ".join(problems) or None)
+
+
 async def _check_services(session: Session) -> list[ServiceHealth]:
     # api is implicitly healthy if it's responding to this request, but we
     # report it explicitly so the frontend doesn't have to know that.
     api = ServiceHealth(name="api", healthy=True)
     postgres = await _check_postgres(session)
-    minio, titiler, martin, snow, depth, temp = await asyncio.gather(
+    minio, titiler, martin, snow, depth, temp, rad = await asyncio.gather(
         _probe("minio",   "http://localhost:9000/minio/health/live"),
         _probe("titiler", "http://localhost:8001/"),
         _probe("martin",  "http://localhost:3000/health"),
         _check_snowfall(),
         _check_snowdepth(),
         _check_temperature(),
+        _check_radar(),
     )
-    return [api, postgres, minio, titiler, martin, snow, depth, temp]
+    return [api, postgres, minio, titiler, martin, snow, depth, temp, rad]
 
 
 def _overall(services: list[ServiceHealth], active_banner: StatusBanner | None) -> str:

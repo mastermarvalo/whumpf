@@ -607,16 +607,18 @@ output (<https://www.weather.gov/disclaimer>).
 | --- | --- | --- | --- |
 | Snow depth | NOHRSC SNODAS, daily, 1 km, distributed by NSIDC as G02158 | NOAA/NWS NOHRSC SNODAS | NSIDC asks for a citation as a condition of use: <https://nsidc.org/data/g02158/versions/1>. The app's credits page should carry: National Operational Hydrologic Remote Sensing Center. 2004. Snow Data Assimilation System (SNODAS) Data Products at NSIDC, Version 1. G02158. NSIDC. doi:10.7265/N5TB14TC |
 | Current temperature | RTMA 2.5 km hourly analysis, 2 m temperature, from NOAA's AWS bucket (NOMADS as fallback) | NOAA/NWS RTMA | <https://registry.opendata.aws/noaa-rtma/> (NOAA Open Data Dissemination: use as desired, attribution requested) |
+| Radar | MRMS merged base reflectivity (QC), 0.01°, every 2 min, from NCEP (NOAA's AWS bucket as fallback) | NOAA/NWS MRMS | <https://registry.opendata.aws/noaa-mrms-pds/> (NOAA Open Data Dissemination: use as desired, attribution requested) |
 
 ### Cron
 
 User crontab, next to the snowfall line (the `XDG_RUNTIME_DIR` and
 `DOCKER_HOST` lines at the top of the crontab are needed here too). Each
-job needs its directory (`mkdir -p /data/snowdepth /data/temperature`).
+job needs its directory (`mkdir -p /data/snowdepth /data/temperature /data/radar`).
 
 ```
 35 * * * * cd /home/ronkerflonk/whumpf && flock -n /data/snowdepth/.refresh.lock make snowdepth-refresh >> /data/snowdepth/refresh.log 2>&1
 50 * * * * cd /home/ronkerflonk/whumpf && flock -n /data/temperature/.refresh.lock make temperature-refresh >> /data/temperature/refresh.log 2>&1
+3-59/5 * * * * cd /home/ronkerflonk/whumpf && flock -n /data/radar/.refresh.lock make radar-refresh >> /data/radar/refresh.log 2>&1
 ```
 
 Every job takes `ARGS=--dry-run` (download and validate, write nothing) and
@@ -688,7 +690,62 @@ Legend, °F (one list in `app/services/temperature.py`, open at both ends):
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | `#4a2a7a` | `#6c4fb0` | `#4560c8` | `#3f8fd2` | `#7fc6e8` | `#b7e2b1` | `#e6f2a2` | `#fee08b` | `#fdae61` | `#f46d43` | `#c2304a` |
 
-### `meta` and tiles
+### Radar
+
+```
+https://mrms.ncep.noaa.gov/2D/MergedBaseReflectivityQC/   (listing, ~1 day of files)
+  (fallback https://noaa-mrms-pds.s3.amazonaws.com/CONUS/MergedBaseReflectivityQC_00.50/YYYYMMDD/)
+  -> make radar-refresh (every 5 min at :03, :08, ..., app/jobs/radar_refresh.py)
+  -> MinIO dem-cogs/radar/<region>/<YYYYMMDDHHMM>-<sha8>.tif   one per frame
+     MinIO dem-cogs/radar/<region>/latest.json                 frames, oldest first
+  -> GET /tiles/radar/meta?region=colorado
+     GET /tiles/radar/{YYYYMMDDHHMM}/{z}/{x}/{y}?region=colorado
+```
+
+- MRMS writes a CONUS mosaic about every 2 min (~1.3 MB gzipped GRIB2).
+  The layer keeps **one frame per 10 minutes for the last 2 hours** (12–13
+  frames). A frame is filled once its mark is 3 min old, from the newest file
+  in the 10 minutes up to the mark (`observed` is that file's time), and is
+  never rewritten. Each run fills every missing frame in the window, so a
+  short outage is backfilled. A run with nothing to fill makes no requests.
+- NCEP is listed first; AWS only when NCEP lacks a frame or is down. One
+  source down isn't a failure while the other fills the frames; a refused
+  file is.
+- Values are dBZ. MRMS writes -99 for "covered, no echo" and -999 for
+  "outside radar coverage". Both, and anything under 5 dBZ, are stored as
+  nodata, so a clear-sky frame is a ~7 KB COG. `max_dbz` is `null` when
+  nothing was measured.
+- Refused unless it is one band in `[dBZ]` with the file's own valid time,
+  a 0.01° lon/lat grid that covers the region, at least half the region
+  inside radar coverage, and no value over 100 dBZ.
+- Downloads: about 1.3 MB × 144 frames ≈ 190 MB a day, plus a 176 KB
+  listing per run that has a frame to fill.
+
+`meta` returns `units` (`dBZ`), `attribution`, `bounds`, `maxzoom` (9),
+`legend`, `interval_min` (10), `available`, `frames` (each `time`,
+`observed`, `max_dbz` and `tiles`; add `t`), and when there are frames
+`latest` and `stale` (newest `observed` over 20 min old). Frames older than
+2 h are not listed. If MRMS is down for 2 h, `frames` is empty and the app
+should say radar is unavailable rather than show old radar.
+
+| Endpoint | Cache-Control |
+| --- | --- |
+| `GET /tiles/radar/meta?region=` | 60 s |
+| `GET /tiles/radar/{frame}/{z}/{x}/{y}?region=` (a frame never changes) | 1 day |
+| frame not in `latest.json` (expired or never filled) | 404, 60 s |
+| MinIO unreadable | 503 `no-store` |
+
+Frame files are deleted 3 h after they were written. Scrubbing all frames
+with ~20 tiles in view is ~260 tile requests, within the anonymous tile
+limit (600/min).
+
+Legend, dBZ (one list in `app/services/radar.py`; under 5 is transparent):
+
+| 5–10 | 10–15 | 15–20 | 20–25 | 25–30 | 30–35 | 35–40 | 40–45 | 45–50 | 50–55 | 55–60 | 60–65 | 65+ |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `#04e9e7` | `#019ff4` | `#0300f4` | `#02fd02` | `#01c501` | `#008e00` | `#fdf802` | `#e5bc00` | `#fd9500` | `#fd0000` | `#d40000` | `#bc0000` | `#f800fd` |
+
+### `meta` and tiles (snow depth, temperature)
 
 `GET /tiles/<layer>/meta?region=` returns `units`, `attribution`,
 `attribution_url`, `bounds`, `maxzoom` (overzoom past it), `legend` (`min`,
@@ -707,7 +764,7 @@ exists it also has `valid` (UTC), `revision`, `fetched`, `stale` and `tiles`
 
 A refused file never replaces what is served, and a NOAA or NSIDC outage
 keeps the last good data; `meta` shows its age through `valid` and `stale`.
-`GET /status` has an item per layer (`snowdepth`, `temperature`, ...) that turns unhealthy
+`GET /status` has an item per layer (`snowdepth`, `temperature`, `radar`) that turns unhealthy
 past the same limit as `stale`. `/readyz` does not depend on them.
 
 Revisions not referenced by `latest.json` are deleted after 7 days. Nothing

@@ -20,14 +20,14 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Path, Response
 from fastapi.responses import JSONResponse
 
 from app.config import validate_region
 from app.http_retry import CircuitOpenError
 from app.regions import REGIONS
 from app.routers.tiles import _MAX_Z, cog_tile
-from app.services import snowdepth, temperature
+from app.services import radar, snowdepth, temperature
 from app.tile_tokens import require_tile_access
 
 router = APIRouter(
@@ -164,3 +164,79 @@ async def temperature_meta(region: str = "colorado") -> JSONResponse:
 async def temperature_tile(z: int, x: int, y: int, region: str = "colorado", v: str | None = None) -> Response:
     """2 m temperature as a stepped colour PNG (°F, see temperature.SCALE)."""
     return await _layer_tile(TEMPERATURE, region, z, x, y, v)
+
+
+# ── radar (MRMS) ──────────────────────────────────────────────────────────────
+# Frames sit on 10-minute marks and never change once written, so a frame's
+# tiles are cached for a day; the frame time in the path is the version.
+
+_RADAR_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
+_RADAR_CACHE_MAX = 1024  # ~13 frames × the tiles in view, mostly transparent
+_RADAR_GONE = {"Cache-Control": "public, max-age=60"}
+
+
+async def _radar_frames(region: str) -> list[dict]:
+    return (await _pointer("radar", radar.read_pointer, region)).get("frames", [])
+
+
+@router.get("/radar/meta")
+async def radar_meta(region: str = "colorado") -> JSONResponse:
+    """Radar frames of the last two hours, oldest first, each with its tile
+    URL; `stale` once the newest is over 20 min old; legend in dBZ."""
+    validate_region(region)
+    now = datetime.now(UTC)
+    frames = [
+        f for f in await _radar_frames(region)
+        if datetime.fromisoformat(f["time"]) >= now - radar.WINDOW
+    ]
+    body: dict[str, Any] = {
+        "region": region,
+        "units": "dBZ",
+        "attribution": radar.ATTRIBUTION,
+        "attribution_url": radar.ATTRIBUTION_URL,
+        "bounds": REGIONS[region].max_bounds,
+        "maxzoom": radar.MAXZOOM,
+        "legend": radar.legend(),
+        "interval_min": int(radar.FRAME.total_seconds() // 60),
+        "available": bool(frames),
+        "frames": [
+            {
+                "time": f["time"],
+                "observed": f["observed"],
+                "max_dbz": f.get("max_dbz"),
+                "tiles": (
+                    f"/tiles/radar/{radar.frame_id(datetime.fromisoformat(f['time']))}"
+                    f"/{{z}}/{{x}}/{{y}}?region={region}"
+                ),
+            }
+            for f in frames
+        ],
+    }
+    if frames:
+        body["latest"] = frames[-1]["time"]
+        body["stale"] = _is_stale(frames[-1]["observed"], radar.STALE_AFTER)
+    return JSONResponse(body, headers={"Cache-Control": "public, max-age=60"})
+
+
+@router.get("/radar/{frame}/{z}/{x}/{y}")
+async def radar_tile(
+    z: int, x: int, y: int,
+    frame: str = Path(pattern=r"^\d{12}$", description="YYYYMMDDHHMM from /tiles/radar/meta"),
+    region: str = "colorado",
+) -> Response:
+    """One radar frame as a stepped colour PNG (dBZ, see radar.SCALE). Under
+    5 dBZ is transparent. 404 once the frame has left the two-hour window."""
+    validate_region(region)
+    _check_tile(z, x, y)
+    entry = next(
+        (f for f in await _radar_frames(region)
+         if radar.frame_id(datetime.fromisoformat(f["time"])) == frame),
+        None,
+    )
+    if entry is None:
+        raise HTTPException(404, "no such radar frame", headers=_RADAR_GONE)
+    return await cog_tile(
+        _RADAR_CACHE, _RADAR_CACHE_MAX, (region, entry["key"], z, x, y), entry["key"],
+        {"nodata": str(int(radar.NODATA)), "colormap": radar.TITILER_COLORMAP},
+        _CURRENT, f"radar {frame}", z, x, y,
+    )
