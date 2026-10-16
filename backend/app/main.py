@@ -19,6 +19,7 @@ from app.rate_limit import limiter
 from app.routers import (
     auth,
     avalanche,
+    cameras,
     friends,
     health,
     regions,
@@ -110,6 +111,7 @@ def create_app() -> FastAPI:
     app.include_router(tiles.router)
     app.include_router(weather_tiles.router)
     app.include_router(weather.router)
+    app.include_router(cameras.router)
     app.include_router(terrain.router)
     app.include_router(snowpack.router)
     app.include_router(avalanche.router)

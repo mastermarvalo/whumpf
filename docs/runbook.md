@@ -861,6 +861,122 @@ Revisions not referenced by `latest.json` are deleted after 7 days. Nothing
 needs backing up; to start over, delete `dem-cogs/<layer>/<region>/latest.json`
 and run the job.
 
+## 10. Mountain cameras
+
+Webcam pins from two free sources, merged per region. The backend keeps the
+lists; the images are never cached or rehosted by us. Code:
+`app/services/cameras.py`, `app/jobs/cameras_refresh.py`,
+`app/routers/cameras.py`. CDOT cameras are tabled (docs/PLAN.md, Later).
+
+### Sources, keys and terms
+
+| Source | Key (`.env`) | What we keep | Image | Credit |
+| --- | --- | --- | --- | --- |
+| NPS API webcams, parks in `cameras.NPS_PARKS` (Colorado: `romo`) | `NPS_API_KEY`, free from <https://www.nps.gov/subjects/developer/get-started.htm>, 1,000 requests/h | id, title, position, page, image URL, image time | live JPEG on nps.gov, loaded by the app directly | "NPS / Rocky Mountain National Park"; no Arrowhead logo |
+| Windy Webcams API v3, free tier | `WINDY_WEBCAMS_API_KEY`, free from <https://api.windy.com/keys> (needs a Windy account) | id, title, position, windy.com page, `lastUpdatedOn`; **no image URL** | fetched fresh per tap through `/cameras/{id}/image` (URLs expire after 10 min), loaded from Windy | each image links to its windy.com page, plus the line "Webcams provided by windy.com — add a webcam" linking windy.com and windy.com/webcams/add |
+
+A source with an empty key is skipped by the job, left out by the API and
+shown as "not configured" in `/status`. Both keys are sent as headers only
+(`X-Api-Key`, `x-windy-api-key`), never in a URL; errors are logged as the
+exception type and message, never with request headers.
+
+Terms that shape the code (read Oct 16, 2026):
+
+- **Windy** (<https://api.windy.com/webcams/terms>, full terms at
+  <https://account.windy.com/agreements/windy-webcams-api-terms-of-use>):
+  the free tier may not be "solely in the paid part of the User
+  Application", so the layer is never behind a paid tier (CLAUDE.md). "Use
+  images only with URLs provided by the API", no redistribution and no
+  publishing of the images, so nothing is cached or proxied. "Link every
+  image with either our webcam page or timelapse player", plus the courtesy
+  line. The key must not be published, so every Windy call is server-side.
+  Windy forbids "continuous scanning of a significant number of available
+  Webcams" and "intensive usage", hence one list query a day and the global
+  `windy_upstream` cap on image lookups.
+- **NPS** (<https://www.nps.gov/aboutus/disclaimer.htm>): NPS material is
+  generally public domain, credit "is appreciated", and the Arrowhead may not
+  be used without permission. Nothing on caching or hotlinking.
+
+### Storage and refresh
+
+```
+NPS API /webcams + each camera's nps.gov page   (every 6 h)
+Windy /webcams?bbox=<region max_bounds>         (every 24 h, 50 per call, offset ≤ 1000)
+  -> make cameras-refresh (hourly at :10, app/jobs/cameras_refresh.py)
+  -> MinIO dem-cogs/cameras/<region>/nps.json
+     MinIO dem-cogs/cameras/<region>/windy.json
+```
+
+Each run asks only the sources that are due (their file's `fetched` is
+older than the interval, less 10 min), so most runs make no requests.
+`ARGS=--force` asks every source now; `ARGS=--dry-run` fetches and checks
+but writes nothing; `ARGS="--source windy"` and `--region` narrow it. Exits
+1 if any source failed.
+
+Cron (user crontab, with the `XDG_RUNTIME_DIR` and `DOCKER_HOST` lines from
+§9; `mkdir -p /data/cameras` first):
+
+```
+10 * * * * cd /home/ronkerflonk/whumpf && flock -n /data/cameras/.refresh.lock make cameras-refresh >> /data/cameras/refresh.log 2>&1
+```
+
+- **NPS:** the API lists the cameras but has no live image and often a
+  park-centre placeholder position (several cameras share one point). The
+  job reads each camera's page (`<img id="webcamRefreshImage">`) for the
+  image and keeps cameras with a position of their own or a hand-set one in
+  `NPS_POSITIONS`. Cameras with neither, an "inactive" image or a status
+  other than Active are left out. Longs Peak ("seen from the Tahosa
+  Valley") has no hand-set position yet; add one to `NPS_POSITIONS` to show
+  it. The two hand-set ones are approximate.
+- **Windy:** every active webcam in the region's `max_bounds`. The free
+  tier stops at offset 1000 (1,050 webcams); the job logs a warning if the
+  region has more.
+- **Elevation:** `elevation_m` from our DEM at the camera's position
+  (`cog_sampler.sample_elevations`), kept from the last list for cameras
+  that haven't moved. `null` outside the DEM or if it can't be read.
+
+### API
+
+Both need a tile token (either tier; tokenless is never allowed) and count
+against the per-IP `cameras` bucket, 60/min and 600/h. 401 without a token,
+429 with `Retry-After` over the limit. A public exception, listed in
+CLAUDE.md. Not under `/tiles`, so Cloudflare doesn't cache them.
+
+- `GET /cameras?region=colorado&t=` is a GeoJSON FeatureCollection of
+  points. Properties: `id` (`nps:<id>`, `windy:<id>`), `name`, `source`,
+  `elevation_m`, `credit`, `link` (the camera's page; Windy requires every
+  image to link to it), `updated` (when the source last updated the image,
+  as of the last list), `image_url` (set for NPS: load it directly; `null`
+  for Windy) and `image` (the path below). `sources` gives per source
+  `state` (`ok`, `stale`, `missing`, `expired`, `unavailable`,
+  `not_configured`), `fetched` and `attribution` (text and links to show
+  while the layer is on). `Cache-Control: private, max-age=300`.
+- `GET /cameras/{id}/image?region=colorado&t=` gives `url`, `taken`,
+  `expires`, `credit`, `link`. Windy: a fresh URL from Windy, kept per
+  worker for 5 min; `expires` is 10 min after it was fetched. Each Windy
+  call also counts against the global `windy_upstream` bucket (60/min,
+  1000/h, all users together), 429 over it. NPS: the stored URL, with
+  `taken` from a HEAD's `Last-Modified` (kept 60 s; the stored time if
+  nps.gov doesn't answer), `expires: null`. 404 for an id that isn't in
+  the stored list (so this can't fetch arbitrary cameras), 502 `no-store`
+  if Windy can't give an image. `Cache-Control: private, max-age=60`.
+
+### Failures and recovery
+
+- **One source down:** each source is fetched and checked on its own. A
+  list is written only if it has cameras and at least half as many as the
+  list it replaces; otherwise the old one stays served. The other source is
+  unaffected.
+- **Old lists:** cameras don't move, so a list is served until 7 days old
+  (`state: stale` after 3 intervals: NPS 18 h, Windy 72 h), then left out
+  (`expired`). If MinIO can't be read for one source, that source is
+  `unavailable` and the rest is served; if it fails for all, 503 `no-store`.
+- **`/status`:** one `cameras` item, unhealthy when a configured source's
+  list is missing or older than 3 intervals. Unconfigured sources are only
+  noted.
+- **To start over:** delete `dem-cogs/cameras/<region>/<source>.json` and
+  run `make cameras-refresh ARGS=--force`. Nothing needs backing up.
+
 ## Troubleshooting
 
 ### `api` container restarts repeatedly

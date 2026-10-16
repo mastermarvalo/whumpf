@@ -92,6 +92,8 @@ def test_configured_limits_match_the_plan():
         "tokenless": ["180 per 1 minute", "2000 per 1 hour"],
         "avalanche": ["120 per 1 minute", "2000 per 1 hour"],
         "weather": ["60 per 1 minute", "600 per 1 hour"],
+        "cameras": ["60 per 1 minute", "600 per 1 hour"],
+        "windy_upstream": ["60 per 1 minute", "1000 per 1 hour"],
     }
 
 

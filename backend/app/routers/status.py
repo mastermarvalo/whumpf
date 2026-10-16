@@ -23,7 +23,15 @@ from app.db import get_session
 from app.models.status import StatusBanner
 from app.models.user import User
 from app.regions import REGIONS
-from app.services import radar, rasterlayer, snowdepth, snowfall, temperature, wind
+from app.services import (
+    cameras,
+    radar,
+    rasterlayer,
+    snowdepth,
+    snowfall,
+    temperature,
+    wind,
+)
 
 router = APIRouter(prefix="/status", tags=["status"])
 logger = logging.getLogger("whumpf.status")
@@ -131,12 +139,35 @@ async def _check_radar() -> ServiceHealth:
     return ServiceHealth(name="radar", healthy=not problems, detail="; ".join(problems) or None)
 
 
+async def _check_cameras() -> ServiceHealth:
+    """Healthy when every configured camera source's list is recent. A
+    source with no API key is "not configured", not a problem."""
+    problems: list[str] = []
+    notes: list[str] = []
+    now = datetime.now(UTC)
+    for source in cameras.SOURCES:
+        if not cameras.configured(source):
+            notes.append(f"{source}: not configured")
+            continue
+        try:
+            for region in REGIONS:
+                doc = await cameras.read_list(region, source)
+                if problem := cameras.age_problem(source, doc, now):
+                    problems.append(f"{region} {problem}")
+        except Exception as exc:
+            logger.warning("status check failed (cameras %s)", source, exc_info=True)
+            problems.append(f"{source}: {str(exc)[:200]}")
+    return ServiceHealth(
+        name="cameras", healthy=not problems, detail="; ".join(problems + notes) or None,
+    )
+
+
 async def _check_services(session: Session) -> list[ServiceHealth]:
     # api is implicitly healthy if it's responding to this request, but we
     # report it explicitly so the frontend doesn't have to know that.
     api = ServiceHealth(name="api", healthy=True)
     postgres = await _check_postgres(session)
-    minio, titiler, martin, snow, depth, temp, wnd, rad = await asyncio.gather(
+    minio, titiler, martin, snow, depth, temp, wnd, rad, cams = await asyncio.gather(
         _probe("minio",   "http://localhost:9000/minio/health/live"),
         _probe("titiler", "http://localhost:8001/"),
         _probe("martin",  "http://localhost:3000/health"),
@@ -145,8 +176,9 @@ async def _check_services(session: Session) -> list[ServiceHealth]:
         _check_temperature(),
         _check_wind(),
         _check_radar(),
+        _check_cameras(),
     )
-    return [api, postgres, minio, titiler, martin, snow, depth, temp, wnd, rad]
+    return [api, postgres, minio, titiler, martin, snow, depth, temp, wnd, rad, cams]
 
 
 def _overall(services: list[ServiceHealth], active_banner: StatusBanner | None) -> str:

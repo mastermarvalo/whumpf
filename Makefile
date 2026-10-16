@@ -234,6 +234,14 @@ temperature-refresh:  ## fetch the newest RTMA 2 m temperature and 10 m wind int
 radar-refresh:  ## fill missing 10-min MRMS radar frames in MinIO (every-5-min job); ARGS=--dry-run writes nothing
 	$(API_RUN) uv run python -m app.jobs.radar_refresh $(ARGS)
 
+# --- mountain cameras ---------------------------------------------------------
+# NPS and Windy webcam lists -> dem-cogs/cameras/<region>/<source>.json in
+# MinIO, served at /cameras. Hourly via cron: docs/runbook.md "Mountain cameras".
+
+.PHONY: cameras-refresh
+cameras-refresh:  ## refresh the camera lists that are due (hourly job); ARGS=--force asks every source now, ARGS=--dry-run writes nothing
+	$(API_RUN) uv run python -m app.jobs.cameras_refresh $(ARGS)
+
 # --- tests / lint -----------------------------------------------------------
 
 .PHONY: test-api

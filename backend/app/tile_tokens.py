@@ -62,6 +62,13 @@ BUCKETS: dict[str, tuple[RateLimitItem, ...]] = {
     # Per client IP, GET /weather/forecast (spot forecast, needs a tile
     # token). Each tap is one request; Cloudflare doesn't cache it.
     "weather": (parse("60/minute"), parse("600/hour")),
+    # Per client IP, GET /cameras and /cameras/{id}/image (needs a tile
+    # token). The list once per map load, the image once per tap.
+    "cameras": (parse("60/minute"), parse("600/hour")),
+    # One global counter ("global"): camera image lookups that reach the
+    # Windy API (cache misses). Keeps us from "intensive usage", which
+    # Windy's terms forbid, whoever is tapping.
+    "windy_upstream": (parse("60/minute"), parse("1000/hour")),
 }
 
 _NO_STORE = {"Cache-Control": "no-store"}

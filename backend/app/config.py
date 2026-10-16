@@ -62,6 +62,12 @@ class Settings(BaseSettings):
     # a User-Agent and asks for contact details in it.
     weather_user_agent: str = "whumpf/0.1 (+https://whumpf.co)"
 
+    # --- Mountain cameras (app/jobs/cameras_refresh.py, docs/runbook.md §10) -
+    # Free keys. A source with no key is left out of the layer. Both are sent
+    # as headers only, never in a URL, so they never reach a log.
+    windy_webcams_api_key: str = ""
+    nps_api_key: str = ""
+
     # --- Strava OAuth --------------------------------------------------------
     strava_client_id: str = ""
     strava_client_secret: str = ""

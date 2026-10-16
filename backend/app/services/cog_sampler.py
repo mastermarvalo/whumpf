@@ -74,6 +74,19 @@ def sample_elevation(lon: float, lat: float, region: str, settings: Settings) ->
         return _sample_cog(_region_base(region, settings), "dem", [_to_3857.transform(lon, lat)])[0]
 
 
+def sample_elevations(
+    points: list[tuple[float, float]], region: str, settings: Settings,
+) -> list[float | None]:
+    """DEM elevations in metres at many WGS84 (lon, lat) points, opening each
+    COG once."""
+    if not points:
+        return []
+    with rasterio.Env(**_VSICURL_ENV):
+        return _sample_cog(
+            _region_base(region, settings), "dem", [_to_3857.transform(lon, lat) for lon, lat in points],
+        )
+
+
 def _sample_coords(
     coords_3857: list[tuple[float, float]],
     distances: list[float],
