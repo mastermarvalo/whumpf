@@ -95,6 +95,7 @@ def test_configured_limits_match_the_plan():
         "cameras": ["60 per 1 minute", "600 per 1 hour"],
         "windy_upstream": ["60 per 1 minute", "1000 per 1 hour"],
         "roads": ["60 per 1 minute", "600 per 1 hour"],
+        "status": ["60 per 1 minute", "600 per 1 hour"],
     }
 
 

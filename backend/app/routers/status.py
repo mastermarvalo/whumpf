@@ -3,25 +3,31 @@
 GET /status is the only unauthenticated endpoint here — everything else
 requires admin (see app.admin.require_admin). The page is meant to be
 linkable from anywhere, including the marketing site / outage notices.
+It has a per-IP limit (`status` bucket) and the service checks are cached
+for SERVICES_TTL_S; banners are read fresh on every request, so a posted or
+resolved banner shows at once on every worker.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from datetime import UTC, datetime, timedelta
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from app import tile_tokens
 from app.admin import is_admin, require_admin
 from app.auth.dependencies import get_current_user
 from app.db import get_session
 from app.models.status import StatusBanner
 from app.models.user import User
+from app.rate_limit import client_ip
 from app.regions import REGIONS
 from app.services import (
     cameras,
@@ -207,6 +213,26 @@ async def _check_services(session: Session) -> list[ServiceHealth]:
     return [api, postgres, minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds]
 
 
+# The app polls /status every 5 min per install, so the checks (MinIO reads
+# for every region, three HTTP probes) run at most once per worker per TTL.
+SERVICES_TTL_S = 30.0
+_services: tuple[list[ServiceHealth], float] | None = None  # (result, monotonic time)
+_services_lock = asyncio.Lock()
+
+
+async def _cached_services(session: Session) -> list[ServiceHealth]:
+    global _services
+    if _services and time.monotonic() - _services[1] < SERVICES_TTL_S:
+        return _services[0]
+    async with _services_lock:
+        # another request may have refreshed it while we waited
+        if _services and time.monotonic() - _services[1] < SERVICES_TTL_S:
+            return _services[0]
+        result = await _check_services(session)
+        _services = (result, time.monotonic())
+        return result
+
+
 def _overall(services: list[ServiceHealth], active_banner: StatusBanner | None) -> str:
     """One-word summary the status page header uses for the big indicator.
 
@@ -253,9 +279,13 @@ class BannerIn(BaseModel):
 
 # ── public endpoint ────────────────────────────────────────────────────────────
 
-@router.get("", response_model=StatusOut)
+def limit_status(request: Request) -> None:
+    tile_tokens.enforce("status", client_ip(request))
+
+
+@router.get("", response_model=StatusOut, dependencies=[Depends(limit_status)])
 async def get_status(session: Session = Depends(get_session)) -> StatusOut:
-    services = await _check_services(session)
+    services = await _cached_services(session)
     active = session.scalars(
         select(StatusBanner)
         .where(StatusBanner.resolved_at.is_(None))

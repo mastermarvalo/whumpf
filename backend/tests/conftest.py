@@ -143,6 +143,14 @@ def endpoint_rate_limits(monkeypatch):
     monkeypatch.setattr(rate_limit, "_key_limiter", FixedWindowRateLimiter(MemoryStorage()))
 
 
+@pytest.fixture(autouse=True)
+def status_cache(monkeypatch):
+    """Each test starts with no cached /status service checks."""
+    from app.routers import status
+
+    monkeypatch.setattr(status, "_services", None)
+
+
 @pytest.fixture(scope="session")
 def test_db_url() -> URL:
     url = make_url(get_settings().database_url)

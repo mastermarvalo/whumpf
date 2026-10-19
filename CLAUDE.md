@@ -18,7 +18,8 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
     - `GET /weather/forecast` (spot forecast): public NWS data for signed-out installs too. Needs a tile token instead of sign-in (so it isn't an open proxy to api.weather.gov under our User-Agent), plus a per-IP limit (`weather` bucket, 60/min and 600/h).
     - `GET /cameras` and `GET /cameras/{id}/image` (mountain cameras): public NPS and Windy webcams for signed-out installs too. Needs a tile token instead of sign-in (so `/image` isn't a free anonymous way to spend our Windy key), plus a per-IP limit (`cameras` bucket, 60/min and 600/h) and a global cap on lookups that reach Windy (`windy_upstream`, 60/min and 1000/h).
     - `GET /roads` (road conditions): CDOT COtrip data for signed-out installs too. Needs a tile token instead of sign-in (it serves only the job's stored files and never calls CDOT, so the token is there to stop scraping), plus a per-IP limit (`roads` bucket, 60/min and 600/h). The segment lines are under `/tiles/roads/segments`.
-    - `/healthz`, `/readyz`, and `GET /status` (the service status and banner page).
+    - `/healthz` and `/readyz`.
+    - `GET /status` (the service status and banner page, polled by the app every 5 min). Per-IP limit (`status` bucket, 60/min and 600/h); the service checks are cached in memory for 30 s per worker, banners are read fresh so posts and resolves show at once.
     - The `/auth/*` endpoints that sign you in or recover an account (register, token, refresh, verify-email, password-reset), each with `@limiter.limit`. The Strava OAuth callback is protected by its signed `state`.
 - **Visibility enum is `private | shared | unlisted`.** Deliberately no `public`, no feed/discovery. New objects default to `private`.
 - **Geometry in PostGIS**, GeoJSON at the API boundary.

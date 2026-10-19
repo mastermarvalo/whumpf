@@ -72,6 +72,9 @@ BUCKETS: dict[str, tuple[RateLimitItem, ...]] = {
     # Per client IP, GET /roads (needs a tile token). Once per map load and
     # every few minutes while the layer is on; the data is the job's files.
     "roads": (parse("60/minute"), parse("600/hour")),
+    # Per client IP, GET /status (public, no token). The app polls it every
+    # 5 min; the service checks behind it are cached for 30 s.
+    "status": (parse("60/minute"), parse("600/hour")),
 }
 
 _NO_STORE = {"Cache-Control": "no-store"}
