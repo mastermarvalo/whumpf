@@ -1020,7 +1020,7 @@ each feed; the app reads one endpoint. Code: `app/services/roads.py`,
 
 ### Categories
 
-`category` is one of `closed`, `chain_law`, `traction_law`,
+`category` is one of `closed`, `closed_one_direction`, `chain_law`, `traction_law`,
 `avalanche_control`, `crash`, `construction`, `dry`, `no_data`, `other`.
 A value maps to a category only if the real feed has shown it; everything
 else is `other` and keeps CDOT's text, so the app shows exactly what CDOT
@@ -1036,6 +1036,7 @@ mapping from a guess at CDOT's wording; add it from the sample below.
 | | `forecast text included` (source NDFD) | not a condition: its `additionalData` is the segment's `forecast` |
 | | anything else | `other` |
 | incidents, plannedEvents | every direction in `laneImpacts` has all its lanes closed | `closed` |
+| | some directions, not all, have all their lanes closed | `closed_one_direction` (which: `closed_directions`) |
 | | `category` `Construction` | `construction` |
 | | anything else (`Maintenance`, `ITS Work`, `Utility`, `Traffic`) | `other` |
 
@@ -1048,8 +1049,10 @@ mapping from a guess at CDOT's wording; add it from the sample below.
   due to ..." in CDOT's message. A direction with no lane count is never
   closed.
 - **One direction closed** (I-70 Floyd Hill westbound overnight, or
-  alternating traffic on a two-lane road) is not `closed`; it is listed in
-  `closed_directions` and the message says the rest.
+  alternating traffic on a two-lane road) is `closed_one_direction`, with
+  the direction(s) in `closed_directions` ("west"); the app shows "Closed
+  westbound". It wins over `construction`. On Oct 19: 4 planned events and
+  1 incident.
 - A segment shows its most important condition: `closed`, then
   `avalanche_control`, `chain_law`, `traction_law`, `other`, `dry`,
   `no_data`. An unknown condition ranks above `dry`, so it is never hidden.
@@ -1104,7 +1107,8 @@ Cron (user crontab, with the `XDG_RUNTIME_DIR` and `DOCKER_HOST` lines from
   tokenless is never allowed) and counts against the per-IP `roads`
   bucket, 60/min and 600/h (401 without a token, 429 with `Retry-After`).
   A public exception, listed in CLAUDE.md: it only serves the job's files,
-  never calls CDOT. `Cache-Control: private, max-age=60`. The body:
+  never calls CDOT. `Cache-Control: private, max-age=60`. About 350 KB
+  (35 KB gzipped) on Oct 19, with 199 of 434 planned events. The body:
   - `disclaimer` (show it with the data), `attribution`, `categories`.
   - `sources`: per feed `state` (`ok`, `stale`, `missing`, `expired`,
     `unavailable`, `not_configured`, `not_covered`) and `fetched`.
@@ -1114,7 +1118,9 @@ Cron (user crontab, with the `XDG_RUNTIME_DIR` and `DOCKER_HOST` lines from
     Pass"), `description`, `route`, `category`, `conditions` (each with
     `category`, CDOT's `text`, `source` OPERATOR/MDSS, `note`, `start`,
     `end`, `updated`) and `forecast` (NDFD `text`, `start`, `end`).
-  - `features`: incidents and planned events not yet ended, as GeoJSON
+  - `features`: incidents not yet cleared, and planned events in effect
+    now or with a schedule window starting within 48 h
+    (`roads.PLANNED_AHEAD`; the stored file keeps all of them), as GeoJSON
     (MultiPoint), id `<feed>:<CDOT id>`. Properties: `feed`, `category`,
     `type` and `cdot_category` (CDOT's), `name`, `route`, `direction`,
     `severity`, `message` (CDOT's traveler message), `impacts`

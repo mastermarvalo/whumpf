@@ -199,12 +199,34 @@ def test_lanes_follow_the_guide_bitmask(impact, closed, all_closed):
 def test_closed_needs_every_lane_in_every_direction():
     one_way = [roads.decode_lanes(lanes("west", 1, "4000")), roads.decode_lanes(lanes("east", 1, "0"))]
     both = [roads.decode_lanes(lanes("west", 1, "4000")), roads.decode_lanes(lanes("east", 1, "C001"))]
-    assert roads.event_category({"category": "Traffic"}, one_way) == "other"
+    assert roads.event_category({"category": "Traffic"}, one_way) == "closed_one_direction"
+    assert roads.event_category({"category": "Construction"}, one_way) == "closed_one_direction"
     assert roads.event_category({"category": "Traffic"}, both) == "closed"
+    partial = [roads.decode_lanes(lanes("west", 2, "2000")), roads.decode_lanes(lanes("east", 2, "0"))]
+    assert roads.event_category({"category": "Traffic"}, partial) == "other"
     assert roads.event_category({"category": "Construction"}, []) == "construction"
     for props in ({"category": "Maintenance", "type": "Rock Work"}, {"type": "1 Vehicle Crash"},
                   {"type": "Chain Law"}, {"type": "Avalanche Control"}, {}):
         assert roads.event_category(props, []) == "other"
+
+
+def test_planned_events_shown_now_or_within_48_h():
+    now = NOW
+
+    def planned(start_h, end_h, days=None):
+        start, end = (rasterlayer.iso(now + timedelta(hours=h)) for h in (start_h, end_h))
+        return {"feed": "planned", "start": start, "end": end,
+                "schedule": [{"start": start, "end": end, "days": days}]}
+
+    assert roads.shown(planned(-2, 1), now)          # in effect
+    assert roads.shown(planned(48, 50), now)         # starts at the edge
+    assert not roads.shown(planned(48.1, 50), now)
+    assert roads.shown(planned(100, 120, days=["monday"]), now)  # repeats: unknown, kept
+    no_schedule = {"feed": "planned", "start": rasterlayer.iso(now + timedelta(hours=60)),
+                   "end": None, "schedule": []}
+    assert not roads.shown(no_schedule, now)  # no schedule: the event's own start
+    assert roads.shown({**no_schedule, "start": rasterlayer.iso(now + timedelta(hours=10))}, now)
+    assert roads.shown({"feed": "incidents", "start": None, "end": None}, now)
 
 
 def test_times():
@@ -245,7 +267,7 @@ def test_refresh_writes_each_feed(up):
     assert by_id["OpenTMS-Event2"]["category"] == "construction"
     assert by_id["OpenTMS-Event2"]["impacts"] == ["Alternating traffic", "Alternating Lanes"]
     three = by_id["OpenTMS-Event3"]
-    assert three["category"] == "construction" and three["closed_directions"] == ["west"]
+    assert three["category"] == "closed_one_direction" and three["closed_directions"] == ["west"]
     assert by_id["OpenTMS-Event4"]["category"] == "other" and by_id["OpenTMS-Event4"]["type"] == "IT or Fiber Optics"
     assert planned["unmapped"] == {"IT or Fiber Optics": 1}
     assert by_id["OpenTMS-Event1"]["geometry"]["type"] == "MultiPoint"
@@ -253,7 +275,8 @@ def test_refresh_writes_each_feed(up):
 
     incidents = store.json("roads/colorado/incidents.json")
     (incident,) = incidents["events"]
-    assert incident["category"] == "other" and incident["closed_directions"] == ["west"]
+    assert incident["category"] == "closed_one_direction" and incident["closed_directions"] == ["west"]
+    assert incidents["unmapped"] == {}
 
     pointer = store.json("roads/colorado/segments.json")
     assert pointer["ids"] == ["1", "2", "3", "4"]
@@ -474,10 +497,10 @@ def docs(up, monkeypatch) -> dict:
         doc = store.json(roads.key("colorado", feed))
         doc["fetched"] = rasterlayer.iso(now - timedelta(minutes=2))
         state[feed] = doc
-    # Event windows relative to the real clock: 2 in effect now, 1 and 3
-    # later, 4 ended since the job ran.
-    windows = {"OpenTMS-Event1": (24, 72), "OpenTMS-Event2": (-1, 1),
-               "OpenTMS-Event3": (1, 10), "OpenTMS-Event4": (-5, -1 / 60)}
+    # Event windows relative to the real clock, in hours: 2 in effect now,
+    # 3 starts within 48 h, 1 starts after that, 4 ended since the job ran.
+    windows = {"OpenTMS-Event1": (49, 72), "OpenTMS-Event2": (-1, 1),
+               "OpenTMS-Event3": (47, 50), "OpenTMS-Event4": (-5, -1 / 60)}
     for event_ in state["planned"]["events"]:
         start, end = (rasterlayer.iso(now + timedelta(hours=h)) for h in windows[event_["id"]])
         event_.update(start=start, end=end, schedule=[{"start": start, "end": end, "days": None}])
@@ -523,12 +546,14 @@ def test_roads(client, docs):
     revision = docs["segments"]["revision"]
     assert body["segments"]["url"] == f"/tiles/roads/segments/{revision}.geojson?region=colorado"
     features = {f["id"]: f for f in body["features"]}
-    assert set(features) == {"incidents:OpenTMS-Incident1", "planned:OpenTMS-Event1",
-                             "planned:OpenTMS-Event2", "planned:OpenTMS-Event3"}
+    assert set(features) == {"incidents:OpenTMS-Incident1", "planned:OpenTMS-Event2",
+                             "planned:OpenTMS-Event3"}
     assert features["planned:OpenTMS-Event2"]["properties"]["active"] is True
     assert features["planned:OpenTMS-Event3"]["properties"]["active"] is False
     assert features["incidents:OpenTMS-Incident1"]["properties"]["active"] is True
-    assert features["planned:OpenTMS-Event1"]["geometry"]["type"] == "MultiPoint"
+    assert features["planned:OpenTMS-Event3"]["geometry"]["type"] == "MultiPoint"
+    assert features["planned:OpenTMS-Event3"]["properties"]["category"] == "closed_one_direction"
+    assert features["planned:OpenTMS-Event3"]["properties"]["closed_directions"] == ["west"]
 
 
 def test_roads_feeds_fail_on_their_own(client, docs):

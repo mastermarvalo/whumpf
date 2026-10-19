@@ -64,7 +64,8 @@ async def road_conditions(region: str = Query("colorado")) -> JSONResponse:
 
     `conditions` maps a segment id to its `category`, CDOT's own condition
     texts and the NDFD forecast; join it to the lines at `segments.url` by
-    id. `features` are incidents and planned events (not yet ended) with
+    id. `features` are incidents (not yet cleared) and planned events in
+    effect now or starting within 48 h, with
     `category`, CDOT's `type` and `message`, the decoded lanes and `active`
     (in effect now; null if unknown). `category` is one of
     roads.CATEGORIES; "other" means CDOT's text is all there is. `sources`
@@ -103,7 +104,7 @@ async def road_conditions(region: str = Query("colorado")) -> JSONResponse:
         else:
             features.extend(
                 _feature(e, now) for e in doc["events"]
-                if not e.get("end") or datetime.fromisoformat(e["end"]) > now
+                if (not e.get("end") or datetime.fromisoformat(e["end"]) > now) and roads.shown(e, now)
             )
     if covered and unreadable == len(roads.FEEDS):
         raise HTTPException(503, "road conditions temporarily unavailable", headers=_NO_STORE)

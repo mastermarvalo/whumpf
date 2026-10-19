@@ -75,7 +75,7 @@ ATTRIBUTION = {
 }
 
 CATEGORIES = (
-    "closed", "chain_law", "traction_law", "avalanche_control", "crash", "construction",
+    "closed", "closed_one_direction", "chain_law", "traction_law", "avalanche_control", "crash", "construction",
     "dry", "no_data", "other",
 )
 
@@ -141,10 +141,13 @@ def decode_lanes(impact: dict) -> dict:
 
 def event_category(props: dict, lanes: list[dict]) -> str:
     """closed when every direction listed has every lane closed (at least
-    one direction, each with a lane count); else by `type`, then by CDOT's
-    `category`; else other."""
+    one direction, each with a lane count); closed_one_direction when only
+    some directions do (which ones: the event's closed_directions); else by
+    `type`, then by CDOT's `category`; else other."""
     if lanes and all(lane["all_closed"] for lane in lanes):
         return "closed"
+    if any(lane["all_closed"] for lane in lanes):
+        return "closed_one_direction"
     if mapped := EVENT_TYPES.get((props.get("type") or "").strip()):
         return mapped
     return EVENT_CATEGORIES.get((props.get("category") or "").strip().lower(), "other")
@@ -191,6 +194,22 @@ def active(event: dict, now: datetime) -> bool | None:
         )
     start, end = t(event.get("start")), t(event.get("end"))
     return (start is None or start <= now) and (end is None or now < end)
+
+
+# /roads shows planned events in effect now or starting within this.
+PLANNED_AHEAD = timedelta(hours=48)
+
+
+def shown(event: dict, now: datetime) -> bool:
+    """Incidents always; planned events in effect now (or unknown), or with
+    a schedule window (else the event) starting within PLANNED_AHEAD."""
+    if event["feed"] != "planned":
+        return True
+    if active(event, now) is not False:
+        return True
+    starts = [w.get("start") for w in event.get("schedule") or []] or [event.get("start")]
+    horizon = now + PLANNED_AHEAD
+    return any(s and now <= datetime.fromisoformat(s) <= horizon for s in starts)
 
 
 # ── storage ───────────────────────────────────────────────────────────────────
