@@ -27,6 +27,7 @@ from app.services import (
     cameras,
     radar,
     rasterlayer,
+    roads,
     snowdepth,
     snowfall,
     temperature,
@@ -162,12 +163,36 @@ async def _check_cameras() -> ServiceHealth:
     )
 
 
+async def _check_roads() -> ServiceHealth:
+    """Healthy when every CDOT feed and the segment lines are recent. No
+    COTRIP_API_KEY is "not configured", not a problem."""
+    if not roads.configured():
+        return ServiceHealth(name="roads", healthy=True, detail="not configured")
+    problems: list[str] = []
+    now = datetime.now(UTC)
+    try:
+        for region in roads.REGIONS:
+            for feed in roads.FEEDS:
+                doc = await roads.read_doc(region, feed)
+                fetched = (doc or {}).get("fetched")
+                if problem := rasterlayer.age_problem(f"{region} {feed}", fetched, roads.STALE_AFTER[feed], now):
+                    problems.append(problem)
+            pointer = await roads.read_doc(region, "segments")
+            fetched = (pointer or {}).get("fetched")
+            if problem := rasterlayer.age_problem(f"{region} segments", fetched, roads.SEGMENTS_STALE_AFTER, now):
+                problems.append(problem)
+    except Exception as exc:
+        logger.warning("status check failed (roads)", exc_info=True)
+        return ServiceHealth(name="roads", healthy=False, detail=str(exc)[:200])
+    return ServiceHealth(name="roads", healthy=not problems, detail="; ".join(problems) or None)
+
+
 async def _check_services(session: Session) -> list[ServiceHealth]:
     # api is implicitly healthy if it's responding to this request, but we
     # report it explicitly so the frontend doesn't have to know that.
     api = ServiceHealth(name="api", healthy=True)
     postgres = await _check_postgres(session)
-    minio, titiler, martin, snow, depth, temp, wnd, rad, cams = await asyncio.gather(
+    minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds = await asyncio.gather(
         _probe("minio",   "http://localhost:9000/minio/health/live"),
         _probe("titiler", "http://localhost:8001/"),
         _probe("martin",  "http://localhost:3000/health"),
@@ -177,8 +202,9 @@ async def _check_services(session: Session) -> list[ServiceHealth]:
         _check_wind(),
         _check_radar(),
         _check_cameras(),
+        _check_roads(),
     )
-    return [api, postgres, minio, titiler, martin, snow, depth, temp, wnd, rad, cams]
+    return [api, postgres, minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds]
 
 
 def _overall(services: list[ServiceHealth], active_banner: StatusBanner | None) -> str:

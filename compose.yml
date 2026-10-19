@@ -218,6 +218,7 @@ services:
       WEATHER_USER_AGENT: ${WEATHER_USER_AGENT:-whumpf/0.1 (+https://whumpf.co)}
       WINDY_WEBCAMS_API_KEY: ${WINDY_WEBCAMS_API_KEY:-}
       NPS_API_KEY: ${NPS_API_KEY:-}
+      COTRIP_API_KEY: ${COTRIP_API_KEY:-}
     volumes:
       - ./backend/app:/app/app
       # Tests aren't copied into the image; mount them so `make test-api` runs

@@ -69,6 +69,9 @@ BUCKETS: dict[str, tuple[RateLimitItem, ...]] = {
     # Windy API (cache misses). Keeps us from "intensive usage", which
     # Windy's terms forbid, whoever is tapping.
     "windy_upstream": (parse("60/minute"), parse("1000/hour")),
+    # Per client IP, GET /roads (needs a tile token). Once per map load and
+    # every few minutes while the layer is on; the data is the job's files.
+    "roads": (parse("60/minute"), parse("600/hour")),
 }
 
 _NO_STORE = {"Cache-Control": "no-store"}

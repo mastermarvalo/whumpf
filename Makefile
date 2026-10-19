@@ -242,6 +242,19 @@ radar-refresh:  ## fill missing 10-min MRMS radar frames in MinIO (every-5-min j
 cameras-refresh:  ## refresh the camera lists that are due (hourly job); ARGS=--force asks every source now, ARGS=--dry-run writes nothing
 	$(API_RUN) uv run python -m app.jobs.cameras_refresh $(ARGS)
 
+# --- road conditions ----------------------------------------------------------
+# CDOT COtrip conditions, incidents, planned events and segment lines ->
+# dem-cogs/roads/<region>/ in MinIO, served at /roads. Every 5 min via cron:
+# docs/runbook.md "Road conditions".
+
+.PHONY: roads-refresh
+roads-refresh:  ## refresh the CDOT road feeds that are due (5-min job); ARGS=--force asks every feed now, ARGS=--dry-run writes nothing
+	$(API_RUN) uv run python -m app.jobs.roads_refresh $(ARGS)
+
+.PHONY: roads-sample
+roads-sample:  ## record the distinct CDOT condition/incident/impact values (15-min cron for a week); ARGS=--report prints them
+	$(API_RUN) uv run python -m app.jobs.roads_sample $(ARGS)
+
 # --- tests / lint -----------------------------------------------------------
 
 .PHONY: test-api

@@ -977,6 +977,174 @@ CLAUDE.md. Not under `/tiles`, so Cloudflare doesn't cache them.
 - **To start over:** delete `dem-cogs/cameras/<region>/<source>.json` and
   run `make cameras-refresh ARGS=--force`. Nothing needs backing up.
 
+## 11. Road conditions
+
+CDOT's road conditions, incidents and planned events from the keyed COtrip
+data feeds, for the drive to the trailhead. The backend keeps the latest of
+each feed; the app reads one endpoint. Code: `app/services/roads.py`,
+`app/jobs/roads_refresh.py`, `app/jobs/roads_sample.py`,
+`app/routers/roads.py`, `app/log_redact.py`.
+
+### Source, key and terms
+
+- **Feeds:** `https://data.cotrip.org/api/v1/<feed>?apiKey=` (user guide
+  v1.6). We use `roadConditions` (198 segments, one LineString each, with
+  `currentConditions[]`), `incidents` and `plannedEvents` (MultiPoint start
+  and end, `type`, `category`, `laneImpacts`, `additionalImpacts`, traveler
+  message, schedule). Not used: `weatherStations`, `signs`, `snowPlows`,
+  `destinations`, `cwz`, `wzdx`. No camera feed (CDOT cameras are tabled,
+  PLAN.md Later).
+- **Key:** `COTRIP_API_KEY` in `.env`, from <https://manage-api.cotrip.org>
+  (accept the terms; a CDOT admin approves it). Generating a new key there
+  invalidates the old one. Empty turns the whole layer off: the job fetches
+  nothing, `/roads` answers `not_configured`, `/status` notes it. Use that
+  if CDOT revokes access.
+- **The key is in the URL.** COtrip accepts it only as `?apiKey=`, and
+  httpx puts URLs in its INFO lines and its error messages. So the jobs set
+  the `httpx` logger to WARNING, turn every request error into "HTTP 500" or
+  the exception type (`roads_refresh.describe`), never log a traceback, and
+  `app/log_redact.py` redacts `apiKey=` and the key itself from every log
+  record as a backstop (tested in `tests/test_roads.py`). Never paste a
+  COtrip URL from a debugging session into an issue or chat.
+- **Terms** (portal terms of service, read Oct 16, 2026): applications
+  "must include the following disclaimers on their sites" — the full text
+  is `roads.DISCLAIMER`, served as `disclaimer` by `/roads`, and the app
+  shows it in the layer info and on the credits page. CDOT may "modify
+  and/or discontinue providing any or all of the data feeds at any time and
+  ... require the termination of any and all displaying"; the format may
+  change. The terms say nothing on caching, polling rate or redistribution.
+- **Paging quirks:** pages come 100 at a time with the next cursor in the
+  `Next-Offset` header (`None` on the last page). `offset=0` answers 500,
+  so the first page is sent without one, and `roadConditions` wraps the
+  cursor in a Python bytes repr (`b'...'`), which the job unwraps.
+
+### Categories
+
+`category` is one of `closed`, `chain_law`, `traction_law`,
+`avalanche_control`, `crash`, `construction`, `dry`, `no_data`, `other`.
+A value maps to a category only if the real feed has shown it; everything
+else is `other` and keeps CDOT's text, so the app shows exactly what CDOT
+says. Chain law, traction law, avalanche control and crash have no mapping
+yet: nothing in the feed on Oct 18, 2026 (a dry day) used them. Never add a
+mapping from a guess at CDOT's wording; add it from the sample below.
+
+| Feed | CDOT value | Category |
+| --- | --- | --- |
+| roadConditions `conditionDescription` | `3 - dry` | `dry` |
+| | `seasonal closure` | `closed` |
+| | `no data` | `no_data` (Trail Ridge, Cottonwood, Kebler and Guanella show this in October, not "closed") |
+| | `forecast text included` (source NDFD) | not a condition: its `additionalData` is the segment's `forecast` |
+| | anything else | `other` |
+| incidents, plannedEvents | every direction in `laneImpacts` has all its lanes closed | `closed` |
+| | `category` `Construction` | `construction` |
+| | anything else (`Maintenance`, `ITS Work`, `Utility`, `Traffic`) | `other` |
+
+- **Lanes:** `laneClosures` is a 16-bit mask as hex, most significant bit
+  first: bit 0 the left shoulder, bits 1 to `laneCount` the lanes from the
+  median out, bit 15 the right shoulder. "Full closure" is every lane bit
+  set, the guide's appendix table A-3 (`4000` or `C001` for one lane,
+  `7000`/`F001` for three). On Oct 18 the decoding matched `closedLaneTypes`
+  on every record, and the two events it marks closed both say "Road closed
+  due to ..." in CDOT's message. A direction with no lane count is never
+  closed.
+- **One direction closed** (I-70 Floyd Hill westbound overnight, or
+  alternating traffic on a two-lane road) is not `closed`; it is listed in
+  `closed_directions` and the message says the rest.
+- A segment shows its most important condition: `closed`, then
+  `avalanche_control`, `chain_law`, `traction_law`, `other`, `dry`,
+  `no_data`. An unknown condition ranks above `dry`, so it is never hidden.
+
+### Recording CDOT's values (for a week)
+
+`make roads-sample` reads all three feeds (conditions without geometry)
+and adds every distinct `conditionDescription`, incident `type`, planned
+`type` and both feeds' `additionalImpacts` value to
+`dem-cogs/roads/colorado/sample.json`, with `count` (records, summed over
+runs), `runs`, `first_seen`, `last_seen`, the category it got and the last
+example (segment name or traveler message). `make roads-sample
+ARGS=--report` prints it, most common first, and fetches nothing. Run it
+every 15 min for a week that includes a storm, then remove the cron line,
+read the report and add the chain law, traction law, avalanche control and
+crash values to `roads.CONDITIONS` / `roads.EVENT_TYPES`, with a test each.
+
+```
+4-59/15 * * * * cd /home/ronkerflonk/whumpf && flock -n /data/roads/.sample.lock make roads-sample >> /data/roads/sample.log 2>&1
+```
+
+### Storage and refresh
+
+```
+roadConditions?skipGeometry=true   every run      -> dem-cogs/roads/<region>/conditions.json
+incidents                          every run      -> dem-cogs/roads/<region>/incidents.json
+plannedEvents                      every 30 min   -> dem-cogs/roads/<region>/planned.json
+roadConditions (with lines)        daily, or when a new segment id appears
+                                   -> dem-cogs/roads/<region>/segments/<YYYYMMDD>-<sha8>.geojson.gz
+                                      dem-cogs/roads/<region>/segments.json (revision, ids)
+  make roads-refresh (every 5 min, app/jobs/roads_refresh.py)
+```
+
+Colorado only (`roads.REGIONS`). Segment lines are simplified to about
+20 m (7.4 MB raw to ~140 KB gzipped); a new revision is written only when
+the lines change, and old revisions go after 7 days. Planned events and
+incidents that have ended are dropped. `unmapped` in each file counts the
+values that came out `other`, and each run logs them. `ARGS=--force` asks
+every feed now; `ARGS=--dry-run` fetches and checks but writes nothing;
+`ARGS="--feed incidents"` narrows it. Exits 1 if any feed failed.
+
+Cron (user crontab, with the `XDG_RUNTIME_DIR` and `DOCKER_HOST` lines from
+§9; `mkdir -p /data/roads` first). `2-59/5` keeps it off radar's minutes:
+
+```
+2-59/5 * * * * cd /home/ronkerflonk/whumpf && flock -n /data/roads/.refresh.lock make roads-refresh >> /data/roads/refresh.log 2>&1
+```
+
+### API
+
+- `GET /roads?region=colorado&t=` needs a tile token (either tier;
+  tokenless is never allowed) and counts against the per-IP `roads`
+  bucket, 60/min and 600/h (401 without a token, 429 with `Retry-After`).
+  A public exception, listed in CLAUDE.md: it only serves the job's files,
+  never calls CDOT. `Cache-Control: private, max-age=60`. The body:
+  - `disclaimer` (show it with the data), `attribution`, `categories`.
+  - `sources`: per feed `state` (`ok`, `stale`, `missing`, `expired`,
+    `unavailable`, `not_configured`, `not_covered`) and `fetched`.
+  - `segments`: `url` of the current lines file (below), `revision`,
+    `fetched`; `null` until the job has written one.
+  - `conditions`: segment id to `name` (CDOT's short name, e.g. "Vail
+    Pass"), `description`, `route`, `category`, `conditions` (each with
+    `category`, CDOT's `text`, `source` OPERATOR/MDSS, `note`, `start`,
+    `end`, `updated`) and `forecast` (NDFD `text`, `start`, `end`).
+  - `features`: incidents and planned events not yet ended, as GeoJSON
+    (MultiPoint), id `<feed>:<CDOT id>`. Properties: `feed`, `category`,
+    `type` and `cdot_category` (CDOT's), `name`, `route`, `direction`,
+    `severity`, `message` (CDOT's traveler message), `impacts`
+    (`additionalImpacts`), `lanes` (per direction `lane_count`,
+    `lanes_closed`, `all_closed`, `closed_types`), `closed_directions`,
+    `start`, `end`, `updated`, `schedule` and `active` (in effect now;
+    `null` if a window repeats by weekday, which the feed hasn't used).
+- `GET /tiles/roads/segments/<revision>.geojson?region=colorado&t=`: the
+  lines, gzipped GeoJSON, one LineString per segment with `id`, `name`,
+  `description`, `route`. Under `/tiles`, so the tile token rules apply and
+  Cloudflare caches it; `public, max-age=86400`, 404 once cleaned up.
+
+### Failures and recovery
+
+- **One feed down:** each feed is fetched and checked on its own. A feed is
+  written only if every page answered; conditions also need at least half
+  the segments of the file they replace, planned events at least one event
+  (zero incidents is normal). Otherwise the old file stays served.
+- **Old data:** conditions and incidents are `stale` after 30 min, planned
+  events after 2 h. Past 24 h a feed is `expired` and left out, because an
+  old "dry" or a missing closure is worse than nothing. If MinIO can't be
+  read for one feed it is `unavailable`; for all three, 503 `no-store`.
+- **`/status`:** one `roads` item, unhealthy when a feed is stale or the
+  lines are over 3 days old. "not configured" (healthy) with no key.
+- **CDOT changes the format:** the checks reject a body that isn't a
+  FeatureCollection; new condition texts or types show as `other` with
+  CDOT's text and are counted in `unmapped`.
+- **To start over:** delete `dem-cogs/roads/<region>/` and run
+  `make roads-refresh ARGS=--force`. Nothing needs backing up.
+
 ## Troubleshooting
 
 ### `api` container restarts repeatedly

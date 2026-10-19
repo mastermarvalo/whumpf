@@ -68,6 +68,12 @@ class Settings(BaseSettings):
     windy_webcams_api_key: str = ""
     nps_api_key: str = ""
 
+    # --- Road conditions (app/jobs/roads_refresh.py, docs/runbook.md §11) ---
+    # CDOT COtrip data feed key (manage-api.cotrip.org). Empty turns the layer
+    # off. COtrip takes it only in the URL, so the jobs never log URLs and
+    # app/log_redact.py strips it from every log line.
+    cotrip_api_key: str = ""
+
     # --- Strava OAuth --------------------------------------------------------
     strava_client_id: str = ""
     strava_client_secret: str = ""
