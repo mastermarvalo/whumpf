@@ -84,6 +84,14 @@ class Settings(BaseSettings):
     # Least recently used tiles are evicted above this (decimal GB).
     pack_cache_max_gb: int = 100
 
+    # --- Offline packs in Cloudflare R2 (app/services/packs.py, runbook §12) -
+    # The pack worker uploads packs/<id>/<layer>.pmtiles here. Never logged.
+    # Empty: every build fails with "R2 is not configured".
+    r2_account_id: str = ""
+    r2_access_key_id: str = ""
+    r2_secret_access_key: str = ""
+    r2_bucket_packs: str = ""
+
     # --- Strava OAuth --------------------------------------------------------
     strava_client_id: str = ""
     strava_client_secret: str = ""

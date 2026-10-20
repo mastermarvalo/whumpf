@@ -267,8 +267,8 @@ podman run --rm --network host \
     'mc alias set backup "$ENDPOINT" "$KEY" "$SECRET" >/dev/null && \
      mc cp "backup/$BUCKET/postgres/whumpf-<utc>.dump" /out/'
 
-# 2. Restore (replaces the live DB — destructive; stop the api first)
-make stop-api
+# 2. Restore (replaces the live DB — destructive; stop the api and pack worker first)
+make stop-api stop-pack-worker
 make db-restore FILE=/data/backups/whumpf-<utc>.dump CONFIRM=yes
 make up
 ```

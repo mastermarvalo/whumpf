@@ -45,3 +45,9 @@ def get_session() -> Generator[Session, None, None]:
         yield session
     finally:
         session.close()
+
+
+def open_session() -> Session:
+    """A session for a long-running job outside any request (the pack
+    worker). The caller closes it."""
+    return _sessionmaker()()

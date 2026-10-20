@@ -290,11 +290,11 @@ podman occasionally cuts off with "connection reset by peer"). A restore of
 one of these into a throwaway database was rehearsed on 2026-10-14; row
 counts matched.
 
-Restore a local dump (overwrites the live DB; stop the api first so nothing
-writes during the restore):
+Restore a local dump (overwrites the live DB; stop the api and the pack
+worker first so nothing writes during the restore):
 
 ```bash
-make stop-api
+make stop-api stop-pack-worker
 make db-restore FILE=/data/backups/whumpf-<utc>.dump CONFIRM=yes
 make up
 ```
@@ -1151,13 +1151,15 @@ Cron (user crontab, with the `XDG_RUNTIME_DIR` and `DOCKER_HOST` lines from
 - **To start over:** delete `dem-cogs/roads/<region>/` and run
   `make roads-refresh ARGS=--force`. Nothing needs backing up.
 
-## 12. Offline pack tile cache
+## 12. Offline packs: tile cache and pack worker
 
-The tiles offline packs are built from. The iPhone app downloads a pack as
-one PMTiles file per layer for a box up to ~25 x 25 km; the pack worker
-(not built yet, step B2) reads every tile through this cache. Code:
-`app/services/pack_cache.py`, `app/services/terrain_tiles.py` (shared with
-the live `/tiles` endpoints).
+The iPhone app downloads a pack as one PMTiles file per layer for a box up
+to 25 x 25 km. The `pack-worker` service builds queued packs into Cloudflare
+R2, reading every tile through the tile cache below. Code:
+`app/services/pack_cache.py` (the cache), `app/services/terrain_tiles.py`
+(shared with the live `/tiles` endpoints), `app/services/packs.py` (tiles,
+PMTiles, R2) and `app/jobs/pack_worker.py` (the service and CLI). The
+endpoints that queue and hand out packs are step B3 (not built yet).
 
 ### Layers
 
@@ -1202,13 +1204,148 @@ version is made again when next asked for.
   error pages and empty bodies are never stored.
 - Our tiles: at most 2 at a time in their own 2-thread pool, so packs don't
   slow the live map (slope and aspect go through the same TiTiler).
-- These limits hold within one process. **The pack worker (B2) must run as
-  a single process.**
+- These limits hold within one process. **The pack worker must run as a
+  single process** (see below; a second one exits).
 
 ### Clearing
 
-To drop a layer, stop the pack worker and delete its `.sqlite` file (with
-`-wal` and `-shm`). Nothing needs backing up; everything can be made again.
+To drop a layer, stop the pack worker (`make stop-pack-worker`) and delete
+its `.sqlite` file (with `-wal` and `-shm`). Nothing needs backing up;
+everything can be made again.
+
+### The pack worker
+
+- Service `pack-worker` in `compose.yml`: the api image running
+  `python -m app.jobs.pack_worker run`. **One process, one build at a
+  time; never scale it.** It holds a Postgres advisory lock, so a second
+  worker (or `make pack-build-once` while the service runs) exits.
+- It never runs migrations. On start it waits for the `packs` table (the
+  api's entrypoint creates it), empties `/data/pack-cache/build/`, and puts
+  packs left `building` by a crash back in the queue (a pack fails after
+  its third start). Then it takes the oldest `queued` pack every 5 s.
+- `make stop-pack-worker` (or a deploy) stops a build cleanly: its uploads
+  are deleted and it goes back to the queue without using up a start.
+- Mounts: `/data/pack-cache` read-write (it is the only writer),
+  `/data/martin-tiles` read-only (ski). Stop it with the api before a
+  database restore (`make stop-api stop-pack-worker`).
+
+### A build
+
+1. The box is rounded out to the zoom 14 grid (~1.9 km tiles in Colorado).
+   Every layer covers that at its zooms (table above); elevation also gets
+   two more zoom 14 tiles on every side, for the runout check on the phone.
+   Lower zooms are the parents of that area, higher zooms its children.
+2. One layer at a time, tiles in PMTiles tile ID order through the cache
+   (32 asked ahead; the cache's limits decide how many run at once), into a
+   PMTiles v3 file in `/data/pack-cache/build/<pack id>/`: tiles as made
+   (JPEG, PNG, gzipped MVT), gzipped directories, identical tiles stored
+   once (by SHA-256; `pmtiles`' own Writer used Python's `hash()`), empty
+   answers left out, the covered bounds and zooms in the header. Metadata:
+   layer, region, pack id, source version, attribution, tile size,
+   `encoding: terrarium` for elevation, `vector_layers` for ski. A layer
+   with no tiles at all (no ski runs in the box) gets no file.
+3. The layer's source version is read before and after; if a COG or the
+   ski file changed meanwhile, the layer is built once more, then the pack
+   fails.
+4. Upload to R2 at `packs/<pack id>/<layer>.pmtiles` with Content-MD5,
+   then checked by R2's ETag (the MD5) and size. Bytes and MD5 go in
+   `files`.
+5. `ready` with `built_at`; or `failed` with a short reason, its uploads
+   deleted, and the next pack starts. The build folder is removed either
+   way. Nothing logs the R2 keys or endpoint (botocore messages are reduced
+   to their error code).
+
+Progress (`tiles_done` of `tiles_total`) is saved about once a second. Each
+layer logs a line `pack <id> topo: <n> tiles (<n> made, <n> from the
+cache), <n> in the file, <bytes> bytes, <seconds> s`; for topo and imagery
+"made" is the number of tiles asked of USGS.
+
+### The packs table (migration `0002_packs`)
+
+`id` (UUID), `region`, `bbox` (the box as asked for, POLYGON 4326),
+`layers`, `source_versions` (`{layer: version}`, null for USGS), `status`
+(`queued | building | ready | failed`), `attempts`, `tiles_done`,
+`tiles_total`, `error`, `files` (`[{layer, version, bytes, md5, key}]`;
+bytes 0 and key null for a layer with no tiles), `requested_by` (a user id,
+no FK; set to null when that account is deleted), `created_at`, `built_at`,
+`last_requested_at`. Reusing a ready pack for the same box and cleaning old
+packs out of R2 are B3's job; nothing deletes them yet.
+
+### Settings
+
+`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` (an R2 API
+token with Object Read & Write on the packs bucket only) and
+`R2_BUCKET_PACKS`. Passed to the api too, for B3's download links. Empty:
+every build fails with "R2 is not configured".
+
+### Commands
+
+```bash
+make pack-queue ARGS="--bbox W,S,E,N"     # [--region colorado] [--layers topo,slope]
+make pack-list                            # newest packs: status, progress, files, errors
+make logs-pack-worker
+make stop-pack-worker                     # make up starts it again
+make pack-build-once                      # only while the service is stopped
+```
+
+A stuck or unwanted pack: `make stop-pack-worker`, then in `make psql`
+`UPDATE packs SET status = 'failed', error = 'cancelled by hand' WHERE id
+= '<id>';` and `make up`.
+
+### First deploy (B2)
+
+`0002_packs` is the first migration since prod was stamped at
+`0001_baseline`; do the restore rehearsal first (§6).
+
+1. The R2 bucket named in `R2_BUCKET_PACKS` exists and the four `R2_*`
+   are set in `.env`; `USGS_CONTACT` is set; `/data/pack-cache` exists.
+2. `make up`: builds the image; the api runs `alembic upgrade head`
+   (creates `packs`) and `pack-worker` starts.
+3. `make health` is `"ready": true` with schema at `0002_packs`;
+   `make ps` lists `whumpf-pack-worker`; `make logs-pack-worker` shows
+   `pack worker ready`.
+
+### End-to-end check: Berthoud Pass (after the first deploy)
+
+About 10 x 10 km around the pass. Expected: rounded to 11.3 x 13.1 km, and
+topo 915, imagery 915, slope 75, aspect 75, elevation 163, ski 75 tiles.
+
+1. Queue it, with every layer:
+
+   ```bash
+   make pack-queue ARGS="--bbox -105.835,39.753,-105.719,39.843"
+   ```
+
+   It prints the pack id, the size before and after rounding and the tile
+   count per layer; check them against the numbers above.
+2. Watch it build: `make logs-pack-worker`. Note each layer's line (time,
+   tiles made vs from the cache, bytes) and the final `ready` line. The
+   first run fetches nearly every USGS tile; slope, aspect and elevation
+   are made from the COGs.
+3. `make pack-list`: status `ready`, `tiles_done` = `tiles_total` (2,218),
+   six files (ski may have no file if OSM has no runs in the box) with
+   bytes and MD5.
+4. Read the files back from R2 and compare MD5s with `make pack-list`:
+
+   ```bash
+   set -a; . ./.env; set +a
+   mkdir -p /tmp/berthoud
+   podman run --rm --network host \
+       -e ENDPOINT=https://$R2_ACCOUNT_ID.r2.cloudflarestorage.com \
+       -e KEY=$R2_ACCESS_KEY_ID -e SECRET=$R2_SECRET_ACCESS_KEY -e BUCKET=$R2_BUCKET_PACKS \
+       -v /tmp/berthoud:/out --entrypoint sh quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z -c \
+       'mc alias set r2 "$ENDPOINT" "$KEY" "$SECRET" >/dev/null && \
+        mc cp --recursive "r2/$BUCKET/packs/<pack id>/" /out/'
+   md5sum /tmp/berthoud/*.pmtiles
+   ```
+
+   Optionally open one at <https://pmtiles.io> (drag the file in; it stays
+   in the browser) to look at the tiles and header.
+5. Queue the same box again. The second build should show `0 made` for
+   topo and imagery (all from the cache) and take seconds per layer.
+6. Report per layer: time, size, USGS tiles fetched vs from the cache, for
+   both runs. Then `rm -r /tmp/berthoud`. The two packs stay in R2 until
+   B3's cleanup (or delete `packs/<id>/` by hand).
 
 ## Troubleshooting
 

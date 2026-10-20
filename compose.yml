@@ -222,6 +222,10 @@ services:
       USGS_CONTACT: ${USGS_CONTACT:-}
       PACK_CACHE_DIR: ${PACK_CACHE_DIR:-/data/pack-cache}
       PACK_CACHE_MAX_GB: ${PACK_CACHE_MAX_GB:-100}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET_PACKS: ${R2_BUCKET_PACKS:-}
     volumes:
       - ./backend/app:/app/app
       # Tests aren't copied into the image; mount them so `make test-api` runs
@@ -243,6 +247,52 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+
+  # ---------------------------------------------------------------------------
+  # pack-worker — builds queued offline packs into R2 (docs/runbook.md §12).
+  # ONE process only: never scale it. Its tile limits hold per process and
+  # it is the only writer of /data/pack-cache (an advisory lock makes a
+  # second worker exit). Same image as the api; it never runs migrations,
+  # so it starts after the api (whose entrypoint does).
+  # ---------------------------------------------------------------------------
+  pack-worker:
+    # Built by the api service; never pulled.
+    image: whumpf-api:dev
+    pull_policy: never
+    container_name: whumpf-pack-worker
+    network_mode: host
+    restart: unless-stopped
+    command: ["uv", "run", "python", "-m", "app.jobs.pack_worker", "run"]
+    # Time to stop a build, delete its uploads and queue it again.
+    stop_grace_period: 30s
+    environment:
+      WHUMPF_ENV: ${WHUMPF_ENV:-dev}
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-whumpf}:${POSTGRES_PASSWORD}@localhost:5432/${POSTGRES_DB:-whumpf}
+      DB_POOL_SIZE: "2"
+      DB_MAX_OVERFLOW: "2"
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET required}
+      S3_ENDPOINT: http://localhost:9000
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      S3_BUCKET_DEM_COGS: dem-cogs
+      TITILER_URL: http://localhost:8001
+      USGS_CONTACT: ${USGS_CONTACT:-}
+      PACK_CACHE_DIR: ${PACK_CACHE_DIR:-/data/pack-cache}
+      PACK_CACHE_MAX_GB: ${PACK_CACHE_MAX_GB:-100}
+      R2_ACCOUNT_ID: ${R2_ACCOUNT_ID:-}
+      R2_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+      R2_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+      R2_BUCKET_PACKS: ${R2_BUCKET_PACKS:-}
+    volumes:
+      - ./backend/app:/app/app
+      - /data/pack-cache:/data/pack-cache
+      # ski_<region>.mbtiles for the ski layer.
+      - /data/martin-tiles:/data/martin-tiles:ro
+    depends_on:
+      api:
+        condition: service_started
+      titiler:
+        condition: service_started
 
   # ---------------------------------------------------------------------------
   # frontend — Vite dev server OR nginx serving a built bundle, depending on

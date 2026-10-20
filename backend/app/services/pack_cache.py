@@ -24,11 +24,12 @@ a single process.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import sqlite3
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
@@ -217,6 +218,19 @@ def _read_mbtiles(path: Path, z: int, x: int, y: int) -> bytes:
     return bytes(row[0]) if row else b""
 
 
+def read_mbtiles_metadata(path: Path) -> dict:
+    """The parsed `json` row of an MBTiles file's metadata (vector_layers
+    and so on); {} if it has none."""
+    if not path.is_file():
+        raise PackTileError(f"{path.name} is missing; run make ski-tiles-refresh")
+    con = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    try:
+        row = con.execute("SELECT value FROM metadata WHERE name='json'").fetchone()
+    finally:
+        con.close()
+    return json.loads(row[0]) if row else {}
+
+
 def _retry_after(r: httpx.Response) -> float:
     try:
         return min(max(float(r.headers.get("retry-after", 0)), 0.0), RETRY_AFTER_MAX_S)
@@ -257,6 +271,8 @@ class PackCache:
         self._in_flight: dict[tuple, asyncio.Future[bytes]] = {}
         self._etags: dict[str, tuple[str, float]] = {}
         self._written = 0
+        # (layer, "made" | "cached") -> tiles, for the pack worker's log.
+        self.stats: Counter[tuple[str, str]] = Counter()
 
     async def aclose(self) -> None:
         for store in self._stores.values():
@@ -286,6 +302,7 @@ class PackCache:
         row = store.get(z, x, y)
         if row is not None and self._fresh(spec, row, version, now):
             store.touch(z, x, y, now)
+            self.stats[(layer, "cached")] += 1
             return row[0]
 
         # Two packs asking for the same tile at once share one make.
@@ -316,6 +333,7 @@ class PackCache:
         else:
             data = await self._make_ski(region, z, x, y)
         store.put(z, x, y, data, version, int(self._clock()))
+        self.stats[(spec.name, "made")] += 1
         self._written += len(data)
         if self._written >= EVICT_EVERY_BYTES:
             self._written = 0
@@ -392,6 +410,12 @@ class PackCache:
             return await loop.run_in_executor(self._pool, _read_mbtiles, self._ski_path(region), z, x, y)
 
     # ── source versions ──
+
+    async def source_version(self, layer: str, region: str) -> str | None:
+        """The layer's version as a whole (None for USGS layers): what its
+        top zooms are made from, which for elevation is both DEMs."""
+        spec = LAYERS[layer]
+        return await self._source_version(spec, region, spec.maxzoom)
 
     async def _source_version(self, spec: Layer, region: str, z: int) -> str | None:
         if spec.kind == "usgs":

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from alembic import command
+from alembic.script import ScriptDirectory
 from fastapi.testclient import TestClient
 from sqlalchemy import inspect
 from sqlalchemy.engine import make_url
@@ -71,7 +72,8 @@ def test_fixtures_refuse_any_database_but_whumpf_test():
             alembic_config(url)
 
 
-def test_readyz_reports_schema_at_head(engine):
+def test_readyz_reports_schema_at_head(engine, test_db_url):
+    head = ScriptDirectory.from_config(alembic_config(test_db_url)).get_heads()
     body = TestClient(app).get("/readyz").json()
     assert body["checks"]["schema"]["ok"] is True
-    assert body["checks"]["schema"]["revision"] == ["0001_baseline"]
+    assert body["checks"]["schema"]["revision"] == head == ["0002_packs"]

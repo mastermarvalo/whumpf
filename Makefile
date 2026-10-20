@@ -45,6 +45,10 @@ build-api:  ## build the api image without restarting the running api
 stop-api:  ## stop only the api (e.g. before make db-restore); make up starts it again
 	$(COMPOSE) stop api
 
+.PHONY: stop-pack-worker
+stop-pack-worker:  ## stop only the pack worker (a build in progress is queued again); make up starts it again
+	$(COMPOSE) stop pack-worker
+
 .PHONY: restart
 restart:  ## restart all services without rebuilding
 	$(COMPOSE) restart
@@ -62,6 +66,10 @@ logs:  ## tail all logs
 .PHONY: logs-api
 logs-api:  ## tail the api logs only
 	$(COMPOSE) logs -f --tail=200 api
+
+.PHONY: logs-pack-worker
+logs-pack-worker:  ## tail the pack worker logs (per-layer times, sizes, USGS made vs cached)
+	$(COMPOSE) logs -f --tail=200 pack-worker
 
 .PHONY: logs-db
 logs-db:  ## tail the postgis logs
@@ -254,6 +262,21 @@ roads-refresh:  ## refresh the CDOT road feeds that are due (5-min job); ARGS=--
 .PHONY: roads-sample
 roads-sample:  ## record the distinct CDOT condition/incident/impact values (15-min cron for a week); ARGS=--report prints them
 	$(API_RUN) uv run python -m app.jobs.roads_sample $(ARGS)
+
+# --- offline packs ------------------------------------------------------------
+# The pack-worker service builds queued packs into R2: docs/runbook.md §12.
+
+.PHONY: pack-queue
+pack-queue:  ## queue an offline pack: make pack-queue ARGS="--bbox W,S,E,N [--region colorado] [--layers topo,slope]"
+	$(API_RUN) uv run python -m app.jobs.pack_worker queue $(ARGS)
+
+.PHONY: pack-list
+pack-list:  ## the newest offline packs: status, progress, files, errors
+	$(API_RUN) uv run python -m app.jobs.pack_worker list $(ARGS)
+
+.PHONY: pack-build-once
+pack-build-once:  ## build the oldest queued pack in the foreground, then exit (only while the pack-worker service is stopped)
+	$(COMPOSE) run --rm --no-deps -T pack-worker uv run python -m app.jobs.pack_worker once
 
 # --- tests / lint -----------------------------------------------------------
 
