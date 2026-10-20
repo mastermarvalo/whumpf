@@ -22,6 +22,7 @@ import base64
 import hashlib
 import logging
 import math
+import re
 import shutil
 import time
 from collections import deque
@@ -368,15 +369,30 @@ class PackStore(Protocol):
     def delete(self, keys: list[str]) -> None: ...
 
 
+_R2_ACCOUNT_ID = re.compile(r"[0-9a-f]{32}")
+
+
+def check_r2_settings() -> None:
+    """Raises PackBuildError if the R2_* settings can't work. Never puts a
+    value in the message."""
+    s = get_settings()
+    if not (s.r2_account_id and s.r2_access_key_id and s.r2_secret_access_key and s.r2_bucket_packs):
+        raise PackBuildError("R2 is not configured (R2_* settings)")
+    if not _R2_ACCOUNT_ID.fullmatch(s.r2_account_id):
+        raise PackBuildError(
+            "R2_ACCOUNT_ID is the 32-character account ID, not the endpoint URL"
+            if "://" in s.r2_account_id or "." in s.r2_account_id
+            else "R2_ACCOUNT_ID must be the 32-character account ID")
+
+
 class R2Store:
     """The packs bucket in Cloudflare R2 (R2_* settings)."""
 
     content_type = "application/vnd.pmtiles"
 
     def __init__(self, client: Any = None) -> None:
+        check_r2_settings()
         s = get_settings()
-        if not (s.r2_account_id and s.r2_access_key_id and s.r2_secret_access_key and s.r2_bucket_packs):
-            raise PackBuildError("R2 is not configured (R2_* settings)")
         self.bucket = s.r2_bucket_packs
         self._s3 = client or boto3.client(
             "s3",

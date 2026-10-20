@@ -472,17 +472,20 @@ def test_account_delete_forgets_the_requester(db_session, users, make_client):
 
 # ── R2 ─────────────────────────────────────────────────────────────────────────
 
+ACCOUNT = "0123456789abcdef0123456789abcdef"
+
+
 @pytest.fixture
 def r2_settings(monkeypatch):
     settings = get_settings()
-    for name, value in (("r2_account_id", "acct123"), ("r2_access_key_id", "AKIDSECRETID"),
+    for name, value in (("r2_account_id", ACCOUNT), ("r2_access_key_id", "AKIDSECRETID"),
                         ("r2_secret_access_key", "very-secret-key"), ("r2_bucket_packs", "packs-bucket")):
         monkeypatch.setattr(settings, name, value)
 
 
 def test_r2_upload_sends_md5_and_checks_the_copy(r2_settings, tmp_path, caplog):
     store = R2Store()
-    assert store._s3.meta.endpoint_url == "https://acct123.r2.cloudflarestorage.com"
+    assert store._s3.meta.endpoint_url == f"https://{ACCOUNT}.r2.cloudflarestorage.com"
     path = tmp_path / "topo.pmtiles"
     path.write_bytes(b"PMTiles data")
     md5, size = packs.file_md5(path)
@@ -529,6 +532,39 @@ def test_r2_content_md5_is_the_files_md5(r2_settings, tmp_path):
     store.upload(path, "packs/x/topo.pmtiles", md5, size)
     assert base64.b64decode(sent["ContentMD5"]) == hashlib.md5(b"PMTiles data").digest()
     assert sent["ContentLength"] == size
+
+
+@pytest.mark.parametrize("value, message", [
+    (f"https://{ACCOUNT}.r2.cloudflarestorage.com", "the 32-character account ID, not the endpoint URL"),
+    (f"{ACCOUNT}.r2.cloudflarestorage.com", "not the endpoint URL"),
+    (ACCOUNT[:-1], "must be the 32-character account ID"),
+    (ACCOUNT.upper(), "must be the 32-character account ID"),
+])
+def test_bad_account_id_is_refused_without_echoing_it(r2_settings, monkeypatch, value, message):
+    monkeypatch.setattr(get_settings(), "r2_account_id", value)
+    with pytest.raises(PackBuildError, match=message) as info:
+        R2Store()
+    assert value not in str(info.value)
+
+
+def test_bad_account_id_fails_the_pack_before_any_tile(db_session, ski_dir, tmp_path, r2_settings, monkeypatch):
+    monkeypatch.setattr(get_settings(), "r2_account_id", f"https://{ACCOUNT}.r2.cloudflarestorage.com")
+    pack = _pack(db_session, layers=["topo"])
+    claim_next(db_session)
+    cache = FakeCache(ski_dir)
+    asyncio.run(build_pack(db_session, pack, cache, R2Store, tmp_path / "build"))
+    assert pack.status == "failed" and "not the endpoint URL" in pack.error
+    assert cache.asked == []
+
+
+def test_worker_with_a_bad_account_id_stops_at_start(r2_settings, monkeypatch, caplog):
+    from app.jobs import pack_worker
+
+    monkeypatch.setattr(get_settings(), "r2_account_id", f"https://{ACCOUNT}.r2.cloudflarestorage.com")
+    monkeypatch.setattr(pack_worker, "_take_lock", lambda: pytest.fail("got past the settings check"))
+    assert pack_worker._serve() == 1
+    assert pack_worker._once() == 1
+    assert "not the endpoint URL" in caplog.text and ACCOUNT not in caplog.text
 
 
 def test_reason_drops_botocore_messages():

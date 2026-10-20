@@ -1,14 +1,15 @@
 """The pack worker: builds queued offline packs into R2, one at a time.
 
     compose service pack-worker      python -m app.jobs.pack_worker run
-    make pack-queue ARGS="--bbox W,S,E,N [--region colorado] [--layers topo,slope]"
+    make pack-queue ARGS="--bbox=W,S,E,N [--region colorado] [--layers topo,slope]"
     make pack-list                   the newest packs with their status
     make pack-build-once             build the oldest queued pack, then exit
                                      (only while the service is stopped)
 
 It must run as one process: B1's limits on USGS and on our tile makers hold
 within a process, and the SQLite cache files have one writer. A Postgres
-advisory lock makes a second worker exit. On start, packs left building by
+advisory lock makes a second worker exit, and so do bad R2_* settings
+(checked before anything else). On start, packs left building by
 a crash are queued again (failed after 3 starts). SIGTERM stops the current
 build, deletes its uploads and queues it again. docs/runbook.md §12.
 """
@@ -122,7 +123,19 @@ async def once() -> bool:
         session.close()
 
 
+def _settings_ok() -> bool:
+    """A bad R2 setting stops the worker at once, before any tiles are made."""
+    try:
+        packs.check_r2_settings()
+    except packs.PackBuildError as exc:
+        logger.error("%s; fix .env and recreate the pack worker (make up)", exc)
+        return False
+    return True
+
+
 def _serve() -> int:
+    if not _settings_ok():
+        return 1
     lock = _take_lock()
     if lock is None:
         logger.error("another pack worker is running")
@@ -154,6 +167,8 @@ def _serve() -> int:
 
 
 def _once() -> int:
+    if not _settings_ok():
+        return 1
     lock = _take_lock()
     if lock is None:
         print("the pack-worker service is running and will build queued packs itself; "
@@ -169,7 +184,7 @@ def _queue(args: argparse.Namespace) -> int:
     try:
         bbox = [float(v) for v in args.bbox.split(",")]
     except ValueError:
-        print("--bbox must be W,S,E,N in degrees", file=sys.stderr)
+        print("--bbox=W,S,E,N in degrees (with the =, as west is negative)", file=sys.stderr)
         return 2
     layers = args.layers.split(",") if args.layers else None
     session = open_session()
@@ -213,7 +228,7 @@ def main() -> None:
     sub.add_parser("run", help="the service: build queued packs until stopped")
     sub.add_parser("once", help="build the oldest queued pack, then exit")
     q = sub.add_parser("queue", help="queue a pack")
-    q.add_argument("--bbox", required=True, help="W,S,E,N in degrees")
+    q.add_argument("--bbox", required=True, help="--bbox=W,S,E,N in degrees (the = is needed: west is negative)")
     q.add_argument("--region", default="colorado")
     q.add_argument("--layers", help="comma-separated; default all")
     ls = sub.add_parser("list", help="the newest packs")

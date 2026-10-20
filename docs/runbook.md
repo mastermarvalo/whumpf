@@ -1275,13 +1275,17 @@ packs out of R2 are B3's job; nothing deletes them yet.
 
 `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` (an R2 API
 token with Object Read & Write on the packs bucket only) and
-`R2_BUCKET_PACKS`. Passed to the api too, for B3's download links. Empty:
-every build fails with "R2 is not configured".
+`R2_BUCKET_PACKS`. Passed to the api too, for B3's download links.
+`R2_ACCOUNT_ID` is the bare 32-character account ID, not the endpoint URL.
+The worker checks these first when it starts: if one is empty or the ID
+isn't 32 hex characters it logs why and exits (it restarts, so `make ps`
+shows it restarting) before making any tile. Fix `.env`, then `make up`
+(a restart keeps the old environment).
 
 ### Commands
 
 ```bash
-make pack-queue ARGS="--bbox W,S,E,N"     # [--region colorado] [--layers topo,slope]
+make pack-queue ARGS="--bbox=W,S,E,N"     # the = is needed: west is negative
 make pack-list                            # newest packs: status, progress, files, errors
 make logs-pack-worker
 make stop-pack-worker                     # make up starts it again
@@ -1313,7 +1317,7 @@ topo 915, imagery 915, slope 75, aspect 75, elevation 163, ski 75 tiles.
 1. Queue it, with every layer:
 
    ```bash
-   make pack-queue ARGS="--bbox -105.835,39.753,-105.719,39.843"
+   make pack-queue ARGS="--bbox=-105.835,39.753,-105.719,39.843"
    ```
 
    It prints the pack id, the size before and after rounding and the tile

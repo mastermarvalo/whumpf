@@ -267,7 +267,7 @@ roads-sample:  ## record the distinct CDOT condition/incident/impact values (15-
 # The pack-worker service builds queued packs into R2: docs/runbook.md §12.
 
 .PHONY: pack-queue
-pack-queue:  ## queue an offline pack: make pack-queue ARGS="--bbox W,S,E,N [--region colorado] [--layers topo,slope]"
+pack-queue:  ## queue an offline pack: make pack-queue ARGS="--bbox=W,S,E,N [--region colorado] [--layers topo,slope]"
 	$(API_RUN) uv run python -m app.jobs.pack_worker queue $(ARGS)
 
 .PHONY: pack-list
