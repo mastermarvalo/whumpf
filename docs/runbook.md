@@ -1151,6 +1151,65 @@ Cron (user crontab, with the `XDG_RUNTIME_DIR` and `DOCKER_HOST` lines from
 - **To start over:** delete `dem-cogs/roads/<region>/` and run
   `make roads-refresh ARGS=--force`. Nothing needs backing up.
 
+## 12. Offline pack tile cache
+
+The tiles offline packs are built from. The iPhone app downloads a pack as
+one PMTiles file per layer for a box up to ~25 x 25 km; the pack worker
+(not built yet, step B2) reads every tile through this cache. Code:
+`app/services/pack_cache.py`, `app/services/terrain_tiles.py` (shared with
+the live `/tiles` endpoints).
+
+### Layers
+
+| Layer | Zooms | Source | Stored as | Kept until |
+|---|---|---|---|---|
+| topo | 8-16 | USGS `USGSTopo` | JPEG as received | forever; a 404 for 30 days |
+| imagery | 8-16 | USGS `USGSImageryOnly` (NAIP) | JPEG as received | forever; a 404 for 30 days |
+| slope | 8-14 | TiTiler, `slope.tif` (no hires, as the app) | 512 px palette PNG | `slope.tif` changes |
+| aspect | 8-14 | TiTiler, `aspect.tif` | 512 px palette PNG | `aspect.tif` changes |
+| elevation | 8-14 | DEM render (z13+ hires, 10 m fallback) | 256 px Terrarium PNG, level 9 | `dem.tif` (or `dem_hires.tif`) changes |
+| ski | 8-14 | `/data/martin-tiles/ski_<region>.mbtiles` | gzipped MVT as stored | the file is republished |
+
+Slope, aspect and elevation use the live endpoints' own code and TiTiler
+parameters, so a pack tile decodes to the same pixels or metres as the live
+tile (tests in `tests/test_pack_cache.py`). Elevation with no data is the
+live endpoint's flat 0 m tile. A version is the MinIO ETag of the COGs
+(looked up at most every 10 min) or the ski file's mtime; a tile of an old
+version is made again when next asked for.
+
+### Files and settings
+
+- `PACK_CACHE_DIR` (default `/data/pack-cache`): one SQLite file per layer,
+  `topo.sqlite`, `imagery.sqlite`, and per region for ours,
+  `slope_colorado.sqlite` and so on. Table `tiles(z, x, y, data, made_at,
+  source_version, last_used_at)`; an empty `data` is a real empty answer
+  (USGS or TiTiler 404, no ski runs). Written only by the pack worker. The
+  api mounts the directory read-only for `/status`; create it before the
+  first `make up` (`mkdir -p /data/pack-cache`, done on the VM Oct 19, 2026).
+- `PACK_CACHE_MAX_GB` (default 100): above it the least recently used tiles,
+  across all layers, are deleted down to 90% and the files shrink. Checked
+  after every 256 MB written. A pack is ~270 MB (topo ~60, imagery ~95,
+  slope ~40, aspect ~50, elevation ~25), so 100 GB holds ~370 packs that
+  don't overlap. `/status` shows `pack_cache: "12.3 GB of 100 GB"` and is
+  unhealthy only above 110% (eviction not keeping up).
+- `USGS_CONTACT`: an email address for the User-Agent of every USGS request.
+  Empty turns topo and imagery off (they refuse to fetch).
+
+### Limits
+
+- USGS: at most 4 requests at a time, retried with backoff on network
+  errors, 429 (Retry-After honoured up to 60 s) and 5xx. Failures, HTML
+  error pages and empty bodies are never stored.
+- Our tiles: at most 2 at a time in their own 2-thread pool, so packs don't
+  slow the live map (slope and aspect go through the same TiTiler).
+- These limits hold within one process. **The pack worker (B2) must run as
+  a single process.**
+
+### Clearing
+
+To drop a layer, stop the pack worker and delete its `.sqlite` file (with
+`-wal` and `-shm`). Nothing needs backing up; everything can be made again.
+
 ## Troubleshooting
 
 ### `api` container restarts repeatedly

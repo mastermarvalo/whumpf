@@ -101,18 +101,27 @@ def breaker(name: str) -> CircuitBreaker:
     return b
 
 
-async def call_with_resilience(name: str, coro_factory, *, attempts: int = 3):
+def _is_429(exc: BaseException) -> bool:
+    return isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code == 429
+
+
+async def call_with_resilience(
+    name: str, coro_factory, *, attempts: int = 3, retry_429: bool = False,
+):
     """Run a coroutine under retry + circuit breaker.
 
     The breaker observes the *post-retry* outcome — one open-loop failure
-    burst should count as one failure, not three.
+    burst should count as one failure, not three. retry_429 also retries
+    429 Too Many Requests (off by default: Strava's 429 means wait 15 min).
     """
+    retryable = (lambda e: _is_retryable(e) or _is_429(e)) if retry_429 else _is_retryable
+
     async def _retry_wrapper():
         try:
             async for attempt in AsyncRetrying(
                 stop=stop_after_attempt(attempts),
                 wait=wait_exponential_jitter(initial=0.5, max=4.0),
-                retry=retry_if_exception(_is_retryable),
+                retry=retry_if_exception(retryable),
                 reraise=True,
             ):
                 with attempt:

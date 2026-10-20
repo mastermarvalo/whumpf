@@ -219,6 +219,9 @@ services:
       WINDY_WEBCAMS_API_KEY: ${WINDY_WEBCAMS_API_KEY:-}
       NPS_API_KEY: ${NPS_API_KEY:-}
       COTRIP_API_KEY: ${COTRIP_API_KEY:-}
+      USGS_CONTACT: ${USGS_CONTACT:-}
+      PACK_CACHE_DIR: ${PACK_CACHE_DIR:-/data/pack-cache}
+      PACK_CACHE_MAX_GB: ${PACK_CACHE_MAX_GB:-100}
     volumes:
       - ./backend/app:/app/app
       # Tests aren't copied into the image; mount them so `make test-api` runs
@@ -226,6 +229,9 @@ services:
       - ./backend/tests:/app/tests
       # Mounted so `make makemigration` writes new revisions into the repo.
       - ./backend/migrations:/app/migrations
+      # Offline pack cache, written only by the pack worker; read here for
+      # the size line on /status (docs/runbook.md §12).
+      - /data/pack-cache:/data/pack-cache:ro
     ulimits:
       nofile:
         soft: 65536

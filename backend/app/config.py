@@ -74,6 +74,16 @@ class Settings(BaseSettings):
     # app/log_redact.py strips it from every log line.
     cotrip_api_key: str = ""
 
+    # --- Offline pack tile cache (app/services/pack_cache.py, runbook §12) ---
+    # Contact (an email address) put in the User-Agent of every USGS topo and
+    # imagery request. Empty: the USGS pack layers refuse to fetch.
+    usgs_contact: str = ""
+    # One SQLite file per layer, written only by the pack worker. The api
+    # mounts it read-only for the /status size line.
+    pack_cache_dir: str = "/data/pack-cache"
+    # Least recently used tiles are evicted above this (decimal GB).
+    pack_cache_max_gb: int = 100
+
     # --- Strava OAuth --------------------------------------------------------
     strava_client_id: str = ""
     strava_client_secret: str = ""

@@ -51,6 +51,7 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 - Done: daily backups at 03:00 (local 14-day dump plus Cloudflare R2, read back and checksum-verified). Cloudflare caches `/tiles/*` (verified).
 - Done: mountain cameras backend (`docs/runbook.md` §10): NPS (RMNP) and Windy webcam lists per region at `GET /cameras`, a fresh image per tap at `/cameras/{id}/image`, hourly `make cameras-refresh` cron at :10 (NPS every 6 h, Windy daily). Keys `NPS_API_KEY`, `WINDY_WEBCAMS_API_KEY`. CDOT cameras are tabled. The app layer is a Phase 4 prompt.
 - Done: road conditions backend (`docs/runbook.md` §11): CDOT COtrip conditions per segment, incidents and planned events at `GET /roads`, simplified segment lines at `/tiles/roads/segments/<rev>.geojson`, `make roads-refresh` cron every 5 min (`2-59/5`). Key `COTRIP_API_KEY`; empty turns the layer off. `make roads-sample` (every 15 min for a week) records CDOT's values; chain law, traction law and avalanche control get mapped from it ("Later"). The app layer is a Phase 4 prompt.
+- Done: offline pack tile cache, step B1 (`docs/runbook.md` §12): `app/services/pack_cache.py` makes or fetches each pack tile once (topo, imagery from USGS; slope, aspect, elevation, ski from the live endpoints' shared code in `app/services/terrain_tiles.py`) into SQLite under `/data/pack-cache/`, 100 GB LRU cap, `/status` item. Next: B2 pack worker (single process), B3 endpoints. `USGS_CONTACT` must be set for topo and imagery.
 - Open work is in the "Later" list in `docs/PLAN.md`.
 
 ## Don't

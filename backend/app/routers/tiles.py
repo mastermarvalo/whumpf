@@ -18,15 +18,13 @@ from contourpy import contour_generator
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
 from fastapi.responses import JSONResponse
 from PIL import Image, ImageDraw
-from pyproj import Transformer
-from rasterio.crs import CRS
 from rasterio.transform import from_bounds
 from rasterio.warp import Resampling, reproject
 
 from app.config import get_settings, validate_region
 from app.http_retry import CircuitOpenError, call_with_resilience
 from app.regions import REGIONS
-from app.services import snowfall
+from app.services import snowfall, terrain_tiles
 from app.tile_tokens import require_tile_access
 
 # Web-mercator tile coordinates are bounded by z (we serve at most z16) and
@@ -95,55 +93,11 @@ def _cache_put(store: OrderedDict[tuple, bytes], key: tuple, val: bytes, limit: 
         if len(store) > limit:
             store.popitem(last=False)
 
-# ── coordinate helpers ─────────────────────────────────────────────────────────
+# ── shared with the offline pack cache (services/terrain_tiles.py) ─────────────
 
-_WM_CRS = CRS.from_epsg(3857)
-_WGS84_TO_WM = Transformer.from_crs("EPSG:4326", "EPSG:3857", always_xy=True)
-
-
-def _tile_mercator_bounds(z: int, x: int, y: int) -> tuple[float, float, float, float]:
-    """Return (xmin, ymin, xmax, ymax) in EPSG:3857 for a standard XYZ tile."""
-    n = 2 ** z
-    west = x / n * 360.0 - 180.0
-    east = (x + 1) / n * 360.0 - 180.0
-    north = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * y / n))))
-    south = math.degrees(math.atan(math.sinh(math.pi * (1.0 - 2.0 * (y + 1) / n))))
-    xmin, ymin = _WGS84_TO_WM.transform(west, south)
-    xmax, ymax = _WGS84_TO_WM.transform(east, north)
-    return xmin, ymin, xmax, ymax
-
-
-def _to_palette_png(png: bytes) -> bytes:
-    """Blocking: re-encode a colormapped RGBA tile from TiTiler as a palette PNG.
-
-    A colormapped tile has at most 256 colours (the caltopo_slope ramp has 256,
-    its entry 0 being the transparent nodata colour; hsv has 256, of which a
-    0–360 rescale reaches 255, plus transparent nodata). Pixel-identical at
-    roughly half the size. Fully transparent pixels are first set to
-    (0,0,0,0), which looks the same. Over 256 colours, or if the palette PNG
-    isn't smaller (some flat plains tiles), the input is returned unchanged;
-    never quantized.
-    """
-    rgba = np.asarray(Image.open(io.BytesIO(png)).convert("RGBA")).copy()
-    rgba[rgba[..., 3] == 0] = 0
-    colours, index = np.unique(rgba.view(np.uint32).ravel(), return_inverse=True)
-    if len(colours) > 256:
-        logger.debug("tile has %d colours, serving it as RGBA", len(colours))
-        return png
-    palette = colours.view(np.uint8).reshape(-1, 4)
-    height, width = rgba.shape[:2]
-    out = Image.frombytes("P", (width, height), index.astype(np.uint8).tobytes())
-    out.putpalette(palette[:, :3].tobytes())
-    out.info["transparency"] = palette[:, 3].tobytes()
-    buf = io.BytesIO()
-    # Level 1 comes out slightly smaller than 6 or 9 on these tiles, and faster.
-    out.save(buf, format="PNG", compress_level=1)
-    return buf.getvalue() if buf.tell() < len(png) else png
-
-
-# CalTopo V1 slope colormap is pre-built as data/colormaps/caltopo_slope.npy and
-# registered with TiTiler via COLORMAP_DIRECTORY. Reference it by name to avoid
-# embedding ~2 KB of JSON in every tile request URL.
+_WM_CRS = terrain_tiles.WM_CRS
+_tile_mercator_bounds = terrain_tiles.tile_mercator_bounds
+_to_palette_png = terrain_tiles.to_palette_png
 
 
 @router.get("/slope/{z}/{x}/{y}")
@@ -161,45 +115,14 @@ async def slope_tile(
     validate_region(region)
     if z < 0 or z > _MAX_Z or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
         raise HTTPException(400, "tile coordinates out of range")
-    cog_name = "slope_hires.tif" if hires else "slope.tif"
-
     cache_key = (z, x, y, region, hires)
     if cached := _cache_get(_SLOPE_CACHE, cache_key):
         return Response(content=cached, media_type="image/png",
                         headers={"Cache-Control": "public, max-age=86400"})
 
-    settings = get_settings()
-    # vsicurl HTTP avoids GDAL's vsis3 driver, which breaks against MinIO
-    # when GDAL_HTTP_VERSION=2 is set (MinIO doesn't support h2c).
-    cog_url = (
-        f"/vsicurl/{settings.s3_endpoint}"
-        f"/{settings.s3_bucket_dem_cogs}/{region}/{cog_name}"
-    )
-
-    async def _do() -> httpx.Response:
-        r = await _HTTP.get(
-            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png",
-            params={
-                "url": cog_url,
-                "rescale": "0,60",
-                "nodata": "-9999",
-                "colormap_name": "caltopo_slope",
-                # No buffer: TiTiler's `buffer` returns tilesize+2*buffer px of
-                # neighbouring data, which MapLibre raster sources squeeze back
-                # into the tile's own extent — drawing a duplicated strip of the
-                # neighbour's slope at every seam. tilesize 512 still gives the
-                # 2:1 downscale anti-aliasing.
-                "tilesize": 512,
-            },
-        )
-        # 404 is "tile outside COG extent" — a normal empty-tile response.
-        # Don't raise so retry/breaker treat it as success.
-        if r.status_code != 404:
-            r.raise_for_status()
-        return r
-
     try:
-        resp = await call_with_resilience("titiler", _do)
+        resp = await terrain_tiles.fetch_colormap(
+            _HTTP, get_settings(), "slope", region, z, x, y, hires)
     except CircuitOpenError:
         raise HTTPException(503, "tile server temporarily unavailable")
     except httpx.RequestError as exc:
@@ -243,29 +166,9 @@ async def aspect_tile(
         return Response(content=cached, media_type="image/png",
                         headers={"Cache-Control": "public, max-age=86400"})
 
-    settings = get_settings()
-    cog_url = (
-        f"/vsicurl/{settings.s3_endpoint}"
-        f"/{settings.s3_bucket_dem_cogs}/{region}/aspect.tif"
-    )
-
-    async def _do() -> httpx.Response:
-        r = await _HTTP.get(
-            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png",
-            params={
-                "url": cog_url,
-                "rescale": "0,360",
-                "nodata": "-9999",
-                "colormap_name": "hsv",
-                "tilesize": 512,
-            },
-        )
-        if r.status_code != 404:
-            r.raise_for_status()
-        return r
-
     try:
-        resp = await call_with_resilience("titiler", _do)
+        resp = await terrain_tiles.fetch_colormap(
+            _HTTP, get_settings(), "aspect", region, z, x, y)
     except CircuitOpenError:
         raise HTTPException(503, "tile server temporarily unavailable")
     except httpx.RequestError as exc:
@@ -297,13 +200,7 @@ async def aspect_tile(
 _RENDER_PX = 512
 _OUT_PX = 256
 
-# Rasterio GDAL env vars for vsicurl access to the MinIO public bucket.
-_COG_ENV = {
-    "GDAL_DISABLE_READDIR_ON_OPEN": "EMPTY_DIR",
-    "CPL_VSIL_CURL_USE_HEAD": "FALSE",
-    "GDAL_HTTP_MULTIPLEX": "YES",
-    "GDAL_HTTP_VERSION": "2",
-}
+_COG_ENV = terrain_tiles.COG_ENV
 
 # Minor line: dark, semi-transparent, thin.  Major: darker, opaque-ish, thicker.
 # Pixel widths are at _RENDER_PX resolution (halved after LANCZOS downsample).
@@ -327,10 +224,7 @@ def _contour_intervals(z: int) -> tuple[float, float]:
     return 100.0, 100.0
 
 
-def _build_dem_url(settings, region: str, hires: bool = False) -> str:
-    """vsicurl HTTP URL for a DEM COG in MinIO — avoids S3 credential issues."""
-    name = "dem_hires.tif" if hires else "dem.tif"
-    return f"/vsicurl/{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{region}/{name}"
+_build_dem_url = terrain_tiles.build_dem_url
 
 
 def _render_contours(
@@ -637,78 +531,20 @@ async def terrain_filter_tile(
 # Encodes DEM COG data on-the-fly: elevation → R/G/B per terrarium spec
 #   elevation = (R * 256 + G + B / 256) - 32768
 
-_TERRAIN_PX  = 256  # MapLibre requests exactly 256×256 terrain tiles.
-_TERRAIN_BUF = 1    # 1-px border overlap — prevents seams from independent bilinear resampling.
-
 # A read that fails or times out must not look like "no data": it answers 503
 # no-store so neither this cache nor Cloudflare keeps it and the map retries.
-_TERRAIN_COG_ENV   = dict(_COG_ENV, GDAL_HTTP_TIMEOUT="10")
 _TERRAIN_TIMEOUT_S = 30.0  # backstop over GDAL's own timeout, incl. pool queueing
 _TERRAIN_HEADERS   = {"Cache-Control": "public, max-age=86400"}
 
-
-def _flat_terrain_png() -> bytes:
-    """256×256 tile at 0 m. MapLibre's raster-dem needs every tile the same
-    size, so empty areas get this instead of a 204 ("dem dimension mismatch").
-    Terrarium: 0 m → 0 + 32768 = 128*256 + 0 + 0/256 → (128, 0, 0)."""
-    out = io.BytesIO()
-    Image.new("RGB", (_TERRAIN_PX, _TERRAIN_PX), (128, 0, 0)).save(out, format="PNG")
-    return out.getvalue()
-
-
-_FLAT_TERRAIN_PNG = _flat_terrain_png()
+_FLAT_TERRAIN_PNG = terrain_tiles.FLAT_TERRAIN_PNG
 
 
 def _render_terrain_rgb(
     dem_url: str,
     xmin: float, ymin: float, xmax: float, ymax: float,
 ) -> bytes | None:
-    """Blocking: read DEM window and encode as terrarium-RGB PNG.
-
-    Returns None when the window has no valid pixels; raises if the read fails.
-    Renders at (_TERRAIN_PX + 2*_TERRAIN_BUF)² then crops to _TERRAIN_PX².
-    The extra border pixels ensure bilinear resampling at tile edges uses
-    data from the neighbouring tile's extent, eliminating seam artifacts.
-    """
-    buf   = _TERRAIN_BUF
-    total = _TERRAIN_PX + 2 * buf
-    pw = (xmax - xmin) / _TERRAIN_PX  # mercator units per pixel
-    ph = (ymax - ymin) / _TERRAIN_PX
-    xmin_b, ymin_b = xmin - buf * pw, ymin - buf * ph
-    xmax_b, ymax_b = xmax + buf * pw, ymax + buf * ph
-
-    data = np.full((total, total), np.nan, dtype=np.float32)
-    dst_transform = from_bounds(xmin_b, ymin_b, xmax_b, ymax_b, total, total)
-    with rasterio.Env(**_TERRAIN_COG_ENV), rasterio.open(dem_url) as src:
-        reproject(
-            source=rasterio.band(src, 1),
-            destination=data,
-            src_transform=src.transform,
-            src_crs=src.crs,
-            src_nodata=src.nodata,
-            dst_transform=dst_transform,
-            dst_crs=_WM_CRS,
-            dst_nodata=np.nan,
-            resampling=Resampling.bilinear,
-        )
-
-    # Crop border pixels back to 256×256.
-    data = data[buf:buf + _TERRAIN_PX, buf:buf + _TERRAIN_PX]
-
-    if np.all(np.isnan(data)):
-        return None  # no valid pixels — let fallback handle it
-
-    elev    = np.where(np.isnan(data), 0.0, data).astype(np.float64)
-    val     = np.clip(elev + 32768.0, 0.0, 65535.0)
-    int_val = np.floor(val).astype(np.uint32)
-    r = (int_val >> 8).astype(np.uint8)
-    g = (int_val & 0xFF).astype(np.uint8)
-    b = np.floor((val - np.floor(val)) * 256.0).astype(np.uint8)
-
-    img = np.stack([r, g, b], axis=-1)
-    out = io.BytesIO()
-    Image.fromarray(img, mode="RGB").save(out, format="PNG", compress_level=1)
-    return out.getvalue()
+    """Blocking: terrain_tiles.render_terrain_rgb at PNG level 1 (fast)."""
+    return terrain_tiles.render_terrain_rgb(dem_url, xmin, ymin, xmax, ymax, compress_level=1)
 
 
 def _render_terrain_rgb_with_fallback(
@@ -719,16 +555,8 @@ def _render_terrain_rgb_with_fallback(
 
     Returns None when neither has data; raises if the last read fails.
     """
-    try:
-        result = _render_terrain_rgb(dem_url, xmin, ymin, xmax, ymax)
-    except Exception as exc:
-        if not fallback_url:
-            raise
-        logger.warning("terrain_rgb hires read failed, trying 10m: %s", exc)
-        result = None
-    if result is None and fallback_url:
-        result = _render_terrain_rgb(fallback_url, xmin, ymin, xmax, ymax)
-    return result
+    return terrain_tiles.with_fallback(
+        lambda url: _render_terrain_rgb(url, xmin, ymin, xmax, ymax), dem_url, fallback_url)
 
 
 @router.get("/terrain_rgb/{z}/{x}/{y}")

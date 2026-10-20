@@ -4,6 +4,8 @@ each layer (test_snowfall.py, test_roads.py, ...)."""
 
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
 from app.routers import status
@@ -71,3 +73,25 @@ def test_status_rate_limited_per_ip(make_client, checks):
     resp = client.get("/status")
     assert resp.status_code == 429
     assert int(resp.headers["Retry-After"]) >= 1
+
+
+def test_pack_cache_item(monkeypatch, tmp_path):
+    from app.config import get_settings
+
+    monkeypatch.setattr(status.pack_cache, "GB", 1_000_000)  # read MB as GB
+    monkeypatch.setattr(get_settings(), "pack_cache_max_gb", 100)
+    monkeypatch.setattr(get_settings(), "pack_cache_dir", str(tmp_path / "missing"))
+    item = asyncio.run(status._check_pack_cache())
+    assert (item.name, item.healthy, item.detail) == ("pack_cache", True, "0.0 GB of 100 GB")
+
+    monkeypatch.setattr(get_settings(), "pack_cache_dir", str(tmp_path))
+    (tmp_path / "topo.sqlite").write_bytes(b"x" * 1_200_000)
+    (tmp_path / "topo.sqlite-wal").write_bytes(b"x" * 300_000)
+    (tmp_path / "notes.txt").write_bytes(b"x" * 5_000_000)  # not cache
+    item = asyncio.run(status._check_pack_cache())
+    assert (item.healthy, item.detail) == (True, "1.5 GB of 100 GB")
+
+    # Well over the cap means eviction isn't keeping up.
+    monkeypatch.setattr(get_settings(), "pack_cache_max_gb", 1)
+    item = asyncio.run(status._check_pack_cache())
+    assert (item.healthy, item.detail) == (False, "1.5 GB of 1 GB")

@@ -14,6 +14,7 @@ import asyncio
 import logging
 import time
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
@@ -24,6 +25,7 @@ from sqlalchemy.orm import Session
 from app import tile_tokens
 from app.admin import is_admin, require_admin
 from app.auth.dependencies import get_current_user
+from app.config import get_settings
 from app.db import get_session
 from app.models.status import StatusBanner
 from app.models.user import User
@@ -31,6 +33,7 @@ from app.rate_limit import client_ip
 from app.regions import REGIONS
 from app.services import (
     cameras,
+    pack_cache,
     radar,
     rasterlayer,
     roads,
@@ -193,12 +196,29 @@ async def _check_roads() -> ServiceHealth:
     return ServiceHealth(name="roads", healthy=not problems, detail="; ".join(problems) or None)
 
 
+async def _check_pack_cache() -> ServiceHealth:
+    """Offline pack cache size against PACK_CACHE_MAX_GB. Eviction keeps it
+    under the cap, so only well over it (eviction not keeping up) is a
+    problem."""
+    settings = get_settings()
+    cap = settings.pack_cache_max_gb * pack_cache.GB
+    try:
+        used = await asyncio.to_thread(pack_cache.disk_usage, Path(settings.pack_cache_dir))
+    except Exception as exc:
+        logger.warning("status check failed (pack_cache)", exc_info=True)
+        return ServiceHealth(name="pack_cache", healthy=False, detail=str(exc)[:200])
+    return ServiceHealth(
+        name="pack_cache", healthy=used <= cap * 1.1,
+        detail=f"{used / pack_cache.GB:.1f} GB of {settings.pack_cache_max_gb} GB",
+    )
+
+
 async def _check_services(session: Session) -> list[ServiceHealth]:
     # api is implicitly healthy if it's responding to this request, but we
     # report it explicitly so the frontend doesn't have to know that.
     api = ServiceHealth(name="api", healthy=True)
     postgres = await _check_postgres(session)
-    minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds = await asyncio.gather(
+    minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds, packs = await asyncio.gather(
         _probe("minio",   "http://localhost:9000/minio/health/live"),
         _probe("titiler", "http://localhost:8001/"),
         _probe("martin",  "http://localhost:3000/health"),
@@ -209,8 +229,9 @@ async def _check_services(session: Session) -> list[ServiceHealth]:
         _check_radar(),
         _check_cameras(),
         _check_roads(),
+        _check_pack_cache(),
     )
-    return [api, postgres, minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds]
+    return [api, postgres, minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds, packs]
 
 
 # The app polls /status every 5 min per install, so the checks (MinIO reads
