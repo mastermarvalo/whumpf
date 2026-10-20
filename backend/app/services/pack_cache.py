@@ -276,11 +276,13 @@ class SourceVersions:
                 raise PackTileError(f"ski_{region}.mbtiles is missing") from exc
         if spec.kind == "colormap":
             keys = [f"{region}/{terrain_tiles.colormap_cog(spec.name)}"]  # type: ignore[arg-type]
-        elif z >= 13:  # hires with the 10m fallback: both matter
+            return "|".join([await self._etag(key) for key in keys])
+        if z >= 13:  # hires with the 10m fallback: both matter
             keys = [f"{region}/dem_hires.tif", f"{region}/dem.tif"]
         else:
             keys = [f"{region}/dem.tif"]
-        return "|".join([await self._etag(key) for key in keys])
+        # And the render itself, so a change to it remakes the tiles.
+        return "|".join([await self._etag(key) for key in keys] + [terrain_tiles.ELEVATION_RENDER])
 
     async def _etag(self, key: str) -> str:
         """The MinIO ETag of a dem-cogs object ("missing" if it isn't there)."""

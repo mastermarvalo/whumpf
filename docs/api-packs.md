@@ -47,7 +47,7 @@ show `detail`. 429 and 503 always carry `Retry-After` (seconds).
      "bytes_per_tile": {"8": 263335, "9": 262466, "10": 208633, "11": 200384, "12": 187843, "13": 165162, "14": 65163}},
     {"id": "elevation", "minzoom": 8, "maxzoom": 14, "tile_type": "png", "tile_size": 256, "pad_tiles": 2,
      "encoding": "terrarium", "attribution": "USGS 3DEP",
-     "source_version": "9e107d9d372bb6826bd81d3542a419d6|e4d909c290d0fb1ca068ffaddf22cbd0", "available": true,
+     "source_version": "9e107d9d372bb6826bd81d3542a419d6|e4d909c290d0fb1ca068ffaddf22cbd0|ovr1", "available": true,
      "bytes_per_tile": {"8": 158352, "9": 155676, "10": 149604, "11": 143496, "12": 135133, "13": 124780, "14": 112535}},
     {"id": "ski", "minzoom": 8, "maxzoom": 14, "tile_type": "mvt", "tile_size": 512, "pad_tiles": 0,
      "attribution": "© OpenStreetMap contributors", "source_version": "1760852400123456789", "available": true,

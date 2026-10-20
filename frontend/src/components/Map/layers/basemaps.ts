@@ -71,7 +71,8 @@ export function getTerrainSource(): maplibregl.RasterDEMSourceSpecification {
     tiles: [`${API_URL}/tiles/terrain_rgb/{z}/{x}/{y}`],
     tileSize: 256,
     encoding: "terrarium",
-    minzoom: 5,
+    // The API answers 204 below z8, which MapLibre leaves loading for ever.
+    minzoom: 8,
     maxzoom: 14,
     bounds: [-109.06, 37.0, -102.05, 41.0],
     attribution: "Terrain © USGS 3DEP",

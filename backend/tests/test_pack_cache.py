@@ -311,6 +311,22 @@ def test_new_cog_version_is_remade(make_cache):
     assert _stored(cache, "slope", 10, 211, 388)[2] == "v2"
 
 
+def test_elevation_version_names_the_render(make_cache):
+    # A change to the terrain render remakes elevation tiles like a new COG.
+    upstream = Upstream(lambda request: httpx.Response(404))
+    upstream.etags.update({"colorado/dem.tif": "d1", "colorado/dem_hires.tif": "h1"})
+    cache = make_cache(upstream)
+    render = terrain_tiles.ELEVATION_RENDER
+
+    async def run():
+        spec = LAYERS["elevation"]
+        assert await cache.versions.version(spec, "colorado", 12) == f"d1|{render}"
+        assert await cache.versions.version(spec, "colorado", 13) == f"h1|d1|{render}"
+        assert await cache.versions.version(LAYERS["slope"], "colorado", 12) == "v1"
+
+    asyncio.run(run())
+
+
 # ── elevation ──────────────────────────────────────────────────────────────────
 
 def _terrarium_m(png: bytes) -> np.ndarray:

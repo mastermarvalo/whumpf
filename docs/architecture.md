@@ -22,6 +22,8 @@ browser ──► MapLibre ──► fetch style.json (from frontend bundle)
                            ├── /contours/{z}/{x}/{y}      → zoom-adaptive contour lines from DEM COGs
                            ├── /slope/{z}/{x}/{y}         → CalTopo-style slope angle colormap
                            └── /terrain_filter/{z}/{x}/{y}→ aspect+slope filter overlay
+                           (terrain_rgb, contours, terrain_filter: 204 below z8; terrain
+                            reads the COG overview matching the tile, in its own thread pool)
                                 all read dem.tif / dem_hires.tif from MinIO via vsicurl
 ```
 

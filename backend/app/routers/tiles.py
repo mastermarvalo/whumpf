@@ -32,6 +32,12 @@ from app.tile_tokens import require_tile_access
 # nonsensical inputs.
 _MAX_Z = 18
 
+# Terrain, contours and the terrain filter aren't rendered below this zoom
+# (204 at once): nothing useful needs them that far out, and a z3–z7 tile
+# covers so much DEM that one render could hold a pool thread for minutes.
+_MIN_RENDER_Z = 8
+_BELOW_MIN_Z_HEADERS = {"Cache-Control": "public, max-age=86400"}
+
 # Every tile endpoint checks the ?t= tile token and rate limits before it
 # renders anything. POST /tiles/token lives in routers/tile_tokens.py so it
 # is not behind this check.
@@ -40,10 +46,14 @@ router = APIRouter(
 )
 logger = logging.getLogger("whumpf.tiles")
 
-# Thread pool for blocking rasterio / PIL work — keeps asyncio event loop free.
-# 2 workers: enough for terrain + slope concurrency without saturating a 6-core
-# machine that may be running heavy pipeline jobs alongside the API.
+# Thread pool for blocking rasterio / PIL work (contours, terrain filter) —
+# keeps the asyncio event loop free. 2 workers: enough concurrency without
+# saturating a 6-core machine that may be running heavy pipeline jobs.
 _POOL = ThreadPoolExecutor(max_workers=2)
+
+# Terrain RGB renders get their own pool, so a burst of contour or filter
+# tiles can't keep 3D terrain from loading.
+_TERRAIN_POOL = ThreadPoolExecutor(max_workers=2)
 
 # Separate pool for re-encoding slope/aspect tiles as palette PNGs (~20 ms each),
 # so a burst of uncached slope tiles doesn't queue behind contour/terrain renders.
@@ -200,7 +210,9 @@ async def aspect_tile(
 _RENDER_PX = 512
 _OUT_PX = 256
 
-_COG_ENV = terrain_tiles.COG_ENV
+# The same 10 s GDAL HTTP timeout as terrain: a stalled read gives up
+# instead of holding a pool thread.
+_COG_ENV = terrain_tiles.TERRAIN_COG_ENV
 
 # Minor line: dark, semi-transparent, thin.  Major: darker, opaque-ish, thicker.
 # Pixel widths are at _RENDER_PX resolution (halved after LANCZOS downsample).
@@ -337,6 +349,8 @@ async def contour_tile(
     validate_region(region)
     if z < 0 or z > _MAX_Z or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
         raise HTTPException(400, "tile coordinates out of range")
+    if z < _MIN_RENDER_Z:
+        return Response(status_code=204, headers=_BELOW_MIN_Z_HEADERS)
     cache_key = (z, x, y, region, interval)
     if cached := _cache_get(_CONTOUR_CACHE, cache_key):
         return Response(content=cached, media_type="image/png",
@@ -489,6 +503,8 @@ async def terrain_filter_tile(
         raise HTTPException(400, "tile coordinates out of range")
     if slope_min >= slope_max:
         raise HTTPException(400, "slope_min must be < slope_max")
+    if z < _MIN_RENDER_Z:
+        return Response(status_code=204, headers=_BELOW_MIN_Z_HEADERS)
 
     valid_aspect_names = set(_ASPECT_CENTERS)
     aspect_set = {a.strip().upper() for a in aspects.split(",") if a.strip()} & valid_aspect_names
@@ -566,11 +582,15 @@ async def terrain_rgb_tile(
 ) -> Response:
     """Terrarium-encoded RGB tile for MapLibre 3D terrain.
 
-    z≤12 → 10m DEM; z≥13 → 1m hires with 10m fallback.
+    z≤12 → 10m DEM; z≥13 → 1m hires with 10m fallback; below z8 nothing
+    (204). The web app's raster-dem source starts at z8: MapLibre leaves a
+    terrain tile without data loading for ever.
     """
     validate_region(region)
     if z < 0 or z > _MAX_Z or x < 0 or y < 0 or x >= (1 << z) or y >= (1 << z):
         raise HTTPException(400, "tile coordinates out of range")
+    if z < _MIN_RENDER_Z:
+        return Response(status_code=204, headers=_BELOW_MIN_Z_HEADERS)
 
     cache_key = (z, x, y, region)
     if cached := _cache_get(_TERRAIN_CACHE, cache_key):
@@ -597,24 +617,36 @@ async def terrain_rgb_tile(
 
     loop = asyncio.get_event_loop()
     fut: asyncio.Future[bytes | None] = loop.run_in_executor(
-        _POOL, _render_terrain_rgb_with_fallback,
+        _TERRAIN_POOL, _render_terrain_rgb_with_fallback,
         dem_url, fallback_url, xmin, ymin, xmax, ymax,
     )
+    # The entry stays until the render really ends, not when this request
+    # gives up: a timeout can't stop the thread, so dropping the entry then
+    # would let the next request queue a second copy of the same render.
     _TERRAIN_IN_FLIGHT[cache_key] = fut
+    fut.add_done_callback(lambda f: _terrain_render_done(cache_key, f))
     try:
         png = await asyncio.wait_for(asyncio.shield(fut), _TERRAIN_TIMEOUT_S)
     except Exception as exc:
         logger.warning("terrain_rgb %s unavailable: %r", cache_key, exc, exc_info=True)
         return Response(status_code=503, headers={"Cache-Control": "no-store"})
-    finally:
-        _TERRAIN_IN_FLIGHT.pop(cache_key, None)
 
     if png is None:
         return Response(content=_FLAT_TERRAIN_PNG, media_type="image/png",
                         headers=_TERRAIN_HEADERS)
-
-    _cache_put(_TERRAIN_CACHE, cache_key, png, _TERRAIN_CACHE_MAX)
     return Response(content=png, media_type="image/png", headers=_TERRAIN_HEADERS)
+
+
+def _terrain_render_done(cache_key: tuple, fut: asyncio.Future[bytes | None]) -> None:
+    """A terrain render ended: drop its in-flight entry and cache a real tile,
+    also when the request that started it already timed out."""
+    if _TERRAIN_IN_FLIGHT.get(cache_key) is fut:
+        del _TERRAIN_IN_FLIGHT[cache_key]
+    if fut.cancelled() or fut.exception() is not None:
+        return  # failures are never cached; the next request renders again
+    png = fut.result()
+    if png is not None:
+        _cache_put(_TERRAIN_CACHE, cache_key, png, _TERRAIN_CACHE_MAX)
 
 
 # ── ski runs (vector, from Martin) ─────────────────────────────────────────────

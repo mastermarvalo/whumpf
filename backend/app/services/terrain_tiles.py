@@ -6,7 +6,8 @@ always come from the same request or render and decode to the same values.
   and the palette PNG re-encode (to_palette_png).
 - Elevation: the Terrarium render (render_terrain_rgb, with_fallback). The
   live endpoint encodes at PNG level 1 for speed, packs at level 9; the
-  pixels are the same.
+  pixels are the same. It reads the COG overview that matches the tile's
+  resolution; ELEVATION_RENDER names that render in the pack source version.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ from PIL import Image
 from pyproj import Transformer
 from rasterio.crs import CRS
 from rasterio.transform import from_bounds
-from rasterio.warp import Resampling, reproject
+from rasterio.warp import Resampling, reproject, transform_bounds
 
 from app.http_retry import call_with_resilience
 
@@ -172,6 +173,29 @@ TERRAIN_BUF = 1    # 1-px border overlap — prevents seams from independent bil
 # A failed or timed-out read raises, so it never looks like "no data".
 TERRAIN_COG_ENV = dict(COG_ENV, GDAL_HTTP_TIMEOUT="10")
 
+# Part of the elevation layer's pack source version, so pack tiles made by an
+# older render are remade. Bump it whenever the render's pixels change.
+# "ovr1": reads the overview matching the tile resolution, not full resolution.
+ELEVATION_RENDER = "ovr1"
+
+
+def overview_level(src_res: float, dst_res: float, factors: list[int]) -> int | None:
+    """The overview to read for a destination of dst_res units per pixel: the
+    coarsest one still at least as fine as dst_res (as gdalwarp picks), or
+    None for full resolution. factors are the COG's decimation factors."""
+    level = None
+    for i, factor in enumerate(sorted(factors)):
+        if src_res * factor <= dst_res:
+            level = i
+    return level
+
+
+def _overview_for(src, bounds: tuple[float, float, float, float], px: int) -> int | None:
+    """overview_level for reading bounds (EPSG:3857) at px × px from src."""
+    left, bottom, right, top = transform_bounds(WM_CRS, src.crs, *bounds)
+    dst_res = min((right - left) / px, (top - bottom) / px)
+    return overview_level(min(src.res), dst_res, src.overviews(1))
+
 
 def _flat_terrain_png() -> bytes:
     """256×256 tile at 0 m. MapLibre's raster-dem needs every tile the same
@@ -196,6 +220,10 @@ def render_terrain_rgb(
     Renders at (TERRAIN_PX + 2*TERRAIN_BUF)² then crops to TERRAIN_PX².
     The extra border pixels ensure bilinear resampling at tile edges uses
     data from the neighbouring tile's extent, eliminating seam artifacts.
+
+    Reads the overview matching the tile's resolution: reproject() never
+    picks one itself, and at full resolution a z8 tile reads ~180M pixels of
+    the 10m DEM (over a minute of CPU).
     """
     buf   = TERRAIN_BUF
     total = TERRAIN_PX + 2 * buf
@@ -206,18 +234,22 @@ def render_terrain_rgb(
 
     data = np.full((total, total), np.nan, dtype=np.float32)
     dst_transform = from_bounds(xmin_b, ymin_b, xmax_b, ymax_b, total, total)
-    with rasterio.Env(**TERRAIN_COG_ENV), rasterio.open(dem_url) as src:
-        reproject(
-            source=rasterio.band(src, 1),
-            destination=data,
-            src_transform=src.transform,
-            src_crs=src.crs,
-            src_nodata=src.nodata,
-            dst_transform=dst_transform,
-            dst_crs=WM_CRS,
-            dst_nodata=np.nan,
-            resampling=Resampling.bilinear,
-        )
+    with rasterio.Env(**TERRAIN_COG_ENV):
+        with rasterio.open(dem_url) as src:
+            level = _overview_for(src, (xmin_b, ymin_b, xmax_b, ymax_b), total)
+        opts = {} if level is None else {"overview_level": level}
+        with rasterio.open(dem_url, **opts) as src:
+            reproject(
+                source=rasterio.band(src, 1),
+                destination=data,
+                src_transform=src.transform,
+                src_crs=src.crs,
+                src_nodata=src.nodata,
+                dst_transform=dst_transform,
+                dst_crs=WM_CRS,
+                dst_nodata=np.nan,
+                resampling=Resampling.bilinear,
+            )
 
     # Crop border pixels back to 256×256.
     data = data[buf:buf + TERRAIN_PX, buf:buf + TERRAIN_PX]
