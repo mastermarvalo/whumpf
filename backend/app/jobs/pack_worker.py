@@ -5,13 +5,17 @@
     make pack-list                   the newest packs with their status
     make pack-build-once             build the oldest queued pack, then exit
                                      (only while the service is stopped)
+    make pack-cleanup                forget old packs now (the service does
+                                     it at start and every 24 h)
 
 It must run as one process: B1's limits on USGS and on our tile makers hold
 within a process, and the SQLite cache files have one writer. A Postgres
 advisory lock makes a second worker exit, and so do bad R2_* settings
 (checked before anything else). On start, packs left building by
 a crash are queued again (failed after 3 starts). SIGTERM stops the current
-build, deletes its uploads and queues it again. docs/runbook.md §12.
+build, deletes its uploads and queues it again. Between builds, at start
+and every 24 h, it forgets packs nobody has asked for in 60 days (failed
+ones after a day). docs/runbook.md §12.
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ import logging
 import shutil
 import signal
 import sys
+import time
 from pathlib import Path
 
 from sqlalchemy import Connection, select, text
@@ -37,6 +42,7 @@ logger = logging.getLogger("whumpf.pack_worker")
 
 LOCK_KEY = 0x7061636B  # "pack"
 POLL_S = 5.0
+CLEANUP_EVERY_S = 24 * 3600
 
 
 def _take_lock() -> Connection | None:
@@ -80,12 +86,26 @@ async def _start(session) -> tuple[PackCache, Path]:
     return PackCache(), root
 
 
+def _cleanup(session) -> None:
+    try:
+        forgotten = packs.cleanup(session)
+    except OperationalError as exc:
+        session.rollback()
+        logger.warning("pack cleanup skipped: database unavailable (%s)", type(exc).__name__)
+        return
+    logger.info("pack cleanup: %d old packs forgotten", forgotten)
+
+
 async def run(stop: asyncio.Event) -> None:
     session = open_session()
     cache, root = await _start(session)
     logger.info("pack worker ready")
+    last_cleanup: float | None = None
     try:
         while not stop.is_set():
+            if last_cleanup is None or time.monotonic() - last_cleanup >= CLEANUP_EVERY_S:
+                _cleanup(session)
+                last_cleanup = time.monotonic()
             try:
                 pack = packs.claim_next(session)
             except OperationalError as exc:
@@ -206,6 +226,15 @@ def _queue(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cleanup_now() -> int:
+    session = open_session()
+    try:
+        print(f"{packs.cleanup(session)} old packs forgotten")
+    finally:
+        session.close()
+    return 0
+
+
 def _list(limit: int) -> int:
     session = open_session()
     try:
@@ -231,6 +260,7 @@ def main() -> None:
     q.add_argument("--bbox", required=True, help="--bbox=W,S,E,N in degrees (the = is needed: west is negative)")
     q.add_argument("--region", default="colorado")
     q.add_argument("--layers", help="comma-separated; default all")
+    sub.add_parser("cleanup", help="forget packs nobody has asked for in 60 days (failed: a day)")
     ls = sub.add_parser("list", help="the newest packs")
     ls.add_argument("--limit", type=int, default=10)
     args = parser.parse_args()
@@ -243,6 +273,8 @@ def main() -> None:
         sys.exit(_once())
     if args.command == "queue":
         sys.exit(_queue(args))
+    if args.command == "cleanup":
+        sys.exit(_cleanup_now())
     sys.exit(_list(args.limit))
 
 

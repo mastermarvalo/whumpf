@@ -274,6 +274,10 @@ pack-queue:  ## queue an offline pack: make pack-queue ARGS="--bbox=W,S,E,N [--r
 pack-list:  ## the newest offline packs: status, progress, files, errors
 	$(API_RUN) uv run python -m app.jobs.pack_worker list $(ARGS)
 
+.PHONY: pack-cleanup
+pack-cleanup:  ## forget packs nobody has asked for in 60 days (failed: a day); the pack worker also does it daily
+	$(API_RUN) uv run python -m app.jobs.pack_worker cleanup
+
 .PHONY: pack-build-once
 pack-build-once:  ## build the oldest queued pack in the foreground, then exit (only while the pack-worker service is stopped)
 	$(COMPOSE) run --rm --no-deps -T pack-worker uv run python -m app.jobs.pack_worker once

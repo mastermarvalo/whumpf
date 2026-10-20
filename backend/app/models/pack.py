@@ -25,12 +25,16 @@ class Pack(Base):
             "status IN ('queued', 'building', 'ready', 'failed')", name="ck_packs_status",
         ),
         Index("ix_packs_status_created_at", "status", "created_at"),
+        Index("ix_packs_status_queued_at", "status", "queued_at"),
     )
 
-    # A UUID, so packs/<id>/ in R2 can't be guessed.
+    # A UUID, so packs/<id>/ in R2 can't be guessed. Packs asked for through
+    # POST /packs get one derived from the request (packs.pack_id); the
+    # make pack-queue CLI uses a random one.
     id: Mapped[uuid.UUID] = mapped_column(Uuid, primary_key=True, default=uuid.uuid4)
     region: Mapped[str] = mapped_column(String(32), nullable=False)
-    # The box as asked for; the files cover it rounded out to the zoom 14 grid.
+    # The box as asked for (make pack-queue) or already rounded out to the
+    # zoom 14 grid (POST /packs); the files cover it rounded out.
     bbox = mapped_column(
         Geometry(geometry_type="POLYGON", srid=4326, spatial_index=False), nullable=False,
     )
@@ -50,10 +54,17 @@ class Pack(Base):
     # [{layer, version, bytes, md5, key}]; a layer with no tiles in the box
     # has bytes 0 and md5/key null.
     files: Mapped[list] = mapped_column(JSONB, nullable=False, default=list, server_default="[]")
-    # Who first asked for it. Plain int, no FK (like status_banners); set to
+    # {layer: {zoom: [tiles, bytes]}} of the last build, every tile asked
+    # for (empty ones as 0 bytes): the averages in GET /packs/manifest.
+    tile_bytes: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict, server_default="{}")
+    # Who first asked for it (everyone who asked: pack_requests). Plain int, no FK (like status_banners); set to
     # null when that account is deleted.
     requested_by: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False,
+    )
+    # When it last went into the queue; the worker takes the oldest first.
+    queued_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(UTC), nullable=False,
     )
     built_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

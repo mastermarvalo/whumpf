@@ -41,6 +41,26 @@ def test_baseline_downgrade_then_upgrade(engine, test_db_url):
     command.check(cfg)
 
 
+def test_0003_backfills_queued_at_from_created_at(engine, test_db_url):
+    cfg = alembic_config(test_db_url)
+    command.downgrade(cfg, "0002_packs")
+    try:
+        with engine.begin() as conn:
+            conn.exec_driver_sql(
+                "INSERT INTO packs (id, region, bbox, layers, created_at, last_requested_at)"
+                " VALUES ('4f08336c-0000-4000-8000-000000000000', 'colorado',"
+                " ST_GeomFromText('POLYGON((-105.8 39.7,-105.7 39.7,-105.7 39.8,-105.8 39.8,-105.8 39.7))', 4326),"
+                " '{topo}', '2026-10-19 12:00+00', '2026-10-19 12:00+00')")
+        command.upgrade(cfg, "head")
+        with engine.connect() as conn:
+            row = conn.exec_driver_sql("SELECT queued_at = created_at, tile_bytes::text FROM packs").one()
+        assert tuple(row) == (True, "{}")
+    finally:
+        command.upgrade(cfg, "head")
+        with engine.begin() as conn:
+            conn.exec_driver_sql("DELETE FROM packs")
+
+
 def test_baseline_downgrade_refuses_other_databases(baseline, monkeypatch):
     monkeypatch.delenv("ALLOW_DESTRUCTIVE_DOWNGRADE", raising=False)
     for name in ("whumpf", "whumpf_test2", "postgres", "WHUMPF_TEST"):
@@ -76,4 +96,4 @@ def test_readyz_reports_schema_at_head(engine, test_db_url):
     head = ScriptDirectory.from_config(alembic_config(test_db_url)).get_heads()
     body = TestClient(app).get("/readyz").json()
     assert body["checks"]["schema"]["ok"] is True
-    assert body["checks"]["schema"]["revision"] == head == ["0002_packs"]
+    assert body["checks"]["schema"]["revision"] == head == ["0003_pack_requests"]

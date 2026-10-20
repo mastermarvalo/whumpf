@@ -236,6 +236,9 @@ services:
       # Offline pack cache, written only by the pack worker; read here for
       # the size line on /status (docs/runbook.md §12).
       - /data/pack-cache:/data/pack-cache:ro
+      # The ski MBTiles' mtime is the ski layer's version in pack ids and
+      # GET /packs/manifest (docs/runbook.md §12).
+      - /data/martin-tiles:/data/martin-tiles:ro
     ulimits:
       nofile:
         soft: 65536

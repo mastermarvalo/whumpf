@@ -75,6 +75,13 @@ BUCKETS: dict[str, tuple[RateLimitItem, ...]] = {
     # Per client IP, GET /status (public, no token). The app polls it every
     # 5 min; the service checks behind it are cached for 30 s.
     "status": (parse("60/minute"), parse("600/hour")),
+    # Per user ("u:<id>"), POST /packs (signed in). Each request can start a
+    # build of up to ~3,000 tiles; a trip needs a pack or two. Every POST
+    # counts, even one answered from a ready pack.
+    "packs": (parse("10/hour"),),
+    # Per user, GET /packs/{id} and /packs/manifest. The app polls a pack
+    # every 5-15 s while it builds and asks again for fresh download links.
+    "packs_poll": (parse("60/minute"), parse("1200/hour")),
 }
 
 _NO_STORE = {"Cache-Control": "no-store"}

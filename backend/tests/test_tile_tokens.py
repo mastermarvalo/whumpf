@@ -96,6 +96,8 @@ def test_configured_limits_match_the_plan():
         "windy_upstream": ["60 per 1 minute", "1000 per 1 hour"],
         "roads": ["60 per 1 minute", "600 per 1 hour"],
         "status": ["60 per 1 minute", "600 per 1 hour"],
+        "packs": ["10 per 1 hour"],
+        "packs_poll": ["60 per 1 minute", "1200 per 1 hour"],
     }
 
 

@@ -1,6 +1,7 @@
 from app.models.email_code import CodePurpose, EmailCode
 from app.models.friendship import Friendship, FriendStatus
 from app.models.pack import Pack
+from app.models.pack_request import PackRequest
 from app.models.refresh_token import RefreshToken
 from app.models.route import Route, Visibility
 from app.models.route_share import RouteShare
@@ -21,6 +22,7 @@ __all__ = [
     "MemberRole",
     "MemberStatus",
     "Pack",
+    "PackRequest",
     "RefreshToken",
     "Route",
     "RouteShare",

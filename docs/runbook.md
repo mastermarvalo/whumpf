@@ -1154,12 +1154,13 @@ Cron (user crontab, with the `XDG_RUNTIME_DIR` and `DOCKER_HOST` lines from
 ## 12. Offline packs: tile cache and pack worker
 
 The iPhone app downloads a pack as one PMTiles file per layer for a box up
-to 25 x 25 km. The `pack-worker` service builds queued packs into Cloudflare
-R2, reading every tile through the tile cache below. Code:
-`app/services/pack_cache.py` (the cache), `app/services/terrain_tiles.py`
+to 700 km² (no side over 50 km). The `pack-worker` service builds queued
+packs into Cloudflare R2, reading every tile through the tile cache below.
+Code: `app/services/pack_cache.py` (the cache), `app/services/terrain_tiles.py`
 (shared with the live `/tiles` endpoints), `app/services/packs.py` (tiles,
-PMTiles, R2) and `app/jobs/pack_worker.py` (the service and CLI). The
-endpoints that queue and hand out packs are step B3 (not built yet).
+PMTiles, R2, requests, cleanup), `app/jobs/pack_worker.py` (the service and
+CLI) and `app/routers/packs.py` (the endpoints, B3). The API contract the
+app builds against is `docs/api-packs.md`.
 
 ### Layers
 
@@ -1190,9 +1191,9 @@ version is made again when next asked for.
   first `make up` (`mkdir -p /data/pack-cache`, done on the VM Oct 19, 2026).
 - `PACK_CACHE_MAX_GB` (default 100): above it the least recently used tiles,
   across all layers, are deleted down to 90% and the files shrink. Checked
-  after every 256 MB written. A pack is ~270 MB (topo ~60, imagery ~95,
-  slope ~40, aspect ~50, elevation ~25), so 100 GB holds ~370 packs that
-  don't overlap. `/status` shows `pack_cache: "12.3 GB of 100 GB"` and is
+  after every 256 MB written. The Berthoud Pass box (~150 km²) comes to
+  ~73 MB (topo 14, imagery 22, slope 9, aspect 9, elevation 19), so a full
+  700 km² pack is ~340 MB and 100 GB holds ~290 of them that don't overlap. `/status` shows `pack_cache: "12.3 GB of 100 GB"` and is
   unhealthy only above 110% (eviction not keeping up).
 - `USGS_CONTACT`: an email address for the User-Agent of every USGS request.
   Empty turns topo and imagery off (they refuse to fetch).
@@ -1262,14 +1263,73 @@ cache), <n> in the file, <bytes> bytes, <seconds> s`; for topo and imagery
 
 ### The packs table (migration `0002_packs`)
 
-`id` (UUID), `region`, `bbox` (the box as asked for, POLYGON 4326),
+`id` (UUID), `region`, `bbox` (POLYGON 4326: rounded to the zoom 14 grid
+for packs asked for through `POST /packs`, as given for `make pack-queue`),
 `layers`, `source_versions` (`{layer: version}`, null for USGS), `status`
 (`queued | building | ready | failed`), `attempts`, `tiles_done`,
 `tiles_total`, `error`, `files` (`[{layer, version, bytes, md5, key}]`;
-bytes 0 and key null for a layer with no tiles), `requested_by` (a user id,
-no FK; set to null when that account is deleted), `created_at`, `built_at`,
-`last_requested_at`. Reusing a ready pack for the same box and cleaning old
-packs out of R2 are B3's job; nothing deletes them yet.
+bytes 0 and key null for a layer with no tiles), `tile_bytes`
+(`{layer: {zoom: [tiles, bytes]}}` of the last build, empty tiles as 0
+bytes; for the manifest's averages), `requested_by` (the first user to ask,
+no FK; set to null when that account is deleted), `created_at`,
+`queued_at` (when it last went into the queue; the worker takes the oldest),
+`built_at`, `last_requested_at`. Migration `0003_pack_requests` added
+`tile_bytes`, `queued_at` (backfilled from `created_at`) and the
+`pack_requests` table: `(pack_id, user_id)` with `requested_at`, one row per
+user who asked for a pack (FKs, no cascades; account deletion deletes the
+user's rows).
+
+### The endpoints (B3)
+
+`GET /packs/manifest?region=`, `POST /packs`, `GET /packs/{id}`. Signed-in
+only; request and response JSON in `docs/api-packs.md`.
+
+- **One pack per request.** The id is a UUID from an HMAC-SHA256 (key
+  derived from `JWT_SECRET`) of the region, the zoom 14 tile range, the
+  layers and each layer's current source version. The same request gives
+  the same id for every user, and ids (so the R2 paths) can't be worked out
+  from a box. A new source version (a COG changes, the weekly ski publish)
+  gives new ids. Rotating `JWT_SECRET` only means old packs aren't reused.
+  `make pack-queue` still makes a random id and isn't reused.
+- **Versions in the api** come from `pack_cache.SourceVersions` (MinIO
+  ETags cached 10 min per worker, the ski MBTiles' mtime). The api mounts
+  `/data/martin-tiles` read-only for that. A version that can't be read,
+  no `USGS_CONTACT` or no R2 settings: 503.
+- **Who sees what.** `GET /packs/{id}` answers only users with a
+  `pack_requests` row for the pack; anyone else gets the same 404 as an
+  unknown id. A failed pack shows a plain error; the reason stays in
+  `make pack-list`.
+- **Ready and still in R2:** `built_at` under 29 days ago and an R2 HEAD of
+  every file succeeds. Otherwise POST and GET queue it again (same row and
+  id; files cleared, attempts 0, to the back of the queue). An R2 error
+  other than 404 is a 503 and queues nothing.
+- **Download links** are presigned R2 GETs valid 24 h, made fresh on every
+  GET, never logged. Their host shows the R2 account ID (not a secret);
+  the token never leaves the server.
+- **Limits.** 10 POSTs an hour per user (`packs` bucket) and 60 a minute /
+  1200 an hour for GETs (`packs_poll`), in Redis, open if Redis is down. In
+  Postgres, under a transaction advisory lock (so two requests can't both
+  pass): at most 2 of a user's packs queued or building (429, joining
+  someone else's build counts), at most 20 on the server (503,
+  Retry-After 300; only when a request needs a new build).
+- **Sizes for the app** (`bytes_per_tile` in the manifest): the Berthoud
+  Pass build in `packs.SEED_TILE_BYTES`, pooled (as one pack) with every
+  ready pack built in the last 60 days, cached 10 min per worker.
+
+### Cleanup and R2 lifecycle
+
+- **R2 lifecycle rule (set by hand, once):** in the Cloudflare dashboard,
+  R2 → the packs bucket → Settings → Object lifecycle rules: prefix
+  `packs/`, delete objects 30 days after upload. Nothing in the code
+  deletes ready packs' files; this rule does, and the api builds a pack
+  again after 29 days. The api token can't set or read bucket rules, so
+  check it in the dashboard.
+- **The pack worker forgets old packs** at start and every 24 h, between
+  builds: ready and failed packs nobody has asked for in 60 days, failed
+  ones after a day (their `pack_requests` rows first). Their R2 files are
+  gone by then. `make pack-cleanup` does the same by hand. Builds in
+  progress and queued packs are never touched.
+- No CORS rule on the bucket: only the iPhone app downloads packs.
 
 ### Settings
 
@@ -1290,6 +1350,7 @@ make pack-list                            # newest packs: status, progress, file
 make logs-pack-worker
 make stop-pack-worker                     # make up starts it again
 make pack-build-once                      # only while the service is stopped
+make pack-cleanup                         # forget old packs now (also daily in the worker)
 ```
 
 A stuck or unwanted pack: `make stop-pack-worker`, then in `make psql`
@@ -1308,6 +1369,38 @@ A stuck or unwanted pack: `make stop-pack-worker`, then in `make psql`
 3. `make health` is `"ready": true` with schema at `0002_packs`;
    `make ps` lists `whumpf-pack-worker`; `make logs-pack-worker` shows
    `pack worker ready`.
+
+### Deploying B3 (migration `0003_pack_requests`)
+
+1. Back up first: `make db-dump` (local dump, read back and checked). Note
+   the file name it prints.
+2. Set the R2 lifecycle rule (above) if it isn't there yet.
+3. `make up`: builds the image; the api runs `alembic upgrade head`
+   (`0003_pack_requests`: `pack_requests`, `packs.queued_at` backfilled from
+   `created_at`, `packs.tile_bytes`) and gets the new `/data/martin-tiles`
+   mount; the pack worker restarts (a build in progress is queued again).
+4. `make health`: `"ready": true` with schema at `0003_pack_requests`.
+   `make logs-pack-worker`: `pack worker ready` and a `pack cleanup: <n> old
+   packs forgotten` line (the failed B2 pack `4f08336c…` goes in this first
+   run once it is a day old; `make pack-list` to check).
+5. Signed in, with an access token in `$TOKEN`:
+
+   ```bash
+   curl -fsS -H "Authorization: Bearer $TOKEN" 'https://<api host>/packs/manifest?region=colorado' | python3 -m json.tool
+   curl -fsS -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+       -d '{"region":"colorado","bbox":[-105.835,39.753,-105.719,39.843],"layers":["topo","imagery","slope","aspect","elevation","ski"]}' \
+       https://<api host>/packs | python3 -m json.tool
+   ```
+
+   The POST answers 202 with `tiles_total` 2218 (200 if the same request was
+   made already). Poll `GET /packs/<id>` until `ready`; the files have
+   `url`s; one downloads with `curl -o` and its MD5 matches `md5`. The same
+   POST again answers 200 and `ready` at once.
+
+If the migration fails, the api doesn't start: `make logs-api` for the
+error. To go back, `make stop-api stop-pack-worker`, `make db-restore
+FILE=<the dump from step 1> CONFIRM=yes`, check out the commit before B3
+and `make up` (§6).
 
 ### End-to-end check: Berthoud Pass (after the first deploy)
 
@@ -1348,8 +1441,8 @@ topo 915, imagery 915, slope 75, aspect 75, elevation 163, ski 75 tiles.
 5. Queue the same box again. The second build should show `0 made` for
    topo and imagery (all from the cache) and take seconds per layer.
 6. Report per layer: time, size, USGS tiles fetched vs from the cache, for
-   both runs. Then `rm -r /tmp/berthoud`. The two packs stay in R2 until
-   B3's cleanup (or delete `packs/<id>/` by hand).
+   both runs. Then `rm -r /tmp/berthoud`. The two packs' files go with the
+   R2 lifecycle rule after 30 days; their rows with the cleanup after 60.
 
 ## Troubleshooting
 

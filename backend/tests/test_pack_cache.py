@@ -297,7 +297,7 @@ def test_new_cog_version_is_remade(make_cache):
     upstream = Upstream(lambda request: httpx.Response(
         200, content=titiler_png, headers={"content-type": "image/png"}))
     cache = make_cache(upstream)
-    cache.version_ttl_s = 0
+    cache.versions.ttl_s = 0
 
     async def run():
         await cache.get_tile("slope", "colorado", 10, 211, 388)

@@ -45,6 +45,7 @@ from app.models import (
     MemberRole,
     MemberStatus,
     Pack,
+    PackRequest,
     RefreshToken,
     Route,
     RouteShare,
@@ -640,6 +641,7 @@ def _purge_user_data(session: Session, user: User) -> None:
     session.execute(delete(RefreshToken).where(RefreshToken.user_id == user.id))
     session.execute(delete(EmailCode).where(EmailCode.user_id == user.id))
     # Packs may be shared by others; just forget who asked for them.
+    session.execute(delete(PackRequest).where(PackRequest.user_id == user.id))
     session.execute(update(Pack).where(Pack.requested_by == user.id).values(requested_by=None))
     session.flush()
 

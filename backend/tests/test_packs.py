@@ -128,7 +128,8 @@ def test_request_defaults_to_every_layer_in_order():
     (BERTHOUD, ["topo", "nope"], "unknown: nope"),
     (BERTHOUD, [], "layers must be"),
     ((-105.7, 39.75, -105.8, 39.85), None, "west < east"),
-    ((-106.0, 39.7, -105.6, 39.9), None, "the most is 25 km"),
+    ((-106.0, 39.7, -105.6, 39.9), None, r"km²\); the most is 700 km²"),
+    ((-106.5, 39.70, -105.8, 39.72), None, "the most is 50 km on a side"),
     ((-104.4, 39.7, -104.3, 39.8), None, "inside the colorado region"),
     ((-105.8, 39.7, float("nan"), 39.8), None, "four numbers"),
 ])
@@ -207,7 +208,7 @@ def ski_dir(tmp_path):
 def _pack(session, bbox=SMALL, layers=None, created=None, **kw) -> Pack:
     pack = queue_pack(session, "colorado", bbox, layers, **kw)
     if created:
-        pack.created_at = created
+        pack.created_at = pack.queued_at = created
         session.commit()
     return pack
 
@@ -278,6 +279,23 @@ def test_md5_and_bytes_recorded_match_r2(db_session, ski_dir, tmp_path):
         assert f["bytes"] == len(data) and f["md5"] == hashlib.md5(data).hexdigest()
         assert f["version"] == "v1"
     assert not (tmp_path / "build" / str(pack.id)).exists()
+
+
+def test_tile_sizes_per_zoom_are_recorded(db_session, ski_dir, tmp_path):
+    pack = _pack(db_session, layers=["topo", "ski"])
+    claim_next(db_session)
+    cache = FakeCache(ski_dir)
+    _build(db_session, pack, cache, FakeStore(), tmp_path / "build")
+
+    base = grid_range(SMALL)
+    for layer in ("topo", "ski"):
+        expected: dict[str, list[int]] = {}
+        for z, x, y in layer_tiles(layer, base):
+            slot = expected.setdefault(str(z), [0, 0])
+            slot[0] += 1
+            slot[1] += len(_tile_bytes(layer, z, x, y))  # empty tiles count 0 bytes
+        assert pack.tile_bytes[layer] == expected
+    assert pack.tiles_total == packs.tiles_total(base, ["topo", "ski"])
 
 
 def test_layer_with_no_tiles_gets_no_file(db_session, ski_dir, tmp_path):

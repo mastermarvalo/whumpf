@@ -238,11 +238,83 @@ def _retry_after(r: httpx.Response) -> float:
         return RETRY_AFTER_MAX_S
 
 
+# ── source versions ──────────────────────────────────────────────────────────
+
+def ski_path(ski_dir: Path, region: str) -> Path:
+    return ski_dir / f"ski_{region}.mbtiles"
+
+
+class SourceVersions:
+    """The source version of our layers: the MinIO ETag of the COGs or the
+    ski file's mtime; None for the USGS layers. Shared by the pack cache
+    (per tile) and the packs endpoints (pack ids, /packs/manifest)."""
+
+    ttl_s = 600.0  # MinIO ETags are looked up at most this often
+
+    def __init__(self, ski_dir: Path | str = SKI_DIR, http: httpx.AsyncClient | None = None) -> None:
+        self.ski_dir = Path(ski_dir)
+        # None: a short-lived client per lookup (the api, where lookups are
+        # rare and requests may run on different event loops).
+        self._http = http
+        self._etags: dict[str, tuple[str, float]] = {}
+
+    async def layer_version(self, layer: str, region: str) -> str | None:
+        """The layer's version as a whole: what its top zooms are made
+        from, which for elevation is both DEMs."""
+        spec = LAYERS[layer]
+        return await self.version(spec, region, spec.maxzoom)
+
+    async def version(self, spec: Layer, region: str, z: int) -> str | None:
+        if spec.kind == "usgs":
+            return None
+        if spec.kind == "ski":
+            # The weekly publish (and a rollback) swaps the file in, so its
+            # mtime changes whenever the served tiles do.
+            try:
+                return str(ski_path(self.ski_dir, region).stat().st_mtime_ns)
+            except FileNotFoundError as exc:
+                raise PackTileError(f"ski_{region}.mbtiles is missing") from exc
+        if spec.kind == "colormap":
+            keys = [f"{region}/{terrain_tiles.colormap_cog(spec.name)}"]  # type: ignore[arg-type]
+        elif z >= 13:  # hires with the 10m fallback: both matter
+            keys = [f"{region}/dem_hires.tif", f"{region}/dem.tif"]
+        else:
+            keys = [f"{region}/dem.tif"]
+        return "|".join([await self._etag(key) for key in keys])
+
+    async def _etag(self, key: str) -> str:
+        """The MinIO ETag of a dem-cogs object ("missing" if it isn't there)."""
+        hit = self._etags.get(key)
+        if hit and time.monotonic() - hit[1] < self.ttl_s:
+            return hit[0]
+        settings = get_settings()
+        url = f"{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{key}"
+
+        async def _head(http: httpx.AsyncClient) -> httpx.Response:
+            async def _do() -> httpx.Response:
+                r = await http.head(url)
+                if r.status_code != 404:
+                    r.raise_for_status()
+                return r
+            return await call_with_resilience("minio", _do)
+
+        try:
+            if self._http is not None:
+                r = await _head(self._http)
+            else:
+                async with httpx.AsyncClient(timeout=10.0) as http:
+                    r = await _head(http)
+        except (CircuitOpenError, httpx.HTTPError) as exc:
+            raise PackTileError(f"can't read the version of {key}: {exc!r}") from exc
+        etag = "missing" if r.status_code == 404 else r.headers.get("etag", "").strip('"')
+        self._etags[key] = (etag, time.monotonic())
+        return etag
+
+
 # ── the cache ──────────────────────────────────────────────────────────────────
 
 class PackCache:
     usgs_attempts = 5
-    version_ttl_s = 600.0  # MinIO ETags are looked up at most this often
 
     def __init__(
         self,
@@ -269,7 +341,7 @@ class PackCache:
         self._own = asyncio.Semaphore(OWN_CONCURRENCY)
         self._pool = ThreadPoolExecutor(max_workers=OWN_CONCURRENCY, thread_name_prefix="pack-tiles")
         self._in_flight: dict[tuple, asyncio.Future[bytes]] = {}
-        self._etags: dict[str, tuple[str, float]] = {}
+        self.versions = SourceVersions(self.ski_dir, self._http)
         self._written = 0
         # (layer, "made" | "cached") -> tiles, for the pack worker's log.
         self.stats: Counter[tuple[str, str]] = Counter()
@@ -297,7 +369,7 @@ class PackCache:
             raise ValueError(f"{layer} has no tile {z}/{x}/{y}")
 
         store = self._store(spec, region)
-        version = await self._source_version(spec, region, z)
+        version = await self.versions.version(spec, region, z)
         now = int(self._clock())
         row = store.get(z, x, y)
         if row is not None and self._fresh(spec, row, version, now):
@@ -402,7 +474,7 @@ class PackCache:
         return png or terrain_tiles.FLAT_TERRAIN_PNG
 
     def _ski_path(self, region: str) -> Path:
-        return self.ski_dir / f"ski_{region}.mbtiles"
+        return ski_path(self.ski_dir, region)
 
     async def _make_ski(self, region: str, z: int, x: int, y: int) -> bytes:
         async with self._own:
@@ -412,50 +484,8 @@ class PackCache:
     # ── source versions ──
 
     async def source_version(self, layer: str, region: str) -> str | None:
-        """The layer's version as a whole (None for USGS layers): what its
-        top zooms are made from, which for elevation is both DEMs."""
-        spec = LAYERS[layer]
-        return await self._source_version(spec, region, spec.maxzoom)
-
-    async def _source_version(self, spec: Layer, region: str, z: int) -> str | None:
-        if spec.kind == "usgs":
-            return None
-        if spec.kind == "ski":
-            # The weekly publish (and a rollback) swaps the file in, so its
-            # mtime changes whenever the served tiles do.
-            try:
-                return str(self._ski_path(region).stat().st_mtime_ns)
-            except FileNotFoundError as exc:
-                raise PackTileError(f"ski_{region}.mbtiles is missing") from exc
-        if spec.kind == "colormap":
-            keys = [f"{region}/{terrain_tiles.colormap_cog(spec.name)}"]  # type: ignore[arg-type]
-        elif z >= 13:  # hires with the 10m fallback: both matter
-            keys = [f"{region}/dem_hires.tif", f"{region}/dem.tif"]
-        else:
-            keys = [f"{region}/dem.tif"]
-        return "|".join([await self._etag(key) for key in keys])
-
-    async def _etag(self, key: str) -> str:
-        """The MinIO ETag of a dem-cogs object ("missing" if it isn't there)."""
-        hit = self._etags.get(key)
-        if hit and time.monotonic() - hit[1] < self.version_ttl_s:
-            return hit[0]
-        settings = get_settings()
-        url = f"{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{key}"
-
-        async def _do() -> httpx.Response:
-            r = await self._http.head(url)
-            if r.status_code != 404:
-                r.raise_for_status()
-            return r
-
-        try:
-            r = await call_with_resilience("minio", _do)
-        except (CircuitOpenError, httpx.HTTPError) as exc:
-            raise PackTileError(f"can't read the version of {key}: {exc!r}") from exc
-        etag = "missing" if r.status_code == 404 else r.headers.get("etag", "").strip('"')
-        self._etags[key] = (etag, time.monotonic())
-        return etag
+        """The layer's version as a whole (None for USGS layers)."""
+        return await self.versions.layer_version(layer, region)
 
     # ── size cap ──
 
