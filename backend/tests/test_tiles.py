@@ -13,6 +13,7 @@ import struct
 import time
 from collections import OrderedDict
 from io import BytesIO
+from pathlib import Path
 
 import httpx
 import numpy as np
@@ -56,6 +57,7 @@ def test_slope_tile_is_512_and_unbuffered(monkeypatch):
     # And the served PNG is genuinely 512×512 (not tilesize + 2*buffer).
     width, height = struct.unpack(">II", resp.content[16:24])
     assert (width, height) == (512, 512)
+    assert resp.content == tiles._to_palette_png(_png_bytes(512, 512))
 
 
 def test_aspect_tile_uses_hsv_and_caches(monkeypatch):
@@ -76,6 +78,7 @@ def test_aspect_tile_uses_hsv_and_caches(monkeypatch):
     assert resp.status_code == 200
     assert resp.headers["cache-control"] == "public, max-age=86400"
     assert resp.headers["content-type"] == "image/png"
+    assert resp.content == tiles._to_palette_png(_png_bytes(512, 512))
 
     params = captured["params"]
     assert params["colormap_name"] == "hsv"
@@ -86,6 +89,67 @@ def test_aspect_tile_uses_hsv_and_caches(monkeypatch):
 
     # Out-of-range tile coords are rejected.
     assert client.get("/tiles/aspect/1/5/0?region=colorado").status_code == 400
+
+
+# ── slope/aspect palette PNGs: pixel-identical, never quantized ─────────────
+
+# caltopo_slope.npy is a copy of data/colormaps/caltopo_slope.npy (TiTiler's
+# COLORMAP_DIRECTORY); titiler_hsv.npy is rio-tiler's "hsv" (rio-tiler 9.0.6).
+_DATA = Path(__file__).parent / "data"
+
+
+def _colormapped_tile(colormap: np.ndarray, nodata_rgb: tuple[int, int, int]) -> np.ndarray:
+    """512×512 RGBA tile using every colormap entry, plus a band of transparent
+    nodata pixels whose RGB is `nodata_rgb` (as TiTiler masks them)."""
+    # Shuffled so it doesn't compress unrealistically well as RGBA.
+    values = np.random.default_rng(0).permutation(512 * 512) % len(colormap)
+    rgba = colormap[values].reshape(512, 512, 4).copy()
+    rgba[:16] = (*nodata_rgb, 0)
+    return rgba
+
+
+def _png(rgba: np.ndarray) -> bytes:
+    buf = BytesIO()
+    Image.fromarray(rgba).save(buf, "PNG")
+    return buf.getvalue()
+
+
+@pytest.mark.parametrize("colormap_file, entries, nodata_rgb", [
+    # Slope: all 256 entries; nodata rescales to entry 0, already (0,0,0,0).
+    ("caltopo_slope.npy", 256, (0, 0, 0)),
+    # Aspect: a 0–360 rescale reaches 255 entries, and masked pixels take
+    # entry 0's red with alpha 0.
+    ("titiler_hsv.npy", 255, (255, 0, 0)),
+])
+def test_palette_png_is_pixel_identical(colormap_file, entries, nodata_rgb):
+    colormap = np.load(_DATA / colormap_file)[:entries]
+    rgba = _colormapped_tile(colormap, nodata_rgb)
+    original = _png(rgba)
+
+    out = tiles._to_palette_png(original)
+
+    img = Image.open(BytesIO(out))
+    assert img.mode == "P"
+    decoded = np.asarray(img.convert("RGBA"))
+    expected = rgba.copy()
+    expected[expected[..., 3] == 0] = 0  # invisible either way
+    assert np.array_equal(decoded, expected)
+
+
+def test_palette_png_falls_back_over_256_colours():
+    colormap = np.load(_DATA / "titiler_hsv.npy")  # 256 opaque colours
+    rgba = _colormapped_tile(colormap, (0, 0, 0))  # + transparent = 257
+    original = _png(rgba)
+    assert tiles._to_palette_png(original) == original
+
+
+def test_palette_png_keeps_original_when_not_smaller():
+    # A single-colour tile is already tiny as RGBA.
+    original = _png(np.full((512, 512, 4), (200, 30, 30, 255), dtype=np.uint8))
+    out = tiles._to_palette_png(original)
+    assert len(out) <= len(original)
+    assert np.array_equal(np.asarray(Image.open(BytesIO(out)).convert("RGBA")),
+                          np.asarray(Image.open(BytesIO(original)).convert("RGBA")))
 
 
 # ── terrain_rgb: no data → flat 0 m tile, read failure → 503 no-store ────────

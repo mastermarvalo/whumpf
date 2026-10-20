@@ -47,6 +47,10 @@ logger = logging.getLogger("whumpf.tiles")
 # machine that may be running heavy pipeline jobs alongside the API.
 _POOL = ThreadPoolExecutor(max_workers=2)
 
+# Separate pool for re-encoding slope/aspect tiles as palette PNGs (~20 ms each),
+# so a burst of uncached slope tiles doesn't queue behind contour/terrain renders.
+_PALETTE_POOL = ThreadPoolExecutor(max_workers=2)
+
 # Persistent HTTP client — reuses connections to TiTiler instead of opening a new
 # TCP connection on every slope tile request.
 _HTTP = httpx.AsyncClient(
@@ -56,14 +60,15 @@ _HTTP = httpx.AsyncClient(
 
 # ── in-memory LRU tile caches ──────────────────────────────────────────────────
 # Both caches live in the asyncio event loop so no locking is needed.
-# Average PNG sizes: slope ~25 KB, contour ~15 KB.
+# Slope/aspect tiles are 512×512 palette PNGs, ~25–260 KB (~150 KB typical);
+# contours ~15 KB.
 
 _SLOPE_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
 _ASPECT_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
 _CONTOUR_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
 _FILTER_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
 _TERRAIN_CACHE: OrderedDict[tuple, bytes] = OrderedDict()
-_SLOPE_CACHE_MAX   = 512   # ~13 MB ceiling
+_SLOPE_CACHE_MAX   = 512   # ~75 MB typical, ~130 MB ceiling (each of slope, aspect)
 _CONTOUR_CACHE_MAX = 1024  # ~15 MB ceiling
 _FILTER_CACHE_MAX  = 512   # ~10 MB ceiling — outputs are mostly transparent
 _TERRAIN_CACHE_MAX = 1024  # ~30 KB/tile (256×256 RGB PNG) → ~30 MB ceiling
@@ -106,6 +111,34 @@ def _tile_mercator_bounds(z: int, x: int, y: int) -> tuple[float, float, float, 
     xmin, ymin = _WGS84_TO_WM.transform(west, south)
     xmax, ymax = _WGS84_TO_WM.transform(east, north)
     return xmin, ymin, xmax, ymax
+
+
+def _to_palette_png(png: bytes) -> bytes:
+    """Blocking: re-encode a colormapped RGBA tile from TiTiler as a palette PNG.
+
+    A colormapped tile has at most 256 colours (the caltopo_slope ramp has 256,
+    its entry 0 being the transparent nodata colour; hsv has 256, of which a
+    0–360 rescale reaches 255, plus transparent nodata). Pixel-identical at
+    roughly half the size. Fully transparent pixels are first set to
+    (0,0,0,0), which looks the same. Over 256 colours, or if the palette PNG
+    isn't smaller (some flat plains tiles), the input is returned unchanged;
+    never quantized.
+    """
+    rgba = np.asarray(Image.open(io.BytesIO(png)).convert("RGBA")).copy()
+    rgba[rgba[..., 3] == 0] = 0
+    colours, index = np.unique(rgba.view(np.uint32).ravel(), return_inverse=True)
+    if len(colours) > 256:
+        logger.debug("tile has %d colours, serving it as RGBA", len(colours))
+        return png
+    palette = colours.view(np.uint8).reshape(-1, 4)
+    height, width = rgba.shape[:2]
+    out = Image.frombytes("P", (width, height), index.astype(np.uint8).tobytes())
+    out.putpalette(palette[:, :3].tobytes())
+    out.info["transparency"] = palette[:, 3].tobytes()
+    buf = io.BytesIO()
+    # Level 1 comes out slightly smaller than 6 or 9 on these tiles, and faster.
+    out.save(buf, format="PNG", compress_level=1)
+    return buf.getvalue() if buf.tell() < len(png) else png
 
 
 # CalTopo V1 slope colormap is pre-built as data/colormaps/caltopo_slope.npy and
@@ -182,9 +215,11 @@ async def slope_tile(
     if resp.status_code == 404:
         return Response(status_code=204)
 
-    _cache_put(_SLOPE_CACHE, cache_key, resp.content, _SLOPE_CACHE_MAX)
+    loop = asyncio.get_event_loop()
+    png = await loop.run_in_executor(_PALETTE_POOL, _to_palette_png, resp.content)
+    _cache_put(_SLOPE_CACHE, cache_key, png, _SLOPE_CACHE_MAX)
     return Response(
-        content=resp.content,
+        content=png,
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=86400"},
     )
@@ -246,9 +281,11 @@ async def aspect_tile(
     if resp.status_code == 404:
         return Response(status_code=204)
 
-    _cache_put(_ASPECT_CACHE, cache_key, resp.content, _SLOPE_CACHE_MAX)
+    loop = asyncio.get_event_loop()
+    png = await loop.run_in_executor(_PALETTE_POOL, _to_palette_png, resp.content)
+    _cache_put(_ASPECT_CACHE, cache_key, png, _SLOPE_CACHE_MAX)
     return Response(
-        content=resp.content,
+        content=png,
         media_type="image/png",
         headers={"Cache-Control": "public, max-age=86400"},
     )
