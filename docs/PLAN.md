@@ -378,7 +378,6 @@ Dropping only the `t` parameter from the cache key is listed as an Enterprise op
 
 Backend work with no phase yet.
 
-- [x] **Backend lint cleanup:** done (Phase 3). Ruff config added and all errors fixed with no behaviour changes; CI runs ruff and pytest on every push.
 - [ ] **Restore rehearsal** from an R2 backup into a throwaway database.
 - [ ] **Replace `mc` with `rclone` in backups.** The mc image is pinned and saved to `/data/backups/images/`.
 - [ ] **Replace the MinIO server.** The community edition is discontinued and its images are no longer pullable. Options: R2/S3 directly, or Garage. Decide before moving hosts.

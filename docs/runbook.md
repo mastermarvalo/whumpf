@@ -6,7 +6,7 @@ Operational reference for the Ubuntu 24.04 VM on the UGREEN DXP4800 Plus NAS
 ## Host environment assumed
 
 - UGREEN DXP4800 Plus, 64 GB RAM, ~4 TB on `/volume1`
-- Ubuntu 24.04 LTS VM: 6 CPU, 16 GB RAM, 100 GB disk
+- Ubuntu 24.04 LTS VM: 6 CPU, 32 GB RAM (measured Oct 23, §13), 100 GB disk
 - Nginx Proxy Manager already running on the NAS (handles TLS and routing)
 
 ## 1. Install Podman + Docker compatibility layer
