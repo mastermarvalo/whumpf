@@ -27,6 +27,7 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 - **Validate every `region` param** with `app/regions.py::validate_region`.
 - **The Cameras layer must never sit behind a paid tier.** Windy's free-tier terms forbid offering its webcams "solely in the paid part" of an app. Its images are never cached or rehosted either (`docs/runbook.md` §10).
 - **Road conditions show only what CDOT says.** Map a CDOT value to a category (chain law, traction law, closed…) only after it has been seen in the real feed; everything else is `other` with CDOT's own text. Never guess from wording. CDOT's full disclaimer (`roads.DISCLAIMER`) must show wherever the data is shown. The COtrip key goes in the URL, so never log a URL or an httpx error message in that code (`docs/runbook.md` §11).
+- **API changes stay backward compatible from TestFlight on.** Friends run older app builds, so add fields and endpoints; don't rename or remove anything a shipped app uses until no build needs it.
 - **Stored secrets/tokens** use `EncryptedString` (`app/auth/encryption.py`, see `app/models/strava.py`).
 
 ## Conventions
@@ -43,8 +44,8 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 - New env vars go in `.env.example` with a comment, and every Settings field goes in `compose.yml`'s api `environment:` with the same default as `config.py`. `make check-env` (also in CI) fails otherwise.
 
 ## Where we are
-- Phase 2 backend is complete (refresh tokens, 6-digit email codes, password reset, change password/email, delete with password, Strava `return_to`). Phase 3 (Fix and verify) is done except a docs pass on the laptop: backend CI is green, the Strava iPhone redirect and the phone tests are done, `/docs` is off in prod and `whumpf-ios` is private. Phase 4 (Core features) is in progress: the backends below are done, and the app layers are `whumpf-ios` prompts in `docs/PLAN.md`. TestFlight is Phase 7, the last; its backend part is likely serving the privacy policy, terms and credits pages. Not built yet.
-- Retire with the old site: `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS` must be off (`LEGACY_EMAIL_LINKS` too). Details in `docs/runbook.md`.
+- Phase 2 backend is complete (refresh tokens, 6-digit email codes, password reset, change password/email, delete with password, Strava `return_to`). Phase 3 (Fix and verify) is done except a docs pass on the laptop: backend CI is green, the Strava iPhone redirect and the phone tests are done, `/docs` is off in prod and `whumpf-ios` is private. Phase 4 (Core features) is in progress: the backends below are done, and the app layers are `whumpf-ios` prompts in `docs/PLAN.md`. Decided Oct 23: TestFlight for a few friends and removing the old site now come before the trips work. whumpf.co will serve the Expo web app from the VM. The backend part of TestFlight is likely serving the privacy policy, terms and credits pages. Not built yet. `docs/PLAN.md` still has the older phase order and TestFlight as Phase 7.
+- Retire with the old site: `TILES_ALLOW_TOKENLESS` and `LEGACY_EMAIL_LINKS` go off. `STRAVA_RETURN_TO_ALLOW_DEV` stays on for local web testing until before the App Store. Details in `docs/runbook.md`.
 - Done: Alembic replaced `create_all` + `_SCHEMA_PATCHES`; prod is stamped at `0001_baseline` (runbook §6).
 - Done: own ski run tiles at `/tiles/ski`, rebuilt weekly with rollback (§7).
 - Done: recent snowfall, NOHRSC 24 h/72 h at `/tiles/snowfall/*`, and new snow on SNOTEL stations (§8).
