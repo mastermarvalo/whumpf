@@ -86,6 +86,7 @@ def test_configured_limits_match_the_plan():
     as_text = {k: [str(i) for i in v] for k, v in tile_tokens.BUCKETS.items()}
     assert as_text == {
         "token_create": ["10 per 1 minute", "30 per 1 hour"],
+        "token_create_user": ["10 per 1 minute", "60 per 1 hour"],
         "anon": ["600 per 1 minute", "6000 per 1 hour"],
         "anon_ip": ["1500 per 1 minute", "15000 per 1 hour"],
         "user": ["1200 per 1 minute", "20000 per 1 hour"],
@@ -157,6 +158,52 @@ def test_token_creation_is_limited_per_ip(client, small_limits, caplog):
     assert client.post(
         "/tiles/token", json={"install_id": INSTALL_ID}, headers=_via_cloudflare("203.0.113.6")
     ).status_code == 200
+
+
+def _bearer_post(client, user, ip):
+    bearer = create_access_token(user.email)
+    return client.post(
+        "/tiles/token", headers={"Authorization": f"Bearer {bearer}", **_via_cloudflare(ip)},
+    )
+
+
+def test_signed_in_token_creation_is_per_user_not_per_ip(client, db_session, users, small_limits, caplog):
+    """Friends on one hut Wi-Fi (one IP): signed-in callers don't use up the
+    per-IP limit or each other's."""
+    small_limits("token_create", "1/minute")
+    small_limits("token_create_user", "2/minute")
+    app.dependency_overrides[get_session] = lambda: db_session
+    try:
+        for _ in range(2):
+            assert _bearer_post(client, users["owner"], "203.0.113.5").status_code == 200
+        with caplog.at_level(logging.WARNING, logger="whumpf.tile_access"):
+            resp = _bearer_post(client, users["owner"], "203.0.113.5")
+        assert resp.status_code == 429
+        assert f"bucket=token_create_user subject=u:{users['owner'].id}" in caplog.text
+        # Another friend behind the same IP still gets tokens...
+        for _ in range(2):
+            assert _bearer_post(client, users["other"], "203.0.113.5").status_code == 200
+        # ...and so does a signed-out install there: signed-in calls didn't
+        # count against the per-IP limit.
+        assert client.post(
+            "/tiles/token", json={"install_id": INSTALL_ID}, headers=_via_cloudflare("203.0.113.5")
+        ).status_code == 200
+        assert client.post(
+            "/tiles/token", json={"install_id": f"{INSTALL_ID}y"}, headers=_via_cloudflare("203.0.113.5")
+        ).status_code == 429
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_user_limit_follows_the_user_across_ips(client, db_session, users, small_limits):
+    small_limits("token_create_user", "2/minute")
+    app.dependency_overrides[get_session] = lambda: db_session
+    try:
+        assert _bearer_post(client, users["owner"], "203.0.113.5").status_code == 200
+        assert _bearer_post(client, users["owner"], "198.51.100.7").status_code == 200
+        assert _bearer_post(client, users["owner"], "192.0.2.9").status_code == 429
+    finally:
+        app.dependency_overrides.clear()
 
 
 # ── token checks on /tiles/* ──────────────────────────────────────────────────

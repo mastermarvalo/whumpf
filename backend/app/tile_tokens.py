@@ -43,9 +43,15 @@ _KEY_LABEL = b"whumpf-tile-token-v1"
 # them are in docs/PLAN.md (Tile access). Only requests that reach the API
 # count; Cloudflare cache hits never get here.
 BUCKETS: dict[str, tuple[RateLimitItem, ...]] = {
-    # Per client IP. An install renews about once an hour; this covers a
-    # household or office behind one IP restarting several devices.
+    # Per client IP, signed-out installs only. An install asks on a cold
+    # start without a saved unexpired token and renews about once an hour;
+    # this covers a household or office behind one IP restarting several
+    # devices, and caps minting fresh install ids.
     "token_create": (parse("10/minute"), parse("30/hour")),
+    # Per user ("u:<id>"), signed-in callers, whatever their IP, so friends
+    # sharing a hut's Wi-Fi or a carrier's IPv4 address don't share a limit.
+    # Tile limits are per user anyway, so extra tokens buy nothing.
+    "token_create_user": (parse("10/minute"), parse("60/hour")),
     # Per install id. Fast panning with 3–4 layers is ~300–500 tiles/min.
     "anon": (parse("600/minute"), parse("6000/hour")),
     # Per client IP, across all anonymous tokens: caps how far minting fresh
@@ -188,8 +194,12 @@ def enforce(bucket: str, subject: str) -> None:
             )
 
 
-def limit_token_creation(request: Request) -> None:
-    enforce("token_create", client_ip(request))
+def limit_token_creation(request: Request, user_id: int | None) -> None:
+    """POST /tiles/token: per user when signed in, else per client IP."""
+    if user_id is not None:
+        enforce("token_create_user", f"u:{user_id}")
+    else:
+        enforce("token_create", client_ip(request))
 
 
 def require_tile_access(

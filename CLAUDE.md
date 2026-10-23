@@ -13,7 +13,7 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 - **One session per request** via `get_session` (`app/db.py`). No ad-hoc engines/sessions.
 - **Auth on every read and write** via `get_current_user` (`app/auth/dependencies.py`). Ownership/membership/visibility is enforced in the router/query layer (`app/auth/access.py`), never only in the frontend. Admin checks: `app/admin.py::is_admin`.
   - Deliberate public exceptions (don't flag these; anything new needs the same reasoning and a limit):
-    - `/tiles/*`: a tile token (`app/tile_tokens.py`) instead of sign-in. `POST /tiles/token` is open with a per-IP limit.
+    - `/tiles/*`: a tile token (`app/tile_tokens.py`) instead of sign-in. `POST /tiles/token` is open: signed-out installs are limited per IP (`token_create`, 10/min and 30/h), signed-in callers per user (`token_create_user`, 10/min and 60/h) so friends on one Wi-Fi or carrier IP don't share a limit.
     - `/avalanche/*`: public CAIC data used by signed-out users and the old site. Per-IP limit (`avalanche` bucket in `tile_tokens.BUCKETS`).
     - `GET /weather/forecast` (spot forecast): public NWS data for signed-out installs too. Needs a tile token instead of sign-in (so it isn't an open proxy to api.weather.gov under our User-Agent), plus a per-IP limit (`weather` bucket, 60/min and 600/h).
     - `GET /cameras` and `GET /cameras/{id}/image` (mountain cameras): public NPS and Windy webcams for signed-out installs too. Needs a tile token instead of sign-in (so `/image` isn't a free anonymous way to spend our Windy key), plus a per-IP limit (`cameras` bucket, 60/min and 600/h) and a global cap on lookups that reach Windy (`windy_upstream`, 60/min and 1000/h).
@@ -57,6 +57,7 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 - Done: offline packs, B1 tile cache, B2 pack worker, B3 `/packs/*` endpoints (§12, `docs/api-packs.md`). Deployed and smoke-tested Oct 20, 2026. `USGS_CONTACT` must be set for topo and imagery. The app side is A4.
 - Done: daily backups at 03:00 (local 14-day dump plus Cloudflare R2, checksum-verified; runbook §6 "Backups and restore"). Cloudflare caches `/tiles/*` (verified).
 - Done: memory limits per service, deployed and verified Oct 23, 2026 (§13). `make mem` shows usage; `make health` fails if a service has no limit. The pack worker is not yet measured under a cold build.
+- Built Oct 23, 2026, not deployed: the Strava webhook, disconnect deleting imported routes with a confirmation email, the 7-day refresh (`make strava-refresh`, migration `0004_strava_fetched_at`, §14), `make banner` (§15) and the per-user tile token limit. Deploy steps: set `STRAVA_WEBHOOK_VERIFY_TOKEN`, create the subscription, add the cron line (§14).
 - Open work is in the "Later" list in `docs/PLAN.md`.
 
 ## Don't

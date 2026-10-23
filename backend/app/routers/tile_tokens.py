@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Body, Depends, HTTPException, status
+from fastapi import APIRouter, Body, Depends, HTTPException, Request, status
 from pydantic import BaseModel, Field
 
 from app.auth.dependencies import get_optional_user
@@ -24,17 +24,16 @@ class TileTokenResponse(BaseModel):
     expires_at: datetime
 
 
-@router.post(
-    "/token",
-    response_model=TileTokenResponse,
-    dependencies=[Depends(limit_token_creation)],
-)
+@router.post("/token", response_model=TileTokenResponse)
 def create_tile_token(
+    request: Request,
     body: TileTokenRequest | None = Body(None),
     user: User | None = Depends(get_optional_user),
 ) -> TileTokenResponse:
     """Signed-in callers (Bearer or session cookie) get a `user` token;
-    signed-out apps send their install id and get an `anon` token."""
+    signed-out apps send their install id and get an `anon` token. Limited
+    per user when signed in, per IP otherwise (tile_tokens.BUCKETS)."""
+    limit_token_creation(request, user.id if user is not None else None)
     if user is not None:
         token, exp = issue(f"u:{user.id}", TIER_USER)
     elif body is not None and body.install_id:
