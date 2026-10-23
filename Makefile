@@ -146,8 +146,13 @@ db-restore:  ## restore a db-dump: make db-restore FILE=/data/backups/x.dump CON
 # --- health -----------------------------------------------------------------
 
 .PHONY: health
-health:  ## curl the readiness endpoint — quick "is everything wired up" check
+health:  ## readiness check, then fail if a service has no memory limit (past OOM kills only warn)
 	@curl -fsS http://localhost:8000/readyz | python3 -m json.tool || echo "api not reachable"
+	@CONTAINER=$(CONTAINER) SKI_WORKDIR=$(SKI_WORKDIR) scripts/mem.sh --check-limits
+
+.PHONY: mem
+mem:  ## memory used vs limit, peak, RestartCount and oom_kill per container; warns on OOM kills (docs/runbook.md §13)
+	@CONTAINER=$(CONTAINER) SKI_WORKDIR=$(SKI_WORKDIR) scripts/mem.sh
 
 # --- DEM pipeline -----------------------------------------------------------
 
@@ -180,6 +185,11 @@ REGION        ?= colorado
 SKI_WORKDIR   ?= /data/ski-work
 SKI_TILES_DIR ?= /data/martin-tiles
 CONTAINER     ?= podman
+# Memory limit for the tilemaker container, set here and not by compose: it is
+# not a compose service, and it is far above the api's 5 GB on purpose (the
+# weekly run must not be killed by a limit meant for a web worker). Raise it
+# with `make ski-tiles-refresh SKI_TILEMAKER_MEM=12g` or in the cron line.
+SKI_TILEMAKER_MEM ?= 8g
 # Only a `master` tag is published; pin the digest and bump it deliberately.
 TILEMAKER_IMAGE ?= ghcr.io/systemed/tilemaker@sha256:d3eda2790458de727bb0096eebce775984fc060f60901dac6dbfbbb79ae17370
 SKI = $(PYTHON) data/pipelines/ski_tiles.py --region $(REGION) --workdir $(SKI_WORKDIR) --tiles-dir $(SKI_TILES_DIR)
@@ -195,7 +205,7 @@ ski-tiles-fetch:  ## download the region's OSM extract (skipped if the md5 is un
 .PHONY: ski-tiles-build
 ski-tiles-build:  ## run tilemaker on the downloaded extract into $(SKI_WORKDIR)/out
 	mkdir -p $(SKI_WORKDIR)/out
-	$(CONTAINER) run --rm --network none \
+	$(CONTAINER) run --rm --network none --memory=$(SKI_TILEMAKER_MEM) \
 		-v $(SKI_WORKDIR)/$(REGION)/download:/in:ro \
 		-v $(CURDIR)/data/pipelines/ski:/cfg:ro \
 		-v $(SKI_WORKDIR)/out:/out \
@@ -203,7 +213,8 @@ ski-tiles-build:  ## run tilemaker on the downloaded extract into $(SKI_WORKDIR)
 		--input /in/$$(basename $$(ls $(SKI_WORKDIR)/$(REGION)/download/*.osm.pbf)) \
 		--output /out/ski_$(REGION).mbtiles.tmp.mbtiles \
 		--bbox $$($(SKI) bbox) \
-		--config /cfg/config.json --process /cfg/process.lua
+		--config /cfg/config.json --process /cfg/process.lua \
+		|| { rc=$$?; if [ $$rc -eq 137 ]; then echo "ski-tiles-build: tilemaker was OOM-killed at SKI_TILEMAKER_MEM=$(SKI_TILEMAKER_MEM); raise it (docs/runbook.md section 13)"; fi; exit $$rc; }
 	mv $(SKI_WORKDIR)/out/ski_$(REGION).mbtiles.tmp.mbtiles $(SKI_WORKDIR)/out/ski_$(REGION).mbtiles
 
 .PHONY: ski-tiles
@@ -215,7 +226,12 @@ ski-tiles-publish:  ## validate the build, swap it into $(SKI_TILES_DIR), restar
 	$(SKI) publish
 
 .PHONY: ski-tiles-refresh
-ski-tiles-refresh: ski-tiles ski-tiles-publish  ## the weekly job: fetch, build, validate, publish
+ski-tiles-refresh:  ## the weekly job: fetch, build, validate, publish; a failure leaves $(SKI_WORKDIR)/FAILED, which make mem and make health show
+	@mkdir -p $(SKI_WORKDIR)
+	@if $(MAKE) ski-tiles ski-tiles-publish; then rm -f $(SKI_WORKDIR)/FAILED; \
+	else rc=$$?; \
+		date -u +"%Y-%m-%dT%H:%M:%SZ ski-tiles-refresh failed (exit $$rc); the log is $(SKI_WORKDIR)/refresh.log" > $(SKI_WORKDIR)/FAILED; \
+		echo "ski-tiles-refresh FAILED (exit $$rc); the served tiles are unchanged"; exit $$rc; fi
 
 # --- recent snowfall ---------------------------------------------------------
 # NOAA NOHRSC 24 h / 72 h snowfall -> dem-cogs/snowfall/<region>/ in MinIO,

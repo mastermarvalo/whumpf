@@ -14,6 +14,14 @@
 
 name: whumpf
 
+# Memory limits (docs/runbook.md §13). Every service has a hard limit so one
+# runaway process can't starve the host. Postgres has the only reservation and
+# the lowest oom_score_adj: when memory is tight the others give up room first
+# (pack-worker, then the rest). GDAL_CACHEMAX is per process, so the api's is
+# multiplied by its 4 uvicorn workers. `make mem` reports usage against these.
+# One-off `compose run` jobs inherit their service's limit; a heavy job can
+# override it for that run only (API_MEM_LIMIT=8g make ...).
+
 # Named volumes removed — data now lives on /data (the 1 TB vda4 partition).
 # /data/pgdata  → PostGIS
 # /data/minio   → MinIO objects (DEMs, COGs, uploads)
@@ -27,6 +35,8 @@ services:
     container_name: whumpf-postgis
     network_mode: host
     restart: unless-stopped
+    mem_limit: ${POSTGIS_MEM_LIMIT:-4g}
+    mem_reservation: ${POSTGIS_MEM_RESERVATION:-1g}
     command: ["postgres", "-c", "listen_addresses=127.0.0.1"]
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-whumpf}
@@ -50,6 +60,7 @@ services:
     container_name: whumpf-redis
     network_mode: host
     restart: unless-stopped
+    mem_limit: ${REDIS_MEM_LIMIT:-256m}
     # sh -c so the password comes from the environment and stays out of the
     # process list.
     command:
@@ -73,10 +84,14 @@ services:
     container_name: whumpf-minio-svc
     network_mode: host
     restart: unless-stopped
+    mem_limit: ${MINIO_MEM_LIMIT:-4g}
+    oom_score_adj: 300
     command: server /data --address 127.0.0.1:9000 --console-address 127.0.0.1:9001
     environment:
       MINIO_ROOT_USER: ${MINIO_ROOT_USER:?MINIO_ROOT_USER required}
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:?MINIO_ROOT_PASSWORD required}
+      # Go soft limit: the GC works harder before the cgroup limit is reached.
+      GOMEMLIMIT: ${MINIO_GOMEMLIMIT:-3GiB}
     volumes:
       - /data/minio:/data
     healthcheck:
@@ -117,6 +132,8 @@ services:
     container_name: whumpf-titiler
     network_mode: host
     restart: unless-stopped
+    mem_limit: ${TITILER_MEM_LIMIT:-6g}
+    oom_score_adj: 300
     command:
       - "uvicorn"
       - "titiler.application.main:app"
@@ -141,7 +158,8 @@ services:
       VSI_CACHE: "TRUE"
       VSI_CACHE_SIZE: "10000000"
       CPL_VSIL_CURL_CACHE_SIZE: "400000000"
-      GDAL_CACHEMAX: "1024"
+      # Per worker process (4 workers).
+      GDAL_CACHEMAX: ${TITILER_GDAL_CACHEMAX:-1024}
       TITILER_DEFAULT_ATTRIBUTION: "Whumpf / USGS 3DEP"
       COLORMAP_DIRECTORY: /colormaps
     volumes:
@@ -158,6 +176,8 @@ services:
     container_name: whumpf-martin
     network_mode: host
     restart: unless-stopped
+    mem_limit: ${MARTIN_MEM_LIMIT:-512m}
+    oom_score_adj: 300
     command: ["--listen-addresses", "127.0.0.1:3000", "/data/martin-tiles"]
     environment:
       DATABASE_URL: postgres://${POSTGRES_USER:-whumpf}:${POSTGRES_PASSWORD}@localhost:5432/${POSTGRES_DB:-whumpf}
@@ -178,7 +198,11 @@ services:
     container_name: whumpf-api
     network_mode: host
     restart: unless-stopped
+    mem_limit: ${API_MEM_LIMIT:-5g}
+    oom_score_adj: 300
     environment:
+      # Per process: 4 uvicorn workers, each with its own GDAL block cache.
+      GDAL_CACHEMAX: ${API_GDAL_CACHEMAX:-256}
       WHUMPF_ENV: ${WHUMPF_ENV:-dev}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-whumpf}:${POSTGRES_PASSWORD}@localhost:5432/${POSTGRES_DB:-whumpf}
       DB_POOL_SIZE: ${DB_POOL_SIZE:-5}
@@ -265,10 +289,15 @@ services:
     container_name: whumpf-pack-worker
     network_mode: host
     restart: unless-stopped
+    # First to go when the host is short of memory; an OOM-killed build is
+    # queued again at the next start (requeue_interrupted).
+    mem_limit: ${PACK_WORKER_MEM_LIMIT:-2g}
+    oom_score_adj: 700
     command: ["uv", "run", "python", "-m", "app.jobs.pack_worker", "run"]
     # Time to stop a build, delete its uploads and queue it again.
     stop_grace_period: 30s
     environment:
+      GDAL_CACHEMAX: ${PACK_WORKER_GDAL_CACHEMAX:-256}
       WHUMPF_ENV: ${WHUMPF_ENV:-dev}
       DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-whumpf}:${POSTGRES_PASSWORD}@localhost:5432/${POSTGRES_DB:-whumpf}
       DB_POOL_SIZE: "2"
@@ -321,6 +350,8 @@ services:
     container_name: whumpf-frontend
     network_mode: host
     restart: unless-stopped
+    mem_limit: ${FRONTEND_MEM_LIMIT:-512m}
+    oom_score_adj: 300
     # Volume mount is only useful for the dev target's HMR. nginx in prod
     # serves from /usr/share/nginx/html (built into the image) and ignores it.
     volumes:

@@ -1444,7 +1444,171 @@ topo 915, imagery 915, slope 75, aspect 75, elevation 163, ski 75 tiles.
    both runs. Then `rm -r /tmp/berthoud`. The two packs' files go with the
    R2 lifecycle rule after 30 days; their rows with the cleanup after 60.
 
+## 13. Memory limits
+
+Added Oct 23, 2026, after the Oct 20 tile jam (api about 13 GB, MinIO about
+14.5 GB, no limits). Measured that day: host 32,096 MB (the "assumed" VM size
+at the top of this file is out of date), 6 cores, 2 GB swap.
+
+Every long-running service has a hard `mem_limit` in `compose.yml`. Each is a
+`${VAR:-default}` documented in `.env.example`; `GDAL_CACHEMAX` is in MB and
+applies **per process**, so the api's is multiplied by its 4 uvicorn workers.
+
+| Service | Limit | GDAL_CACHEMAX | oom_score_adj | Why |
+|---|---|---|---|---|
+| postgis | 4 GB (reserve 1 GB) | | 0 | worst case about 1.5 GB; observed 110 MB |
+| redis | 256 MB | | 0 | `maxmemory` is 64 MB |
+| minio | 4 GB, `GOMEMLIMIT=3GiB` | | 300 | the Go soft limit makes the GC work before the cgroup limit |
+| titiler | 6 GB | 1024 | 300 | 4 workers; observed 2.7 GB; see below |
+| martin | 512 MB | | 300 | observed 4 MB |
+| api | 5 GB | 256 | 300 | per worker 0.30 base + 0.25 GDAL + 0.35 tile caches + 0.15 render = 1.05 GB; x4 = 4.2 GB, plus the supervisor |
+| pack-worker | 2 GB | 256 | 700 | one process; writes PMTiles to disk |
+| frontend | 512 MB | | 300 | nginx about 120 MB; the Vite dev target needs more |
+
+The limits add up to 22.25 GB. They are ceilings, not reservations, and the
+services don't peak together. If memory runs short the kernel's OOM killer
+picks by `oom_score_adj`: the pack-worker first, then the +300 services.
+Postgres is last, because a rootless user can raise `oom_score_adj` but not
+lower it, so the others are raised instead.
+
+TiTiler at `GDAL_CACHEMAX=1024` has a theoretical ceiling above its limit
+(4 x (0.35 base + 1.0 GDAL + 0.4 vsicurl cache + 0.1) = 7.4 GB). The caches
+only fill under a big working set; the limit is there for when they do. If
+`make mem` shows titiler OOM kills, lower `TITILER_GDAL_CACHEMAX` before
+raising the limit.
+
+### What happens at a limit
+
+The kernel kills **one process** in the container (checked on this host:
+`memory.oom.group` is 0, and a test container's PID 1 survived its child
+being killed). For the api and TiTiler that is usually a uvicorn worker,
+which the uvicorn supervisor starts again, so:
+
+- the container **keeps running** and `RestartCount` stays 0; `restart:
+  unless-stopped` only fires if the main process dies (MinIO, Postgres,
+  Redis, Martin, the pack-worker, nginx);
+- the request that worker was serving fails, and the worker's in-process
+  tile caches start cold;
+- the kernel counts it as `oom_kill` in the container's cgroup
+  `memory.events`; `make mem` shows that;
+- a pack build killed with the worker is queued again at the next start
+  (`requeue_interrupted`).
+
+`/status` does not show any of this: it probes api, Postgres, MinIO, TiTiler
+and Martin by HTTP, so a worker that dies and respawns looks healthy. Use
+`make mem`.
+
+### Checking
+
+```bash
+make mem       # usage, limit, peak, RestartCount, oom_kill per container
+make health    # readiness, then fails if a service has no memory limit
+```
+
+`make mem` reads the kernel's counters. USED includes page cache the kernel
+can reclaim, so a high USED% on MinIO or TiTiler is not itself a problem;
+PEAK is the high-water mark since the container started. It warns about any
+`oom_kill` above 0 and names the variable to raise. `oom_kill` and
+`RestartCount` reset only when the container is recreated (`make up`), so a
+past kill stays in the report and `make health` does not fail on it; it
+fails only when a running service has `HostConfig.Memory` 0.
+
+**After deploying this change**, check every service got its limit (the
+owner runs `make up`; Claude Code does not):
+
+```bash
+for c in postgis redis minio-svc titiler martin api pack-worker frontend; do
+  printf '%-12s ' $c; podman inspect whumpf-$c --format '{{.HostConfig.Memory}}'
+done
+```
+
+Each line must be a non-zero number of bytes (5368709120 for the api).
+`make health` repeats the check.
+
+### Changing a limit
+
+Set the variable in `.env` (names are in `.env.example`) and run `make up`.
+Keep `MINIO_GOMEMLIMIT` below `MINIO_MEM_LIMIT`.
+
+### Measure the pack worker under load
+
+Nobody has measured the pack worker on a cold build: the 2 GB limit and
+256 MB GDAL cache come from reading the code and one warm 72.7 MB pack.
+During the next build for an area that has not been built (tiles not in
+`/data/pack-cache`), in a second terminal:
+
+```bash
+make pack-queue ARGS="--bbox=W,S,E,N"     # a box not built before
+watch -n 5 make mem                       # watch whumpf-pack-worker
+```
+
+Look at PEAK and OOM_KILL for `whumpf-pack-worker` once it finishes. If PEAK
+is near 2 GB or `oom_kill` is above 0, raise `PACK_WORKER_MEM_LIMIT`; if it
+stays under about 700 MB, the limit can come down. Record the numbers here.
+The api serves the same terrain code, so a cold build also shows how much
+the api's tile path needs.
+
+### Scheduled jobs and which limit they get
+
+`make` jobs that go through `API_RUN` (`compose run` of the api service) get
+the **api's** limit (5 GB) and `GDAL_CACHEMAX` (256 MB) as separate
+one-off containers; they don't share the running api's 5 GB. A job can
+override either for one run by putting the variable in front of `make`
+(compose reads the shell before `.env`; the running api is not touched):
+
+```bash
+API_MEM_LIMIT=8g API_GDAL_CACHEMAX=512 make <target>
+```
+
+| Job (cron) | Runs as | Limit / GDAL cache | Notes |
+|---|---|---|---|
+| `snowfall-refresh` (hourly :25) | api one-off | 5 GB / 256 MB | reads a clipped window of the NOHRSC grid |
+| `snowdepth-refresh` (hourly :35) | api one-off | 5 GB / 256 MB | SNODAS grid about 46 MB |
+| `temperature-refresh` (hourly :50) | api one-off | 5 GB / 256 MB | RTMA temperature and wind |
+| `radar-refresh` (every 5 min) | api one-off | 5 GB / 256 MB | MRMS CONUS grid about 100 MB per frame |
+| `cameras-refresh` (hourly :10) | api one-off | 5 GB / 256 MB | JSON only |
+| `roads-refresh` (every 5 min), `roads-sample` (every 15 min) | api one-off | 5 GB / 256 MB | JSON only |
+| `pack-queue`, `pack-list`, `pack-cleanup` | api one-off | 5 GB / 256 MB | database work |
+| `migrate`, `makemigration`, `db-check`, `test-api`, `lint-api` | api one-off | 5 GB / 256 MB | |
+| `pack-build-once` | pack-worker one-off | 2 GB / 256 MB | same work as the service; only while it is stopped |
+| `db-dump` and the 03:00 `backup.sh` (pg_dump) | `exec` in postgis | postgis's 4 GB | |
+| `backup.sh` (mc mirror) | `podman run` of the mc image | none | streams; not under compose |
+| `ski-tiles-refresh` (Tue 04:00) | host Python plus a `podman run` of tilemaker | **8 GB** (`SKI_TILEMAKER_MEM`) | see below |
+| `dem-pipeline` | host Python (`.venv`) and `gdalwarp -wm 2048` | none | not a container; no limit applies |
+
+None of the api one-offs is likely to come near 5 GB (the largest grid is
+about 100 MB), but that is from reading the code, not measuring it. If a
+cron job ever shows `Killed` or exit 137 in its log, give it a higher limit
+in its cron line or Makefile target as above.
+
+**Ski rebuild.** Tilemaker runs in a plain `podman run` from the Makefile,
+not as a compose service, so the api's limit never applied to it. It now has
+its own, `SKI_TILEMAKER_MEM` (default 8 GB), a make variable:
+`make ski-tiles-refresh SKI_TILEMAKER_MEM=12g`, or add it to the cron line.
+It has never been measured; the output is only 2 MB but the Colorado extract
+is read in full. If it is OOM-killed, the build prints
+`tilemaker was OOM-killed at SKI_TILEMAKER_MEM=...` and the run fails.
+
+The weekly run does not fail silently any more. `make ski-tiles-refresh`
+writes `/data/ski-work/FAILED` (time, exit code) when any step fails and
+removes it on the next success. The failed run leaves the served tiles
+untouched, and `make mem` and `make health` print the file as a warning
+(`make health` does not fail on it). Cron still only writes to
+`/data/ski-work/refresh.log`, and nothing pushes an alert, so look at
+`make health` on Tuesday morning, or `tail /data/ski-work/refresh.log`.
+
+**DEM pipeline.** It runs on the host, not in a container: no compose limit
+applies and nothing was changed. `gdalwarp -wm 2048` caps its warp buffer;
+host GDAL uses its default cache (5% of RAM). If you want a hard cap for a
+run, wrap it: `systemd-run --user --scope -p MemoryMax=16G make dem-pipeline`.
+
 ## Troubleshooting
+
+### A container is slow, or a request failed and nothing restarted
+
+Run `make mem`. An `OOM_KILL` above 0 means the kernel killed a process in
+that container for going over its limit; the container did not restart (see
+section 13). Raise its limit in `.env` and run `make up`, or find what grew.
 
 ### `api` container restarts repeatedly
 
