@@ -22,6 +22,7 @@ from app.routers import (
     cameras,
     friends,
     health,
+    legal,
     packs,
     regions,
     roads,
@@ -128,6 +129,7 @@ def create_app() -> FastAPI:
     app.include_router(trips.router)
     app.include_router(packs.router)
     app.include_router(status_router.router)
+    app.include_router(legal.router)
 
     logger.info("Whumpf API starting (env=%s, version=%s)", settings.whumpf_env, __version__)
     return app

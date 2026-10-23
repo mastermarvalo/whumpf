@@ -10,6 +10,10 @@ arguments, the traceback and the stack.
 Strava's webhook check sends our verify token as `?hub.verify_token=`
 (GET /strava/webhook), and uvicorn's access log prints every query string,
 so `install_access()` redacts it there (and in every other line here).
+It also blanks the tile token (`t=`, whose payload names the user), the
+Strava OAuth callback's `code=` and `state=` (the state names the user) and
+map points (`lat=`, `lon=`, `lng=`), so access lines aren't tied to an
+account and don't keep the points people check (the privacy policy says so).
 
     install()          # on every root handler, after logging.basicConfig
     install_access()   # on uvicorn's access logger (the API, app/main.py)
@@ -24,6 +28,9 @@ from app.config import get_settings
 
 REDACTED = "<redacted>"
 _PARAM = re.compile(r"(?i)(apikey=|hub\.verify_token=)[^&\s'\"<>]+")
+# Access log only: query parameters that would tie a request to an account
+# or keep a point someone checked (/weather/forecast, /avalanche/zone_detail).
+_ACCESS_PARAM = re.compile(r"(?<=[?&])(t|code|state|lat|lon|lng)=[^&\s'\"<>]*")
 
 
 def _secrets() -> list[str]:
@@ -61,6 +68,10 @@ def install(handlers: list[logging.Handler] | None = None) -> None:
             handler.addFilter(RedactFilter())
 
 
+def redact_access(text: str) -> str:
+    return _ACCESS_PARAM.sub(rf"\g<1>={REDACTED}", redact(text))
+
+
 class AccessRedactFilter(logging.Filter):
     """For uvicorn's access logger, whose formatter needs the record's args
     tuple (client, method, path, version, status): redact each string in it
@@ -68,9 +79,9 @@ class AccessRedactFilter(logging.Filter):
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.args, tuple):
-            record.args = tuple(redact(a) if isinstance(a, str) else a for a in record.args)
+            record.args = tuple(redact_access(a) if isinstance(a, str) else a for a in record.args)
         elif isinstance(record.msg, str):
-            record.msg = redact(record.msg)
+            record.msg = redact_access(record.msg)
         return True
 
 

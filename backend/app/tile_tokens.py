@@ -81,6 +81,9 @@ BUCKETS: dict[str, tuple[RateLimitItem, ...]] = {
     # Per client IP, GET /status (public, no token). The app polls it every
     # 5 min; the service checks behind it are cached for 30 s.
     "status": (parse("60/minute"), parse("600/hour")),
+    # Per client IP, GET /legal/privacy and /legal/terms (public, no token).
+    # Cloudflare caches them, so only misses count.
+    "legal": (parse("60/minute"), parse("600/hour")),
     # Per user ("u:<id>"), POST /packs (signed in). Each request can start a
     # build of up to ~3,000 tiles; a trip needs a pack or two. Every POST
     # counts, even one answered from a ready pack.

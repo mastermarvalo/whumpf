@@ -277,10 +277,22 @@ make db-dump                     # local pg_dump -Fc → /data/backups/whumpf-<u
 `make backup` runs daily from cron at 03:00 server time
 (docs/external-services.md, "Schedule daily"): a local `db-dump` (copy out
 of the container checked by sha256; dumps older than 14 days deleted), then
-the same file uploaded to Cloudflare R2 (`whumpf-backups/postgres/`, 30-day
-retention) and read back by sha256, then `user-uploads` mirrored. It logs to
+the same file uploaded to Cloudflare R2 (`whumpf-backups/postgres/`, kept
+28 days) and read back by sha256, then `user-uploads` mirrored. It logs to
 `/data/backups/backup.log` and ends with a `complete` line. If the local dump
 fails, nothing goes up for postgres, uploads are still mirrored, and it exits 1.
+
+**28 days is a promise.** The privacy policy (`/legal/privacy`) says deleted
+data leaves the backups within 28 days, and Strava's API Policy §7.4 wants
+deleted Strava data gone from every system we control within 30. The script
+deletes R2 dumps older than 27 days on each run (so with the daily run none
+is older than 28; a failed prune prints `!! pruning off-site dumps ... FAILED`
+in `backup.log`). That only works while the cron runs, so an R2 lifecycle
+rule deletes them as well (set by hand, once): Cloudflare dashboard → R2 →
+`whumpf-backups` → Settings → Object lifecycle rules → Add rule: prefix
+`postgres/`, delete objects 28 days after upload. Don't lengthen either
+without changing the privacy policy and keeping it under 30 days. The local
+14-day dumps are pruned by the same run.
 An off-site dump restores the same way as a local one (download it, then
 `make db-restore`).
 
@@ -1754,6 +1766,100 @@ make banner ARGS='resolve 12'
 - The admin endpoints (`POST /status`, `POST /status/{id}/resolve`,
   `DELETE /status/{id}`) still work for a signed-in admin. Both paths share
   `app/services/status_banners.py`.
+
+## 16. Privacy policy and terms: `/legal/*`
+
+`GET /legal/privacy` and `GET /legal/terms` (and HEAD) serve
+`backend/app/legal/privacy.md` and `terms.md` as plain HTML: no scripts,
+light and dark, readable on a phone. App Store Connect and Strava's API
+Policy §7.3 need the privacy URL, and the app links both, so **the paths are
+permanent** (CLAUDE.md, backward compatibility). Public, per-IP `legal`
+bucket (60/min, 600/h), `Cache-Control: public, max-age=3600`.
+
+`{contact_email}` in the text becomes a mailto link to `LEGAL_CONTACT_EMAIL`.
+Empty: the pages say "(contact email not configured)" and the api logs
+`LEGAL_CONTACT_EMAIL is not set` at startup. Set it before the pages go live.
+
+### Editing the text
+
+1. Edit the `.md`, change its `Last updated:` line, and update the tests in
+   `tests/test_legal.py` if a heading changed.
+2. If what's collected or kept changes in a significant way, tell users (the
+   policy promises notice in the app or by email before it takes effect).
+3. After deploying, purge `https://api.whumpf.co/legal/*` in Cloudflare
+   (Caching → Configuration → Custom Purge), or wait out the hour.
+
+Each worker renders a page once, so a text change needs an api restart
+(`make up` does it).
+
+### What the policy promises, and what keeps it true
+
+Check these before the first deploy and after any change to logging, backups
+or the proxy:
+
+| Promise | Kept by |
+| --- | --- |
+| API logs don't record checked points or tie requests to an account | `log_redact.AccessRedactFilter` blanks `t=`, `code=`, `state=`, `lat=`, `lon=`, `lng=` in uvicorn's access log (tested in `tests/test_legal.py`). A new query parameter that names a user or a point goes in `_ACCESS_PARAM` |
+| The same for the proxy | Nginx Proxy Manager's access log is off for `api.whumpf.co` (below) |
+| Logs kept up to 30 days | journald retention (below) |
+| Backups gone within 28 days | `scripts/backup.sh` and the R2 lifecycle rule (§6, "Backups and restore") |
+| Imported Strava routes refreshed or deleted within 7 days, deletions on Strava gone within 48 h | `make strava-refresh` cron and the webhook subscription (§14) |
+
+Turn off NPM's access log for the API (on the NAS, in the NPM web UI):
+
+1. Hosts → Proxy Hosts → `api.whumpf.co` → ⋮ → Edit.
+2. Advanced tab → Custom Nginx Configuration, add the line `access_log off;`
+   (it cancels NPM's own `access_log` line for this host). Save.
+3. Check: load `https://api.whumpf.co/status` a few times. In NPM's data
+   folder, `logs/proxy-host-<N>_access.log` (`<N>` is the host's id,
+   shown in the edit URL) stops growing.
+4. Delete that host's old access logs (`proxy-host-<N>_access.log*`); they
+   have tile tokens and points from before.
+5. The error log (`proxy-host-<N>_error.log`) stays on. Nginx writes the
+   request line into it when the API is down or slow, so check NPM's
+   logrotate keeps it no more than 30 days:
+   `docker exec <npm-container> cat /etc/logrotate.d/nginx-proxy-manager`.
+
+Keep container logs 30 days (on the VM):
+
+1. `podman info --format '{{.Host.LogDriver}}'`. With `k8s-file`, logs
+   have no time limit until the container is recreated. Switch to journald:
+   in `~/.config/containers/containers.conf` add
+   ```
+   [containers]
+   log_driver = "journald"
+   ```
+   It applies to containers created after that (`make up` recreates them).
+2. Cap journald: `sudo mkdir -p /etc/systemd/journald.conf.d` and write
+   `/etc/systemd/journald.conf.d/whumpf.conf`:
+   ```
+   [Journal]
+   MaxRetentionSec=30day
+   ```
+   then `sudo systemctl restart systemd-journald`.
+3. Check: `make logs-api` still shows the api's lines, and
+   `journalctl --user -o short-iso | head -1` (or without `--user`) is no
+   older than 30 days.
+
+Cloudflare cache (once): the Cache Rule for `/tiles/*` (§4) doesn't cover
+these, and Cloudflare doesn't cache HTML by default. Add a second rule:
+Caching → Cache Rules → Create rule, URI Path starts with `/legal/`,
+Eligible for cache, Edge TTL "Use cache-control header if present", Browser
+TTL "Respect origin". Check:
+`curl -sI https://api.whumpf.co/legal/privacy | grep -i cf-cache-status`
+answers MISS, then HIT.
+
+### Deploying
+
+The pages need the `markdown` package, so the api image must be rebuilt.
+`make up` builds then starts (`up -d --build`), so it is enough on its own:
+
+```bash
+# .env: LEGAL_CONTACT_EMAIL=...
+make up
+make health
+curl -s https://api.whumpf.co/legal/privacy | grep -c 'Strava'   # non-zero
+```
 
 ## Troubleshooting
 

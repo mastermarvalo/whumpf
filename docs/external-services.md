@@ -252,7 +252,8 @@ The mc image is pinned to `quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z`
 where it is already cached; on a new host it has to come from somewhere else
 (e.g. `podman save`/`load` from this one). Its entrypoint is `mc`, so shell
 snippets need `--entrypoint sh ... -c '...'`.
-The script self-prunes postgres dumps older than 30 days. `user-uploads/`
+The script prunes postgres dumps after 27 days, so none is older than 28 (the
+privacy policy's number; docs/runbook.md §6 also has the R2 lifecycle rule). `user-uploads/`
 mirrors are kept indefinitely (only new/changed files are uploaded each
 run — cheap incremental).
 

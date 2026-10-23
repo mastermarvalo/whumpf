@@ -127,6 +127,9 @@ class Settings(BaseSettings):
     # Also send (and accept) the old ?verify= / ?reset= email links, alongside
     # 6-digit codes. On while the old website is still up.
     legacy_email_links: bool = True
+    # Contact address shown on /legal/privacy and /legal/terms (privacy
+    # requests, account questions). Empty: the pages say it isn't set.
+    legal_contact_email: str = ""
 
     # --- Rate limiting -------------------------------------------------------
     # Redis URL for cross-worker rate limit state. Defaults to in-process

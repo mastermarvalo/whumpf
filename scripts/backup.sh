@@ -15,8 +15,12 @@
 #   * `dem-raw` — redownloadable from USGS 3DEP, no point paying to store it
 #   * `strava-cache` — regenerable
 #
-# Retention: off-site postgres dumps older than 30 days are pruned; user-uploads is
-# mirrored without --remove so deletions on the source don't wipe the backup.
+# Retention: off-site postgres dumps are pruned after 27 days, so with the daily
+# run none is older than 28 (the privacy policy says 28; Strava's API Policy
+# §7.4 wants deleted Strava data gone from every system within 30). An R2
+# lifecycle rule deletes them at 28 days too, in case this job stops running
+# (docs/runbook.md §6). user-uploads is mirrored without --remove so deletions
+# on the source don't wipe the backup.
 #
 # Scheduled via cron, 3am server time daily (docs/external-services.md):
 #   0 3 * * * cd /home/ronkerflonk/whumpf && flock -n /data/backups/.backup.lock scripts/backup.sh >> /data/backups/backup.log 2>&1
@@ -110,9 +114,12 @@ podman run --rm --network host \
         fi
         mc mirror --overwrite local/user-uploads "backup/$BACKUP_S3_BUCKET/user-uploads/" >/dev/null
         '"$MIRROR_COGS"'
-        # 30-day retention on postgres dumps. user-uploads is mirrored without
+        # Postgres dumps: none older than 28 days (see Retention above). A
+        # failed prune is reported but does not fail the backup; the R2
+        # lifecycle rule is the backstop. user-uploads is mirrored without
         # --remove so deleted source files stay backed up.
-        mc rm --recursive --force --older-than 30d "backup/$BACKUP_S3_BUCKET/postgres/" >/dev/null 2>&1 || true
+        mc rm --recursive --force --older-than 27d "backup/$BACKUP_S3_BUCKET/postgres/" >/dev/null 2>&1 \
+            || echo "  !! pruning off-site dumps older than 27 days FAILED (the R2 lifecycle rule still deletes them at 28)"
     '
 
 if [ "$LOCAL_OK" != 1 ]; then
