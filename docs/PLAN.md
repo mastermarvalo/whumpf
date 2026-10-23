@@ -313,7 +313,7 @@ The two items that block TestFlight are a privacy policy and a safety disclaimer
 | Crash reporting | The old website used Sentry; the app reports nothing, so friends' crashes would go unseen || 6 |
 | Fixes without a rebuild | EAS Update pushes JavaScript-only fixes to testers in minutes || 6 |
 | App CI | The backend runs CI on every push; `whumpf-ios` has none. Run the type check and terrain checks on push | 3 |
-| Outage notices | The backend has status banners (`/status`); the app never shows them | 4 |
+| Outage notices | The backend has status banners (`/status`, posted with `make banner`, runbook §15); the app never shows them | 4 |
 | Server health | Tile cache lives only in memory per worker; add an uptime check (`scripts/backup.sh` now runs daily from cron) | 0 to 1 |
 | Place search | The old website searched places in Colorado (Photon); the app cannot | 4 |
 | GPX import and export | Lets people share their own tracks without touching Strava data | 7 |

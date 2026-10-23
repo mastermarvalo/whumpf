@@ -287,6 +287,14 @@ roads-sample:  ## record the distinct CDOT condition/incident/impact values (15-
 strava-refresh:  ## re-fetch Strava imports due under the 7-day rule (6-hourly job); ARGS=--dry-run asks Strava nothing
 	$(API_RUN) uv run python -m app.jobs.strava_refresh $(ARGS)
 
+# --- outage banners -----------------------------------------------------------
+# Banners on GET /status, written straight to the database: no sign-in token
+# or password needed. docs/runbook.md §15.
+
+.PHONY: banner
+banner:  ## outage banners: make banner lists; ARGS='post --severity major --title "..." [--body "..."]'; ARGS='resolve <id>'
+	$(API_RUN) uv run python -m app.jobs.banner $(ARGS)
+
 # --- offline packs ------------------------------------------------------------
 # The pack-worker service builds queued packs into R2: docs/runbook.md §12.
 

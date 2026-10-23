@@ -19,7 +19,7 @@ from pathlib import Path
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from pydantic import BaseModel
-from sqlalchemy import select, text
+from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app import tile_tokens
@@ -39,6 +39,7 @@ from app.services import (
     roads,
     snowdepth,
     snowfall,
+    status_banners,
     temperature,
     wind,
 )
@@ -307,16 +308,8 @@ def limit_status(request: Request) -> None:
 @router.get("", response_model=StatusOut, dependencies=[Depends(limit_status)])
 async def get_status(session: Session = Depends(get_session)) -> StatusOut:
     services = await _cached_services(session)
-    active = session.scalars(
-        select(StatusBanner)
-        .where(StatusBanner.resolved_at.is_(None))
-        .order_by(StatusBanner.created_at.desc())
-    ).first()
-    recent = list(session.scalars(
-        select(StatusBanner)
-        .order_by(StatusBanner.created_at.desc())
-        .limit(10)
-    ).all())
+    active = next(iter(status_banners.active(session)), None)
+    recent = status_banners.recent(session)
     return StatusOut(
         overall=_overall(services, active),
         services=services,
@@ -326,9 +319,8 @@ async def get_status(session: Session = Depends(get_session)) -> StatusOut:
 
 
 # ── admin endpoints ────────────────────────────────────────────────────────────
-
-_ALLOWED_SEVERITIES = {"minor", "major", "critical"}
-
+# `make banner` (app/jobs/banner.py) does the same from the VM without a
+# sign-in token.
 
 @router.post("", response_model=BannerOut, status_code=status.HTTP_201_CREATED)
 def post_banner(
@@ -336,22 +328,13 @@ def post_banner(
     admin: User = Depends(require_admin),
     session: Session = Depends(get_session),
 ) -> BannerOut:
-    if body.severity not in _ALLOWED_SEVERITIES:
-        raise HTTPException(
-            status.HTTP_400_BAD_REQUEST,
-            f"severity must be one of {sorted(_ALLOWED_SEVERITIES)}",
+    try:
+        banner = status_banners.post(
+            session, title=body.title, body=body.body, severity=body.severity,
+            created_by_id=admin.id,
         )
-    if not body.title.strip():
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "title cannot be empty")
-    banner = StatusBanner(
-        title=body.title.strip(),
-        body=body.body,
-        severity=body.severity,
-        created_by_id=admin.id,
-    )
-    session.add(banner)
-    session.commit()
-    session.refresh(banner)
+    except ValueError as exc:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(exc)) from None
     logger.info("status banner posted: id=%s severity=%s by=%s",
                 banner.id, banner.severity, admin.id)
     return BannerOut.model_validate(banner)
@@ -363,13 +346,10 @@ def resolve_banner(
     admin: User = Depends(require_admin),
     session: Session = Depends(get_session),
 ) -> BannerOut:
-    banner = session.get(StatusBanner, banner_id)
+    banner, changed = status_banners.resolve(session, banner_id)
     if not banner:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Banner not found")
-    if banner.resolved_at is None:
-        banner.resolved_at = datetime.now(UTC)
-        session.commit()
-        session.refresh(banner)
+    if changed:
         logger.info("status banner resolved: id=%s by=%s", banner.id, admin.id)
     return BannerOut.model_validate(banner)
 

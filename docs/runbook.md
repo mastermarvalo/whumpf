@@ -1569,7 +1569,7 @@ API_MEM_LIMIT=8g API_GDAL_CACHEMAX=512 make <target>
 | `cameras-refresh` (hourly :10) | api one-off | 5 GB / 256 MB | JSON only |
 | `roads-refresh` (every 5 min), `roads-sample` (every 15 min) | api one-off | 5 GB / 256 MB | JSON only |
 | `strava-refresh` (every 6 h at :45) | api one-off | 5 GB / 256 MB | Strava calls; re-samples terrain only for a changed track |
-| `pack-queue`, `pack-list`, `pack-cleanup` | api one-off | 5 GB / 256 MB | database work |
+| `pack-queue`, `pack-list`, `pack-cleanup`, `banner` | api one-off | 5 GB / 256 MB | database work |
 | `migrate`, `makemigration`, `db-check`, `test-api`, `lint-api` | api one-off | 5 GB / 256 MB | |
 | `pack-build-once` | pack-worker one-off | 2 GB / 256 MB | same work as the service; only while it is stopped |
 | `db-dump` and the 03:00 `backup.sh` (pg_dump) | `exec` in postgis | postgis's 4 GB | |
@@ -1729,6 +1729,31 @@ minutes:
 ```
 45 */6 * * * cd /home/ronkerflonk/whumpf && flock -n /data/strava/.refresh.lock make strava-refresh >> /data/strava/refresh.log 2>&1
 ```
+
+## 15. Outage banners: `make banner`
+
+The app shows the newest unresolved banner from `GET /status`. A critical
+banner makes `overall` "outage", a major one at least "degraded". This
+replaces the old website's status page, where banners were posted while
+signed in as an admin.
+
+```bash
+make banner                                     # active and recently resolved, with ids
+make banner ARGS='post --severity major --title "Tiles are slow" --body "Working on it."'
+make banner ARGS='resolve 12'
+```
+
+- Severity is `minor` (default), `major` or `critical`. The title is at
+  most 200 characters; `--body` is optional.
+- It writes straight to the database in a one-off api container, so it needs
+  no sign-in token or password: nothing secret on the command line, in shell
+  history or in a log. Banners posted this way have no author
+  (`created_by_id` null); the log line says `via CLI`.
+- Avoid `$` and backticks in the text, or use single quotes inside, since
+  the shell expands them.
+- The admin endpoints (`POST /status`, `POST /status/{id}/resolve`,
+  `DELETE /status/{id}`) still work for a signed-in admin. Both paths share
+  `app/services/status_banners.py`.
 
 ## Troubleshooting
 
