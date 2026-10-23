@@ -31,9 +31,9 @@ Checked against `whumpf` at 65846e8. This covers the backend repo only; the app 
 - **Cloudflare `/tiles/*` cache, done and verified** (MISS then HIT; 65e9f50).
 - **Weather backend, done (Oct 16):** a shared raster layer module (5e77765); snow depth from NOHRSC SNODAS (8ba8c50), current temperature from NOAA RTMA (8662bf8), radar from NOAA MRMS in 10-minute frames for 2 h (d7dde54), and the spot forecast `GET /weather/forecast` from api.weather.gov (0cfa61d). `docs/runbook.md` §9.
 - **Road conditions backend, done (Oct 18):** CDOT COtrip conditions, incidents and planned events at `GET /roads`, lines at `/tiles/roads/segments`, every 5 min; `make roads-sample` records CDOT's values for a week before chain law, traction law and avalanche control get mapped. `docs/runbook.md` §11.
-- **Next: Phase 3 (Fix and verify).** TestFlight is now Phase 7, the last one. Its likely backend part, serving the privacy policy, terms and credits pages, moves with it. Not built.
+- **Where we are (Oct 23):** Phase 3 is done except a laptop docs pass; Phase 4 is in progress. Decided Oct 23: TestFlight for a few friends (now Phase 6) and removing the old site (Phase 5) come before the trips work (now Phase 7). whumpf.co will serve the Expo web app from the VM. TestFlight's likely backend part, serving the privacy policy, terms and credits pages, is not built.
 
-**Turn off when the old website is retired:** `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS`. See "Settings added in Phase 2" in `docs/runbook.md`.
+**Turn off when the old website is retired:** `TILES_ALLOW_TOKENLESS` and `LEGACY_EMAIL_LINKS`. `STRAVA_RETURN_TO_ALLOW_DEV` stays on for local web testing until before the App Store. See "Settings added in Phase 2" in `docs/runbook.md`.
 
 ## Gaps
 
@@ -69,12 +69,13 @@ Stabilize first, then build iPhone and web together.
 | 1. Safe for friends | Strava routes owner-only; account deletion fixed; signed tile tokens and rate limits | No Strava data reaches another user |
 | 2. Accounts in the app | Sign-up, verify email, reset password, delete account; refresh tokens; Strava connect returns to the app | A friend signs up on the phone |
 | 3. Fix and verify | ~~Backend CI green via a ruff config~~ (done); Strava connect returns to the iPhone app; phone test of the code that was only type-checked; `/docs` off in prod; `whumpf-ios` made private | Everything built so far works on the phone and CI is green |
-| 4. Core features | Recent snowfall, layer order and opacity, weather, spot forecast, wind arrows, mountain cameras, outage banners, route hazard summary, Munter times, phone inclinometer, slope-above-you runout tap check, trip editing, in-app sharing, GPX, trip briefing, GPS recording, forecast-change alerts, Strava 7-day rules and deauth webhook, offline map downloads, offline 3D | Web covers the old site |
-| 5. Swap whumpf.co | Parity check, CORS update, email link routes; point whumpf.co at Expo web, delete old frontend | One codebase serves both |
-| 6. Polish | Before-and-after renders of each screen; pick designs, then prompt the changes | |
-| 7. TestFlight (last) | App Store Connect record, icon, privacy policy, safety disclaimer, credits, crash reporting, EAS Update; invite friends and collect feedback | Feedback sorted into fixes |
+| 4. Core features (in progress) | Recent snowfall, layer order and opacity, weather, spot forecast, wind arrows, mountain cameras, outage banners, route hazard summary, Munter times, phone inclinometer, slope-above-you runout tap check, Strava 7-day rules and deauth webhook, offline map downloads, offline 3D | Web covers the old site |
+| 5. Swap whumpf.co | Parity check, CORS update, email link routes; serve the Expo web app at whumpf.co from the VM, delete old frontend; turn off `TILES_ALLOW_TOKENLESS` and `LEGACY_EMAIL_LINKS` | One codebase serves both |
+| 6. TestFlight | App Store Connect record, icon, privacy policy, safety disclaimer, credits, crash reporting, EAS Update; invite a few friends and collect feedback. From here on, API changes stay backward compatible | Feedback sorted into fixes |
+| 7. Trips and recording | Trip editing, in-app sharing, GPX, trip briefing, GPS recording, forecast-change alerts | |
+| 8. Polish | Before-and-after renders of each screen; pick designs, then prompt the changes | |
 
-Web track: runs alongside phases 1 to 4. Each feature ships on iPhone and web together, with X.web.tsx only where the code must differ. The old whumpf.co stays up until Phase 5.
+Web track: runs alongside phases 1 to 4. Each feature ships on iPhone and web together, with X.web.tsx only where the code must differ. The old whumpf.co stays up until Phase 5, when the VM serves the Expo web app at whumpf.co.
 
 Phase 0 comes first because nothing else can be tested while tiles time out. After that, every feature ships on iPhone and web together, and whumpf.co switches to Expo web in Phase 5 once it covers the old site.
 
@@ -168,7 +169,7 @@ Making `whumpf-ios` private is a GitHub setting, not a prompt: do it, then attac
 
 ### Phase 4: Core features
 
-Build order is flexible. Suggested grouping: layers (recent snowfall, order and opacity, weather, spot forecast, wind arrows, cameras, outage banners); terrain on the phone (route hazard summary, inclinometer, slope-above-you runout tap check, Munter times); trips (editing, in-app sharing, GPX, briefing); recording and alerts (GPS recording, forecast-change alerts); Strava compliance (7-day rules, deauthorization webhook); offline (map downloads, then offline 3D).
+Build order is flexible. Suggested grouping: layers (recent snowfall, order and opacity, weather, spot forecast, wind arrows, cameras, outage banners); terrain on the phone (route hazard summary, inclinometer, slope-above-you runout tap check, Munter times); Strava compliance (7-day rules, deauthorization webhook); offline (map downloads, then offline 3D). Trips, GPS recording and alerts moved to Phase 7 (decided Oct 23).
 
 ```text
 [whumpf-ios] Add the Recent snowfall layer. The backend is done (whumpf docs/runbook.md §8): GET /tiles/snowfall/meta?region=colorado gives per period (24h, 72h) the window start and valid time (UTC), a tile URL template that already carries ?v= (add ?t= in tiles.ts as for every tile), maxzoom 10, bounds, the legend in inches and the NOAA attribution. Add it to the Layers sheet with a 24 h / 72 h switch and the stepped legend, and always show the window in local time (e.g. "72 h to 6 am Oct 15") plus "NOAA/NWS NOHRSC" while it is on. Refetch meta when the app comes to the foreground. In the SNOTEL point sheet show new_snow_24h_in / new_snow_72h_in (and new SWE) with new_snow_as_of; null means unknown, not zero.
@@ -176,14 +177,6 @@ Build order is flexible. Suggested grouping: layers (recent snowfall, order and 
 
 ```text
 [whumpf-ios] Add a CAIC observations layer from GET /avalanche/observations: markers by type (caught, avalanche, other), a toggle in the Layers sheet, and a tap card. Show when the data was fetched.
-```
-
-```text
-[whumpf-ios] Level 11, recording: GPS track with background location, hold-to-stop, save as a route with source=recorded. List the app.json permission changes first.
-```
-
-```text
-[whumpf-ios] Add route sharing on the route screen (create, copy, revoke a link) for routes that are not from Strava. Hide it for Strava routes.
 ```
 
 ```text
@@ -200,10 +193,20 @@ Build order is flexible. Suggested grouping: layers (recent snowfall, order and 
 [whumpf-ios] Add routes for the email links (/verify, /reset, /trip-invite) and plan deploying npx expo export -p web to beta.whumpf.co.
 ```
 
-### Phase 7: TestFlight (last)
+### Phase 6: TestFlight
 
 ```text
 [whumpf-ios] Walk me through a TestFlight build: App Store Connect app record, eas.json production profile, app icon and splash, privacy policy URL, and the App Store privacy answers for location, email and Strava data.
+```
+
+### Phase 7: Trips and recording
+
+```text
+[whumpf-ios] Level 11, recording: GPS track with background location, hold-to-stop, save as a route with source=recorded. List the app.json permission changes first.
+```
+
+```text
+[whumpf-ios] Add route sharing on the route screen (create, copy, revoke a link) for routes that are not from Strava. Hide it for Strava routes.
 ```
 
 ### Docs (do first, and after each phase)
@@ -300,23 +303,23 @@ Apple requires an in-app delete option for any app that lets people create accou
 
 ## Also worth planning
 
-The two items that block TestFlight are a privacy policy and a safety disclaimer; the rest can slot into phases as listed. TestFlight is now Phase 7, so the TestFlight items are there.
+The two items that block TestFlight are a privacy policy and a safety disclaimer; the rest can slot into phases as listed. TestFlight is Phase 6, so the TestFlight items are there.
 
 | Item | Why | Phase |
 | --- | --- | --- |
-| Safety disclaimer and terms | An avalanche terrain tool needs a clear "not a substitute for training, forecasts or judgement" on first run and in the app || 7 |
-| Privacy policy | Required for TestFlight and the App Store; must cover location, email and Strava data || 7 |
-| Data credits screen | USGS, NOAA, CAIC, CDOT, OpenStreetMap and Strava each expect credit; CDOT's terms require their full disclaimer (`roads.DISCLAIMER`); Strava requires its own "Connect with Strava" button and branding || 7 |
-| Crash reporting | The old website used Sentry; the app reports nothing, so friends' crashes would go unseen || 7 |
-| Fixes without a rebuild | EAS Update pushes JavaScript-only fixes to testers in minutes || 7 |
+| Safety disclaimer and terms | An avalanche terrain tool needs a clear "not a substitute for training, forecasts or judgement" on first run and in the app || 6 |
+| Privacy policy | Required for TestFlight and the App Store; must cover location, email and Strava data || 6 |
+| Data credits screen | USGS, NOAA, CAIC, CDOT, OpenStreetMap and Strava each expect credit; CDOT's terms require their full disclaimer (`roads.DISCLAIMER`); Strava requires its own "Connect with Strava" button and branding || 6 |
+| Crash reporting | The old website used Sentry; the app reports nothing, so friends' crashes would go unseen || 6 |
+| Fixes without a rebuild | EAS Update pushes JavaScript-only fixes to testers in minutes || 6 |
 | App CI | The backend runs CI on every push; `whumpf-ios` has none. Run the type check and terrain checks on push | 3 |
 | Outage notices | The backend has status banners (`/status`); the app never shows them | 4 |
 | Server health | Tile cache lives only in memory per worker; add an uptime check (`scripts/backup.sh` now runs daily from cron) | 0 to 1 |
 | Place search | The old website searched places in Colorado (Photon); the app cannot | 4 |
-| GPX import and export | Lets people share their own tracks without touching Strava data | 4 |
+| GPX import and export | Lets people share their own tracks without touching Strava data | 7 |
 | API types kept in sync | `types.ts` is copied by hand from the backend; generating it from the backend's OpenAPI schema stops drift | 4 |
-| Danger-change alerts | A push notification when the CAIC rating changes for a zone in an upcoming trip | 4 |
-| Units setting | Feet or meters, °F or °C; `format.ts` already keeps formatting in one place | 6 |
+| Danger-change alerts | A push notification when the CAIC rating changes for a zone in an upcoming trip | 7 |
+| Units setting | Feet or meters, °F or °C; `format.ts` already keeps formatting in one place | 8 |
 
 ```text
 [whumpf-ios] Add a GitHub Actions workflow that runs npx tsc --noEmit and the two terrain check scripts on every push and pull request.
@@ -382,7 +385,7 @@ Backend work with no phase yet.
 - [ ] **Replace `mc` with `rclone` in backups.** The mc image is pinned and saved to `/data/backups/images/`.
 - [ ] **Replace the MinIO server.** The community edition is discontinued and its images are no longer pullable. Options: R2/S3 directly, or Garage. Decide before moving hosts.
 - [ ] **`/readyz` shows `"postgis": "0\""`,** so the PostGIS version is read wrong. Fix it.
-- [ ] **Phase 5 cleanup:** turn off `STRAVA_RETURN_TO_ALLOW_DEV` and `TILES_ALLOW_TOKENLESS`, then purge `/tiles/*` in Cloudflare.
+- [ ] **Phase 5 cleanup:** turn off `TILES_ALLOW_TOKENLESS` and `LEGACY_EMAIL_LINKS` (`STRAVA_RETURN_TO_ALLOW_DEV` stays on for local web testing until before the App Store), then purge `/tiles/*` in Cloudflare.
 - [ ] **Phase 5: tile token Worker.** Cloudflare's cache key includes `?t=`, so each token gets its own copy of every tile (checked Oct 15: the same tile with token A then A is MISS then HIT, with token B MISS again). Put a Worker on `/tiles/*` that verifies the token's signature and expiry (same secret as `app/tile_tokens.py`), strips `t`, and caches one copy per tile. A bad or expired token gets a 401 from the Worker. Tokenless requests go to the origin uncached (its strict per-IP limit applies) until `TILES_ALLOW_TOKENLESS` is off, then the Worker rejects them too. Move to the Workers paid plan ($5 a month for 10 million requests) at launch, since the free 100,000 a day is a few hundred map sessions. See Tile access.
 - [ ] **Radar rain vs snow:** colour radar frames by precipitation type from MRMS `PrecipFlag` (one small extra file per frame, same 10-minute marks). Runbook §9.
 - [ ] **Wind arrows v1.1: forecast hours from NBM.** Add NOAA National Blend of Models 10 m wind (`WDIR`, `WIND`, `GUST` in `blend.tHHz.core.fNNN.co.grib2`, same 2.5 km NDFD grid as RTMA) to the next 48 h as extra entries in `/tiles/wind/meta` `hours` (kind `forecast`), built with the same arrow code as wind now (`to_arrows` in `app/jobs/temperature_refresh.py`). Measured Oct 16: ~4.8 MB per forecast hour in two Range requests (`WDIR`+`GUST` touch, `WIND` is separate), hourly to f036 then every 3 h, so 40 files and ~195 MB per run; every 6 h is ~0.8 GB a day and a few minutes of CPU per run. Also try NBM's `surface - 610 m above ground` wind (about ridge level), which may match wind loading on ridges better than 10 m: either as a second set of arrows or as what "From wind" uses.
@@ -393,7 +396,7 @@ Backend work with no phase yet.
 
 ## Idea backlog
 
-Pull from this list as you go. Wind arrows, recent snowfall, the phone inclinometer, slope above you, time estimates, trip briefing and forecast-change alerts are now in Phase 4; the rest is not scheduled. The ideas marked "on the phone" reuse the terrain math you already have, so they work offline once elevation tiles are saved. Effort is a rough guess.
+Pull from this list as you go. Wind arrows, recent snowfall, the phone inclinometer, slope above you and time estimates are in Phase 4, and trip briefing and forecast-change alerts in Phase 7; the rest is not scheduled. The ideas marked "on the phone" reuse the terrain math you already have, so they work offline once elevation tiles are saved. Effort is a rough guess.
 
 ### Terrain and hazard
 
