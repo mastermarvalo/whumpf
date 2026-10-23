@@ -82,6 +82,10 @@ BUCKETS: dict[str, tuple[RateLimitItem, ...]] = {
     # Per user, GET /packs/{id} and /packs/manifest. The app polls a pack
     # every 5-15 s while it builds and asks again for fresh download links.
     "packs_poll": (parse("60/minute"), parse("1200/hour")),
+    # Per client IP, /strava/webhook (public; Strava calls it). Every event
+    # for every connected athlete comes from Strava's few servers, so this is
+    # roomy; a 429 makes Strava retry (3 attempts in all).
+    "strava_webhook": (parse("120/minute"), parse("3000/hour")),
 }
 
 _NO_STORE = {"Cache-Control": "no-store"}

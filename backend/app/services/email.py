@@ -139,6 +139,24 @@ async def send_security_notice(*, to: str, what: str) -> None:
     await _provider().send(to=to, subject=subject, html=html, text=text)
 
 
+async def send_strava_data_deleted(*, to: str, why: str, routes_deleted: int) -> None:
+    """Written confirmation that a user's Strava data was deleted (Strava API
+    Policy §2.5). ``why`` is a sentence such as "You disconnected Strava."."""
+    subject = "Your Strava data was deleted from whumpf"
+    routes = (
+        f"{routes_deleted} route{'s' if routes_deleted != 1 else ''} imported from Strava"
+        if routes_deleted else "no routes imported from Strava"
+    )
+    done = (
+        f"We deleted your Strava connection and sign-in tokens, and {routes} "
+        "(copies included). Routes you drew yourself are not affected."
+    )
+    again = "You can connect Strava again at any time in the app."
+    text = f"{why}\n\n{done}\n\n{again}"
+    html = f"<p>{escape(why)}</p><p>{escape(done)}</p><p>{escape(again)}</p>"
+    await _provider().send(to=to, subject=subject, html=html, text=text)
+
+
 async def send_friend_request(*, to: str, requester_email: str) -> None:
     s = get_settings()
     url = s.app_base_url.rstrip("/")

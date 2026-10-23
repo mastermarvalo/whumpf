@@ -1568,6 +1568,7 @@ API_MEM_LIMIT=8g API_GDAL_CACHEMAX=512 make <target>
 | `radar-refresh` (every 5 min) | api one-off | 5 GB / 256 MB | MRMS CONUS grid about 100 MB per frame |
 | `cameras-refresh` (hourly :10) | api one-off | 5 GB / 256 MB | JSON only |
 | `roads-refresh` (every 5 min), `roads-sample` (every 15 min) | api one-off | 5 GB / 256 MB | JSON only |
+| `strava-refresh` (every 6 h at :45) | api one-off | 5 GB / 256 MB | Strava calls; re-samples terrain only for a changed track |
 | `pack-queue`, `pack-list`, `pack-cleanup` | api one-off | 5 GB / 256 MB | database work |
 | `migrate`, `makemigration`, `db-check`, `test-api`, `lint-api` | api one-off | 5 GB / 256 MB | |
 | `pack-build-once` | pack-worker one-off | 2 GB / 256 MB | same work as the service; only while it is stopped |
@@ -1601,6 +1602,133 @@ untouched, and `make mem` and `make health` print the file as a warning
 applies and nothing was changed. `gdalwarp -wm 2048` caps its warp buffer;
 host GDAL uses its default cache (5% of RAM). If you want a hard cap for a
 run, wrap it: `systemd-run --user --scope -p MemoryMax=16G make dem-pipeline`.
+
+## 14. Strava: deleting data, the webhook and the 7-day rule
+
+What Strava's API Policy (effective June 1, 2026, strava.com/legal/api_policy)
+requires of imported routes, and how the backend does it:
+
+| Policy | Requires | Done by |
+|---|---|---|
+| §2.5, §7.4 | Delete all of a user's Strava data on request or when they revoke access (within 30 days), and confirm in writing | `strava_data.purge_user` from disconnect, the webhook and the refresh job; confirmation email `send_strava_data_deleted` |
+| §6.2, §5.7, §6.4 | Keep Strava data at most 7 days as a cache; remove it at once when Strava no longer has it | `make strava-refresh` re-fetches imports, deletes gone ones, and deletes anything older than 7 days |
+| §6.3 | Reflect deletions on Strava within 48 h | the webhook's activity delete events |
+
+"Strava data" here is every route with `source_strava_id` set: its track,
+name and the terrain profile sampled along it. Copies (clones) keep
+`source_strava_id`, so they're deleted with the original. Routes a user
+drew are never touched.
+
+### Deleting
+
+- **`DELETE /auth/strava/disconnect`**: revokes at Strava (best effort), then
+  deletes the connection (tokens) and every imported route with its trip-day
+  and share links, and emails "Your Strava data was deleted from whumpf".
+  Still a 204; it used to keep imported routes (changed Oct 23, 2026).
+- **`DELETE /auth/me`** already deletes everything.
+- The revoke call uses `POST /oauth/deauthorize`; Strava retires it on
+  June 1, 2027 for `POST /oauth/revoke` (PLAN.md "Later").
+
+### Webhook: `GET` and `POST /strava/webhook`
+
+Public (Strava calls it; listed in CLAUDE.md's public exceptions), per-IP
+`strava_webhook` bucket, 120/min and 3000/h. Every event for every athlete
+comes from Strava's few servers, so the limit is roomy; a 429 makes Strava
+retry (three attempts in all). Off (404) while `STRAVA_WEBHOOK_VERIFY_TOKEN`
+is empty.
+
+- **GET** is Strava's check when the subscription is created: it echoes
+  `hub.challenge` as JSON when `hub.mode=subscribe` and `hub.verify_token`
+  matches, else 403. Strava sends the token in the query string, so the
+  API's access log redacts `hub.verify_token=` (`log_redact.install_access`);
+  Nginx Proxy Manager's access log still has it. It's only used for this
+  check, so a leaked one lets someone do nothing but read the echo.
+- **POST** answers 200 at once (Strava wants one within 2 s) and works in a
+  background task. Only two kinds of event do anything:
+  - deauthorization (`object_type` athlete, `updates.authorized` "false")
+  - activity delete (`object_type` activity, `aspect_type` delete)
+
+  Anything else is ignored, and so is an athlete we don't know.
+- **Events aren't signed and athlete ids are public**, so an event alone
+  deletes nothing. A deauthorization purges only if Strava confirms our
+  token is dead (a refresh rejected with 400/401, or 401 from
+  `GET /athlete`). An activity delete removes routes only if
+  `GET /activities/{id}` is 404 or 403. If Strava says our access works, or
+  can't be reached, the data stays and a warning is logged:
+  `Strava deauthorization event for user_id=... access still works; kept`.
+  The refresh job catches a missed revocation within 6 days.
+- Logged: `Strava webhook athlete update: purged` (or `kept_valid`,
+  `kept_unknown`, `unknown_athlete`, `routes_deleted`, `no_routes`), plus
+  the user id. Never tokens.
+
+### Creating the subscription (once, after deploying)
+
+1. Put a verify token in `.env` and deploy:
+   `STRAVA_WEBHOOK_VERIFY_TOKEN=$(python3 -c "import secrets; print(secrets.token_urlsafe(32))")`.
+2. Check the endpoint answers (no secret involved, the token is read from `.env`):
+   ```bash
+   curl -sS "https://api.whumpf.co/strava/webhook?hub.mode=subscribe&hub.challenge=test&hub.verify_token=$(grep '^STRAVA_WEBHOOK_VERIFY_TOKEN=' .env | cut -d= -f2-)"
+   # {"hub.challenge":"test"}
+   ```
+3. Create it. The client secret is read without echo, isn't stored in
+   shell history and doesn't show in `ps` (curl reads it from stdin):
+   ```bash
+   read -rs SECRET    # paste the client secret, press Enter
+   printf %s "$SECRET" | curl -sS -X POST https://www.strava.com/api/v3/push_subscriptions \
+     -F client_id=YOUR_CLIENT_ID -F "client_secret=<-" \
+     -F callback_url=https://api.whumpf.co/strava/webhook \
+     -F "verify_token=$(grep '^STRAVA_WEBHOOK_VERIFY_TOKEN=' .env | cut -d= -f2-)"
+   unset SECRET
+   ```
+   It answers `{"id": N}`; note N. Strava allows one subscription per app.
+   To see or delete it (Strava takes these as query parameters; curl reads
+   the secret from stdin, so it still isn't in history or `ps`):
+   ```bash
+   read -rs SECRET
+   printf %s "$SECRET" | curl -sS -G https://www.strava.com/api/v3/push_subscriptions \
+     --data-urlencode client_id=YOUR_CLIENT_ID --data-urlencode "client_secret@-"
+   printf %s "$SECRET" | curl -sS -G -X DELETE https://www.strava.com/api/v3/push_subscriptions/N \
+     --data-urlencode client_id=YOUR_CLIENT_ID --data-urlencode "client_secret@-"
+   unset SECRET
+   ```
+4. Test: revoke whumpf in a test athlete's Strava settings
+   (strava.com/settings/apps), then `make logs-api | grep "Strava webhook"`
+   shows `purged`, and the test user got the email.
+
+### The 7-day rule: `make strava-refresh`
+
+`routes.strava_fetched_at` (migration `0004_strava_fetched_at`) is when an
+import's Strava data was last fetched: set on import, copied by a clone,
+backfilled from `created_at` for imports made before Oct 23, 2026. Each run:
+
+1. Routes fetched 6 or more days ago are fetched again, one
+   `GET /activities/{id}` per activity, oldest first:
+   - Strava still has it: the date is bumped, and the terrain is sampled again only if the track changed.
+   - 404 or 403: its routes are deleted.
+   - Our tokens are dead: everything is purged and the user gets the email.
+   - The user has no connection: their imports are deleted.
+2. Then every import still older than 7 days is deleted, whatever stopped
+   the refresh (Strava down, rate limited, `--limit` reached).
+
+Strava allows 100 read calls per 15 min and 1,000 a day; `--limit`
+(default 90) caps activity calls per run and a 429 ends the run. Four runs a
+day cover about 360 activities a day, ~2,500 imports a week. Past that, the
+run warns `hit --limit=90 with N imported routes still due`: run it more
+often, raise the limit, or ask Strava for more quota. Exits 1 if Strava was
+unreachable or rate limited for anything.
+
+```bash
+make strava-refresh ARGS=--dry-run   # what's due and what's over 7 days; asks Strava nothing
+make strava-refresh
+```
+
+Cron (user crontab, with the `XDG_RUNTIME_DIR` and `DOCKER_HOST` lines from
+§9; `mkdir -p /data/strava` first). Every 6 h at :45, off the other jobs'
+minutes:
+
+```
+45 */6 * * * cd /home/ronkerflonk/whumpf && flock -n /data/strava/.refresh.lock make strava-refresh >> /data/strava/refresh.log 2>&1
+```
 
 ## Troubleshooting
 

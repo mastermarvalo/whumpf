@@ -44,7 +44,7 @@ Many gaps are app screens for backend features that already exist. Your biggest 
 | Map reliability | `terrain_rgb` tiles time out on the phone; even zoom 6 failed | Backend `routers/tiles.py` renders tiles on demand, in-memory cache only | Everything on the map |
 | Map reliability | A failed tile is cached as "no data" and never retried until evicted | App `data/terrain/terrainSource.ts` (`catch(() => null)` is cached) | Tap readouts after a blip |
 | Strava | Imported Strava routes can be shared, cloned and shown to trip members; clone erases the Strava tag | Backend `routers/routes.py`, `routers/trips.py` | Friend play-testing |
-| Strava | Imports stored permanently; no 7-day handling, no deauthorization webhook | Backend `routes.py`, `services/strava.py` | Compliance at any scale |
+| Strava | ~~Imports stored permanently; no 7-day handling, no deauthorization webhook~~ Backend built Oct 23 (not deployed): webhook, disconnect deletes imports, 7-day refresh job (runbook §14). The app's disconnect text must warn that imports are deleted | Backend `routes.py`, `services/strava.py` | Compliance at any scale |
 | Strava | Connect finishes on whumpf.co; you come back and tap Refresh | App `features/strava/connectStrava.ts`, backend `STRAVA_SUCCESS_URL` | Smooth sign-up; breaks once the old frontend is gone |
 | Accounts | No sign-up, email verification, password reset or delete-account screens | App has sign-in only; backend has `/register`, `/verify-email/*`, `/password-reset/*`, `DELETE /me` | Friends signing up on their phone |
 | Accounts | Sign-in lasts 60 min, then you are signed out; no refresh token | Backend `auth/service.py` | Everyday use |
@@ -381,6 +381,7 @@ Dropping only the `t` parameter from the cache key is listed as an Enterprise op
 
 Backend work with no phase yet.
 
+- [ ] **Strava revoke endpoint, before June 1, 2027.** `services/strava.py::deauthorize` calls `POST /oauth/deauthorize` (access token), which Strava says stops working then. Switch to `POST /oauth/revoke`: HTTP Basic auth with client id and secret, `token` (the refresh token revokes its access tokens too), optional `token_type_hint`; 200 with an empty body even for an unknown token, 503 is safe to retry. Used by disconnect and `DELETE /auth/me`. Runbook §14.
 - [ ] **Restore rehearsal** from an R2 backup into a throwaway database.
 - [ ] **Replace `mc` with `rclone` in backups.** The mc image is pinned and saved to `/data/backups/images/`.
 - [ ] **Replace the MinIO server.** The community edition is discontinued and its images are no longer pullable. Options: R2/S3 directly, or Garage. Decide before moving hosts.

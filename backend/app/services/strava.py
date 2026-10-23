@@ -189,6 +189,84 @@ async def fetch_activity_detail(access_token: str, activity_id: int) -> dict:
     return await call_with_resilience("strava", _do)
 
 
+# What Strava says about our access to an athlete or one of their activities.
+# Webhook events aren't signed, so nothing is deleted on an event alone: these
+# checks ask Strava first (app/services/strava_data.py).
+REVOKED = "revoked"       # our tokens no longer work: the athlete revoked whumpf
+VALID = "valid"           # our tokens work
+GONE = "gone"             # the activity is deleted (or no longer readable to us)
+RATE_LIMITED = "rate_limited"  # Strava 429: stop asking for 15 min
+UNKNOWN = "unknown"       # Strava unreachable or a 5xx: decide nothing
+
+
+def _state_from_status(code: int) -> str:
+    if code == 200:
+        return VALID
+    if code == 401:
+        return REVOKED
+    if code in (403, 404):
+        return GONE
+    if code == 429:
+        return RATE_LIMITED
+    return UNKNOWN
+
+
+async def _get_status(path: str, access_token: str) -> tuple[int, dict | None]:
+    """GET an API path; (status, JSON body if 200). A 4xx is an answer, not
+    an outage, so only 5xx and network errors are retried and count towards
+    the circuit breaker (several deleted activities in a row mustn't open it)."""
+    async def _do() -> tuple[int, dict | None]:
+        r = await _HTTP.get(
+            f"{STRAVA_API_BASE}{path}",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        if r.status_code >= 500:
+            r.raise_for_status()
+        return r.status_code, (r.json() if r.status_code == 200 else None)
+
+    return await call_with_resilience("strava", _do)
+
+
+async def access_token_or_state(conn: StravaConnection, session: Session) -> tuple[str | None, str]:
+    """A working access token and VALID, or None and why not. A refresh that
+    Strava rejects with 400 or 401 means the athlete revoked whumpf (their
+    refresh token was invalidated). Only status codes are looked at."""
+    try:
+        return await refresh_token(conn, session), VALID
+    except httpx.HTTPStatusError as exc:
+        code = exc.response.status_code
+        if code in (400, 401):
+            return None, REVOKED
+        return None, RATE_LIMITED if code == 429 else UNKNOWN
+    except Exception:  # noqa: BLE001 — network, circuit open: Strava can't say, so decide nothing
+        return None, UNKNOWN
+
+
+async def check_access(conn: StravaConnection, session: Session) -> str:
+    """REVOKED, VALID, RATE_LIMITED or UNKNOWN for this connection, from a
+    token refresh if one is due and GET /athlete."""
+    token, state = await access_token_or_state(conn, session)
+    if token is None:
+        return state
+    try:
+        code, _ = await _get_status("/athlete", token)
+    except Exception:  # noqa: BLE001 — as above
+        return UNKNOWN
+    state = _state_from_status(code)
+    return state if state != GONE else UNKNOWN
+
+
+async def activity_state(access_token: str, activity_id: int) -> tuple[str, dict | None]:
+    """(VALID, detail) if the activity can still be read; GONE on 404 or 403;
+    otherwise REVOKED, RATE_LIMITED or UNKNOWN with None."""
+    try:
+        code, detail = await _get_status(f"/activities/{activity_id}", access_token)
+    except Exception:  # noqa: BLE001 — as above
+        return UNKNOWN, None
+    return _state_from_status(code), detail
+
+
 async def deauthorize(access_token: str) -> None:
     """Revoke this access token on Strava's side. 401 is treated as success
     (already revoked); other non-2xx status codes propagate so the caller can

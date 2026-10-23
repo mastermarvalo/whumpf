@@ -1,4 +1,4 @@
-"""A logging filter that keeps API keys out of logs.
+"""Logging filters that keep API keys and tokens out of logs.
 
 COtrip takes its key only as a URL parameter (`?apiKey=`), and httpx puts the
 full URL in its INFO request lines and in its exception messages. The road
@@ -7,7 +7,12 @@ is the backstop: every record that reaches a handler with this filter has
 `apiKey=...` and the configured key itself replaced, in the message, the
 arguments, the traceback and the stack.
 
-    install()   # on every root handler, after logging.basicConfig
+Strava's webhook check sends our verify token as `?hub.verify_token=`
+(GET /strava/webhook), and uvicorn's access log prints every query string,
+so `install_access()` redacts it there (and in every other line here).
+
+    install()          # on every root handler, after logging.basicConfig
+    install_access()   # on uvicorn's access logger (the API, app/main.py)
 """
 
 from __future__ import annotations
@@ -18,13 +23,13 @@ import re
 from app.config import get_settings
 
 REDACTED = "<redacted>"
-_PARAM = re.compile(r"(?i)(apikey=)[^&\s'\"<>]+")
+_PARAM = re.compile(r"(?i)(apikey=|hub\.verify_token=)[^&\s'\"<>]+")
 
 
 def _secrets() -> list[str]:
-    key = get_settings().cotrip_api_key
+    s = get_settings()
     # A short value could match ordinary text; real keys are ~30 characters.
-    return [key] if len(key) >= 8 else []
+    return [v for v in (s.cotrip_api_key, s.strava_webhook_verify_token) if len(v) >= 8]
 
 
 def redact(text: str) -> str:
@@ -54,3 +59,23 @@ def install(handlers: list[logging.Handler] | None = None) -> None:
     for handler in handlers if handlers is not None else logging.getLogger().handlers:
         if not any(isinstance(f, RedactFilter) for f in handler.filters):
             handler.addFilter(RedactFilter())
+
+
+class AccessRedactFilter(logging.Filter):
+    """For uvicorn's access logger, whose formatter needs the record's args
+    tuple (client, method, path, version, status): redact each string in it
+    instead of flattening the message."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(redact(a) if isinstance(a, str) else a for a in record.args)
+        elif isinstance(record.msg, str):
+            record.msg = redact(record.msg)
+        return True
+
+
+def install_access(logger_name: str = "uvicorn.access") -> None:
+    """Add AccessRedactFilter to the logger (applies to all its records)."""
+    logger = logging.getLogger(logger_name)
+    if not any(isinstance(f, AccessRedactFilter) for f in logger.filters):
+        logger.addFilter(AccessRedactFilter())

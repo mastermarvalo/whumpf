@@ -98,6 +98,7 @@ def test_configured_limits_match_the_plan():
         "status": ["60 per 1 minute", "600 per 1 hour"],
         "packs": ["10 per 1 hour"],
         "packs_poll": ["60 per 1 minute", "1200 per 1 hour"],
+        "strava_webhook": ["120 per 1 minute", "3000 per 1 hour"],
     }
 
 

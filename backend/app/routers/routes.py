@@ -207,6 +207,32 @@ def _build_route(
 
     Caller is responsible for validating ``region`` against the registry.
     """
+    geom, summary, samples_json = compute_profile(vertices, region, settings)
+    route = Route(
+        owner_id=user.id,
+        name=name,
+        notes=notes,
+        region=region,
+        geom=geom,
+        summary=summary,
+        samples=samples_json,
+        visibility=Visibility.private,
+        source_strava_id=source_strava_id,
+        strava_fetched_at=datetime.now(UTC) if source_strava_id is not None else None,
+    )
+    session.add(route)
+    session.commit()
+    session.refresh(route)
+    return route
+
+
+def compute_profile(
+    vertices: list[tuple[float, float]], region: str, settings: Settings,
+) -> tuple[object, dict, list]:
+    """(geom, summary, samples) for a polyline: terrain sampled along it, Z
+    per vertex. Also used by the strava-refresh job when a track changed.
+    Raises HTTPException(400) for a too-short or too-long line, 502 if the
+    COGs can't be read."""
     if len(vertices) < 2:
         raise HTTPException(400, "A route needs at least two vertices")
 
@@ -243,22 +269,7 @@ def _build_route(
         }
         for s in samples
     ]
-
-    route = Route(
-        owner_id=user.id,
-        name=name,
-        notes=notes,
-        region=region,
-        geom=from_shape(line, srid=4326),
-        summary=summary,
-        samples=samples_json,
-        visibility=Visibility.private,
-        source_strava_id=source_strava_id,
-    )
-    session.add(route)
-    session.commit()
-    session.refresh(route)
-    return route
+    return from_shape(line, srid=4326), summary, samples_json
 
 
 @router.post("/import/strava/{activity_id}", response_model=RouteRead, status_code=201)
@@ -417,6 +428,8 @@ def _clone_route(session: Session, user: User, source: Route) -> Route:
         samples=source.samples,
         visibility=Visibility.private,
         source_strava_id=source.source_strava_id,
+        # A copy of Strava data is as old as the data it copies (7-day rule).
+        strava_fetched_at=source.strava_fetched_at,
     )
     session.add(clone)
     session.commit()

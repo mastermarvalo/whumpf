@@ -13,7 +13,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-from app import __version__
+from app import __version__, log_redact
 from app.config import get_settings
 from app.rate_limit import limiter
 from app.routers import (
@@ -102,6 +102,9 @@ def create_app() -> FastAPI:
 
     # Rate limiter wiring — per-endpoint @limiter.limit("...") decorators in the
     # routers do the actual enforcement; this just exposes the request hook.
+    # Strava's webhook check puts our verify token in the query string.
+    log_redact.install_access()
+
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
     app.add_middleware(SlowAPIMiddleware)

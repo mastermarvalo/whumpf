@@ -241,3 +241,42 @@ def test_strava_only_trip_has_no_forecast_snapshot(make_client, db_session):
     assert resp.status_code == 201, resp.text
     assert resp.json()["caic_zone"] is None
     assert resp.json()["forecast_snapshot"] is None
+
+
+# --------------------------------------------------------------------------- #
+# 7-day rule bookkeeping (app/jobs/strava_refresh.py)
+# --------------------------------------------------------------------------- #
+def test_import_records_when_strava_data_was_fetched(make_client, db_session, users, monkeypatch):
+    from datetime import UTC, datetime
+
+    from tests import strava_fakes
+
+    fake = strava_fakes.install(monkeypatch)
+    fake.activities = {555: {"id": 555, "name": "Dawn patrol",
+                             "map": {"polyline": strava_fakes.encode_polyline(strava_fakes.TRACK)}}}
+    strava_fakes.connect(db_session, users["owner"], 4242)
+
+    before = datetime.now(UTC)
+    resp = make_client("owner").post("/routes/import/strava/555", params={"region": "colorado"})
+    assert resp.status_code == 201, resp.text
+    route = db_session.get(Route, resp.json()["id"])
+    assert route.source_strava_id == 555
+    assert route.strava_fetched_at >= before
+
+
+def test_clone_keeps_the_fetch_time_of_the_original(make_client, db_session):
+    from datetime import UTC, datetime, timedelta
+
+    rid = _make_strava_route(make_client("owner"), db_session, activity_id=778)
+    fetched = datetime.now(UTC) - timedelta(days=5)
+    db_session.get(Route, rid).strava_fetched_at = fetched
+    db_session.flush()
+
+    resp = make_client("owner").post(f"/routes/{rid}/clone")
+    assert resp.status_code == 201, resp.text
+    assert db_session.get(Route, resp.json()["id"]).strava_fetched_at == fetched
+
+
+def test_drawn_route_has_no_fetch_time(make_client, db_session):
+    rid = _make_route(make_client("owner"))
+    assert db_session.get(Route, rid).strava_fetched_at is None

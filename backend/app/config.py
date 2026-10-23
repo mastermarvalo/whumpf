@@ -104,6 +104,10 @@ class Settings(BaseSettings):
     # Also accept exp://... and http://localhost:8081/... as the Strava connect
     # return_to (Expo dev builds). Off in prod.
     strava_return_to_allow_dev: bool = False
+    # The verify_token sent when creating Strava's webhook subscription;
+    # GET /strava/webhook echoes hub.challenge only when it matches. Empty
+    # turns the webhook off (404). Never logged. docs/runbook.md §14.
+    strava_webhook_verify_token: str = ""
 
     # --- CORS ---------------------------------------------------------------
     cors_allow_origins: str = "http://localhost:5173"

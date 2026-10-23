@@ -96,4 +96,4 @@ def test_readyz_reports_schema_at_head(engine, test_db_url):
     head = ScriptDirectory.from_config(alembic_config(test_db_url)).get_heads()
     body = TestClient(app).get("/readyz").json()
     assert body["checks"]["schema"]["ok"] is True
-    assert body["checks"]["schema"]["revision"] == head == ["0003_pack_requests"]
+    assert body["checks"]["schema"]["revision"] == head == ["0004_strava_fetched_at"]

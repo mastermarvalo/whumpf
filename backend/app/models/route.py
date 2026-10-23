@@ -70,6 +70,13 @@ class Route(Base):
     source_strava_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True, index=True,
     )
+    # When this route's Strava data was last fetched from Strava. Strava's API
+    # Policy §6.2 allows keeping Strava data for at most 7 days, so the
+    # strava-refresh job re-fetches imports before then and deletes any it
+    # can't (app/jobs/strava_refresh.py). Null for routes not from Strava.
+    strava_fetched_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

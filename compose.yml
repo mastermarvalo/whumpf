@@ -227,6 +227,7 @@ services:
       STRAVA_SUCCESS_URL: ${STRAVA_SUCCESS_URL:-http://localhost:5173}
       STRAVA_TOKEN_KEY: ${STRAVA_TOKEN_KEY:-}
       STRAVA_RETURN_TO_ALLOW_DEV: ${STRAVA_RETURN_TO_ALLOW_DEV:-false}
+      STRAVA_WEBHOOK_VERIFY_TOKEN: ${STRAVA_WEBHOOK_VERIFY_TOKEN:-}
       APP_BASE_URL: ${APP_BASE_URL:-http://localhost:5173}
       MAIL_PROVIDER: ${MAIL_PROVIDER:-console}
       MAIL_FROM: ${MAIL_FROM:-whumpf <no-reply@whumpf.local>}

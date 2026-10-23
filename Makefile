@@ -279,6 +279,14 @@ roads-refresh:  ## refresh the CDOT road feeds that are due (5-min job); ARGS=--
 roads-sample:  ## record the distinct CDOT condition/incident/impact values (15-min cron for a week); ARGS=--report prints them
 	$(API_RUN) uv run python -m app.jobs.roads_sample $(ARGS)
 
+# --- Strava 7-day rule --------------------------------------------------------
+# Re-fetch routes imported from Strava before they're 7 days old; delete the
+# ones Strava no longer has. Every 6 h via cron: docs/runbook.md §14.
+
+.PHONY: strava-refresh
+strava-refresh:  ## re-fetch Strava imports due under the 7-day rule (6-hourly job); ARGS=--dry-run asks Strava nothing
+	$(API_RUN) uv run python -m app.jobs.strava_refresh $(ARGS)
+
 # --- offline packs ------------------------------------------------------------
 # The pack-worker service builds queued packs into R2: docs/runbook.md §12.
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import logging
 import secrets
 import time
@@ -9,19 +10,22 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
 from fastapi.responses import RedirectResponse  # used by callback
 from jose import JWTError, jwt
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app import tile_tokens
 from app.auth.dependencies import get_current_user
 from app.config import get_settings
-from app.db import get_session
+from app.db import get_session, job_session
 from app.models.strava import StravaConnection
 from app.models.user import User
+from app.rate_limit import client_ip
 from app.services import strava as strava_svc
+from app.services import strava_data
 
 router = APIRouter(tags=["strava"])
 logger = logging.getLogger("whumpf.strava")
@@ -226,18 +230,88 @@ async def strava_disconnect(
     conn = session.scalars(
         select(StravaConnection).where(StravaConnection.user_id == user.id)
     ).first()
-    if not conn:
+    if conn:
+        # Best-effort server-side revoke. If Strava is down or the token is
+        # dead, local deletion is the source of truth — the user shouldn't be
+        # unable to disconnect just because an upstream is unreachable.
+        try:
+            access_token = await strava_svc.refresh_token(conn, session)
+            await strava_svc.deauthorize(access_token)
+        except Exception as exc:
+            logger.warning("Strava deauthorize failed for user %s: %s", user.id, exc, exc_info=True)
+    # Strava API Policy §2.5/§7.4: the tokens and every route imported from
+    # Strava go, then a written confirmation (docs/runbook.md §14).
+    routes_deleted = strava_data.purge_user(session, user.id)
+    if conn is None and not routes_deleted:
         return
-    # Best-effort server-side revoke. If Strava is down or the token is dead,
-    # local row deletion is the source of truth — the user shouldn't be unable
-    # to disconnect just because an upstream is unreachable.
-    try:
-        access_token = await strava_svc.refresh_token(conn, session)
-        await strava_svc.deauthorize(access_token)
-    except Exception as exc:
-        logger.warning("Strava deauthorize failed for user %s: %s", user.id, exc, exc_info=True)
-    session.delete(conn)
     session.commit()
+    logger.info("Strava disconnected: user_id=%s, %d imported routes deleted", user.id, routes_deleted)
+    await strava_data.confirm_deletion(user.email, strava_data.WHY_DISCONNECTED, routes_deleted)
+
+
+# ── Webhook (push subscription) ────────────────────────────────────────────────
+# Public: Strava calls it. Strava's events aren't signed, so an event only
+# makes us ask Strava (strava_data.handle_event); per-IP limit (the
+# `strava_webhook` bucket). docs/runbook.md §14, CLAUDE.md public exceptions.
+
+def limit_strava_webhook(request: Request) -> None:
+    tile_tokens.enforce("strava_webhook", client_ip(request))
+
+
+def _verify_token() -> str:
+    """The configured verify token; 404 when the webhook is off."""
+    token = get_settings().strava_webhook_verify_token
+    if not token:
+        raise HTTPException(404, "Not Found")
+    return token
+
+
+@router.get("/strava/webhook", dependencies=[Depends(limit_strava_webhook)])
+def strava_webhook_validate(
+    hub_mode: str | None = Query(None, alias="hub.mode"),
+    hub_challenge: str | None = Query(None, alias="hub.challenge", max_length=255),
+    hub_verify_token: str | None = Query(None, alias="hub.verify_token", max_length=255),
+) -> dict:
+    """Strava's subscription check: echo hub.challenge if the verify token
+    matches the one we created the subscription with."""
+    expected = _verify_token()
+    if (
+        hub_mode != "subscribe"
+        or not hub_challenge
+        or hub_verify_token is None
+        or not hmac.compare_digest(hub_verify_token.encode(), expected.encode())
+    ):
+        raise HTTPException(403, "Forbidden")
+    return {"hub.challenge": hub_challenge}
+
+
+async def _handle_event_later(event: dict) -> None:
+    """Runs after the 200 has gone out (Strava wants one within 2 s), with
+    its own session: the request's is closed by then."""
+    try:
+        with job_session() as session:
+            outcome = await strava_data.handle_event(session, event)
+        logger.info("Strava webhook %s %s: %s",
+                    event.get("object_type"), event.get("aspect_type"), outcome)
+    except Exception:
+        logger.exception("Strava webhook event failed")
+
+
+@router.post("/strava/webhook", dependencies=[Depends(limit_strava_webhook)])
+async def strava_webhook_event(request: Request, background: BackgroundTasks) -> dict:
+    """An event from Strava. Answers 200 at once; deauthorizations and
+    deleted activities are checked with Strava afterwards, other events are
+    ignored."""
+    _verify_token()
+    try:
+        event = await request.json()
+    except ValueError:
+        raise HTTPException(400, "Invalid JSON") from None
+    if not isinstance(event, dict):
+        raise HTTPException(400, "Expected an object")
+    if strava_data.is_deauthorization(event) or strava_data.is_activity_delete(event):
+        background.add_task(_handle_event_later, event)
+    return {"ok": True}
 
 
 # ── Data ───────────────────────────────────────────────────────────────────────

@@ -6,7 +6,8 @@ dependency). We use SQLAlchemy 2.x style throughout.
 
 from __future__ import annotations
 
-from collections.abc import Generator
+from collections.abc import Generator, Iterator
+from contextlib import contextmanager
 from functools import lru_cache
 
 from sqlalchemy import Engine, create_engine
@@ -51,3 +52,15 @@ def open_session() -> Session:
     """A session for a long-running job outside any request (the pack
     worker). The caller closes it."""
     return _sessionmaker()()
+
+
+@contextmanager
+def job_session() -> Iterator[Session]:
+    """``with job_session() as session:`` for work outside a request: a CLI
+    job (make banner, strava-refresh) or a webhook's background task, which
+    runs after the request's own session is closed. Closed on exit."""
+    session = open_session()
+    try:
+        yield session
+    finally:
+        session.close()
