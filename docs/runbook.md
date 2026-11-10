@@ -2027,6 +2027,29 @@ needs the email-link routes (`/verify`, `/reset`) before `APP_BASE_URL`
 links land on it. Then the retirement steps in docs/PLAN.md ("Phase 5
 cleanup").
 
+**The old site's service worker.** The Vite site registered a
+vite-plugin-pwa worker at `/sw.js` (scope `/`, via `/registerSW.js`) that
+serves the old app from its precache, so without help a browser that
+visited whumpf.co keeps showing the old site after the swap. `web/nginx.conf`
+serves a kill switch at both paths, `Cache-Control: no-store`: on the next
+visit the browser fetches the new `/sw.js`, which takes over, unregisters
+itself, deletes the old Workbox and tile caches and reloads open tabs onto
+the Expo app; `/registerSW.js` unregisters instead of registering, so an
+old page can't bring the worker back. Nothing to do at the swap beyond
+pointing the host at :8080. Check right after:
+
+```bash
+curl -sI https://whumpf.co/sw.js | grep -iE '^(HTTP|content-type|cache-control|cf-cache-status)'
+# 200, application/javascript, no-store, and no cf-cache-status HIT
+curl -s https://whumpf.co/sw.js | grep -c unregister          # non-zero
+curl -s https://whumpf.co/registerSW.js | grep -c unregister  # non-zero
+```
+
+Then, in a browser that used the old site: open whumpf.co once (it may
+show the old site and reload itself), and DevTools → Application → Service
+workers shows none. Keep both locations for several months after the
+swap: a browser only drops the worker when it comes back.
+
 ## Troubleshooting
 
 ### A container is slow, or a request failed and nothing restarted
