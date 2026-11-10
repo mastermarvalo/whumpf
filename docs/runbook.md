@@ -143,6 +143,7 @@ From the NAS's NPM instance, point your domains at the VM's IP:
 | Domain                    | Upstream                | Purpose           |
 |---------------------------|-------------------------|-------------------|
 | `whumpf.<your-domain>`    | `http://<vm-ip>:5173`   | Frontend          |
+| `beta.whumpf.<your-domain>` | `http://<vm-ip>:8080` | Expo web app (§17) |
 | `api.whumpf.<your-domain>`| `http://<vm-ip>:8000`   | Backend API       |
 | `tiles.whumpf.<your-domain>` | `http://<vm-ip>:3000` | Martin (MVT)      |
 | `rasters.whumpf.<your-domain>` | `http://<vm-ip>:8001` | TiTiler        |
@@ -174,9 +175,10 @@ radar tiles their frame time (§8, §9), so new weather data needs no purge.
 Because every container uses host networking, ports are bound by each service
 itself. PostGIS (5432), Redis (6379, password required), MinIO (9000 S3 and
 9001 console) and Martin (3000) listen on `127.0.0.1` only, so they are
-unreachable from the LAN and from Nginx Proxy Manager. The api, frontend and
-TiTiler still listen on all interfaces (restrict them with `ufw`); TiTiler
-stays that way until the old website, which calls it directly, is gone.
+unreachable from the LAN and from Nginx Proxy Manager. The api, frontend,
+web (8080, §17) and TiTiler still listen on all interfaces (restrict them
+with `ufw`); TiTiler stays that way until the old website, which calls it
+directly, is gone.
 
 This means NPM can no longer proxy `tiles.` (Martin) or `minio.` (console)
 hosts. To reach the MinIO console, Postgres or Redis from your workstation,
@@ -1860,6 +1862,170 @@ make up
 make health
 curl -s https://api.whumpf.co/legal/privacy | grep -c 'Strava'   # non-zero
 ```
+
+## 17. Expo web app: `make web-build`, the web service, beta.whumpf.co
+
+The Expo app's web build (private repo `mastermarvalo/whumpf-ios`,
+`app.json` `web.output: "static"`) is built on the VM and served by the
+`web` service: nginx on **:8080** (all interfaces, like the api), for
+`https://beta.whumpf.co`. The old site (`frontend`, :5173, whumpf.co) is
+untouched until Phase 5 swaps them. The app calls `https://api.whumpf.co`
+whenever it isn't a dev build (`src/data/config.ts`), so the build needs no
+settings and no secrets.
+
+### How it fits together
+
+```
+/data/web/
+  repo.git/                 bare clone of whumpf-ios (read-only deploy key)
+  npm-cache/                shared npm download cache
+  releases/<sha12>/dist/    an export; nginx's root while current
+  releases/<sha12>/nginx-routes.conf, release.json
+  current -> releases/<sha12>
+  history                   one sha12 per deploy, newest last
+```
+
+- `make web-build [REF=main]` fetches, exports the commit with `git archive`
+  into a clean directory, and runs `npm ci && npx expo export -p web` in
+  `node:24.22.2-bookworm-slim` (Node 24 as whumpf-ios's CI, from its
+  `.nvmrc`; bump `WEB_NODE_IMAGE` in `scripts/web.sh` with it) with a 4 GB
+  limit (`WEB_BUILD_MEM=6g` raises it). About 75 s with a warm npm cache.
+  It checks the export has `index.html`, `+not-found.html` and
+  `_expo/static/`, runs `nginx -t` with the new release, switches `current`
+  atomically, reloads the web nginx, removes all but the last 5 releases
+  (`WEB_KEEP`; never the current one), and prints
+  `web: deployed <sha12> (<full sha>, <ref>)`. A commit that is already
+  built is just switched to; `FORCE=1` rebuilds it. REF is a branch, tag or
+  commit.
+- `make web-rollback` switches to the release deployed before the current
+  one; run it again to go further back. A release that was pruned has to be
+  rebuilt: `make web-build REF=<sha12>`.
+- `make web-status`: the current commit, the kept releases, an HTTP check.
+  `make health` shows one line for the web service and `make mem` its memory
+  (`WEB_MEM_LIMIT`, 128m); before the first deploy both only warn.
+
+Pages switch the moment `current` does; the reload only matters for
+`nginx-routes.conf`. The build and rollback hold a lock, so two can't run
+at once.
+
+### Routing and caching (`web/nginx.conf`)
+
+| Request | Served |
+| --- | --- |
+| `/sign-in`, `/offline` | `sign-in.html`, `offline/index.html` |
+| `/trip/42`, `/route/abc` | `trip/[id].html`, `route/[id].html` (dynamic routes; `scripts/web_routes.py` writes these rules from each build, so new ones need no config change) |
+| anything else, and `/_sitemap` | `+not-found.html` with status 404 |
+| `/_expo/static/*`, `/assets/*` | `public, max-age=31536000, immutable` (file names carry a content hash); a missing one is a plain-text 404 that is never cached |
+| HTML | `Cache-Control: no-cache`, so a deploy shows at the next load |
+| `/favicon.ico` | a day |
+
+The access log has the path only, no query string or referer:
+`/strava-callback` and the email links carry codes the privacy policy says
+we don't log (§16).
+
+### One-time setup
+
+**1. Deploy key** (on the VM, as your user; nothing secret is typed, so
+nothing lands in shell history):
+
+```bash
+mkdir -p -m 700 ~/.ssh
+ssh-keygen -t ed25519 -N "" -C "whumpf VM, whumpf-ios read-only" -f ~/.ssh/whumpf-ios-deploy
+cat >> ~/.ssh/config <<'EOF'
+Host github-whumpf-ios
+    HostName github.com
+    User git
+    IdentityFile ~/.ssh/whumpf-ios-deploy
+    IdentitiesOnly yes
+EOF
+chmod 600 ~/.ssh/config
+ssh-keyscan -t ed25519 github.com >> ~/.ssh/known_hosts
+ssh-keygen -lf ~/.ssh/known_hosts
+#   must show SHA256:+DiY3wvvV6TuJJhbpZisF/zLDA0zPMSvHdkr4UvCOqU (github.com, ED25519)
+#   GitHub publishes it at docs.github.com, "GitHub's SSH key fingerprints".
+#   Anything else: delete the line from known_hosts and stop.
+cat ~/.ssh/whumpf-ios-deploy.pub
+```
+
+On GitHub: `mastermarvalo/whumpf-ios` → Settings → Deploy keys → Add deploy
+key. Title "whumpf VM (read-only)", paste the `.pub` line, leave **Allow
+write access unticked**, Add key. Check on the VM:
+
+```bash
+ssh -T github-whumpf-ios
+# Hi mastermarvalo/whumpf-ios! You've successfully authenticated, but GitHub does not provide shell access.
+```
+
+The key has no passphrase so the build can run unattended; it can only read
+this one repo. To revoke it, delete it on GitHub and remove
+`~/.ssh/whumpf-ios-deploy*`.
+
+**2. First build and start** (`make up` starts the web service along with
+the rest; build first so `/data/web` exists):
+
+```bash
+make web-build
+make up
+make health          # "web: serving <sha12> (HTTP 200 on :8080)"
+curl -sI http://localhost:8080/trip/1 | head -1   # 200
+```
+
+**3. Firewall.** Let NPM reach :8080 the way it reaches the api:
+`sudo ufw allow from <NAS-ip> to any port 8080 proto tcp`.
+
+**4. CORS.** The browser app calls the API from `https://beta.whumpf.co`,
+so add it in `.env` (exact origins, comma-separated; keep whumpf.co for the
+old site until the swap), then `make up`:
+
+```
+CORS_ALLOW_ORIGINS=https://whumpf.co,https://beta.whumpf.co
+```
+
+Check: `curl -sI -H 'Origin: https://beta.whumpf.co' https://api.whumpf.co/status | grep -i access-control-allow-origin`.
+Strava's `return_to` already allows `https://beta.whumpf.co/...`
+(`routers/strava.py`). `APP_BASE_URL` stays `https://whumpf.co`, so email
+links open the old site until Phase 5.
+
+**5. Cloudflare DNS.** DNS → Records → Add record: type CNAME, name `beta`,
+target `whumpf.co`, **Proxied** (orange cloud). It then reaches NPM the
+same way whumpf.co does.
+
+**6. Nginx Proxy Manager** (on the NAS): Hosts → Proxy Hosts → Add Proxy
+Host. Domain `beta.whumpf.co`, scheme `http`, forward to `<vm-ip>` port
+`8080`, Block Common Exploits on, Websockets not needed. SSL tab: the same
+certificate setup as whumpf.co. Advanced tab: `access_log off;` (as for
+api.whumpf.co, §16: NPM logs the full URL, codes included). Check:
+`curl -sI https://beta.whumpf.co/ | grep -iE '^(HTTP|cache-control|cf-cache-status)'`
+gives 200, `no-cache` and `DYNAMIC`.
+
+### Deploy and rollback
+
+```bash
+make web-build                 # main
+make web-build REF=v1.0.3      # a tag, branch or commit
+make web-rollback              # the previous release
+make web-status
+```
+
+### Cloudflare's cache
+
+Cloudflare doesn't cache HTML unless a Cache Rule says so (none covers
+beta.whumpf.co), so a deploy needs no purge. It caches `/_expo/static/*`
+and `/assets/*` by file extension for the year the origin allows, which is
+safe because every build gives changed files new names. Purge only if a
+rule ever cached HTML or a file kept its name across a change (e.g.
+`favicon.ico`): Caching → Configuration → Custom Purge → Hostname
+`beta.whumpf.co` (or URL, listing each `https://beta.whumpf.co/...`). Avoid
+Purge Everything: it also empties the `/tiles/*` cache of api.whumpf.co.
+
+### Phase 5 swap (later)
+
+Point whumpf.co's NPM host at :8080 instead of :5173 (add `access_log off;`
+there too). `https://whumpf.co` stays in `CORS_ALLOW_ORIGINS`, now for the
+Expo app; `https://beta.whumpf.co` can go once nobody uses beta. The app
+needs the email-link routes (`/verify`, `/reset`) before `APP_BASE_URL`
+links land on it. Then the retirement steps in docs/PLAN.md ("Phase 5
+cleanup").
 
 ## Troubleshooting
 

@@ -148,6 +148,7 @@ db-restore:  ## restore a db-dump: make db-restore FILE=/data/backups/x.dump CON
 .PHONY: health
 health:  ## readiness check, then fail if a service has no memory limit (past OOM kills only warn)
 	@curl -fsS http://localhost:8000/readyz | python3 -m json.tool || echo "api not reachable"
+	@CONTAINER=$(CONTAINER) WEB_DIR=$(WEB_DIR) scripts/web.sh health
 	@CONTAINER=$(CONTAINER) SKI_WORKDIR=$(SKI_WORKDIR) scripts/mem.sh --check-limits
 
 .PHONY: mem
@@ -313,6 +314,28 @@ pack-cleanup:  ## forget packs nobody has asked for in 60 days (failed: a day); 
 .PHONY: pack-build-once
 pack-build-once:  ## build the oldest queued pack in the foreground, then exit (only while the pack-worker service is stopped)
 	$(COMPOSE) run --rm --no-deps -T pack-worker uv run python -m app.jobs.pack_worker once
+
+# --- Expo web app -------------------------------------------------------------
+# whumpf-ios's static web export, built in a pinned Node container and served
+# by the web service on :8080 from $(WEB_DIR)/current. docs/runbook.md §17.
+
+REF           ?= main
+WEB_DIR       ?= /data/web
+WEB_KEEP      ?= 5
+WEB_BUILD_MEM ?= 4g
+WEB = CONTAINER=$(CONTAINER) COMPOSE=$(COMPOSE) WEB_DIR=$(WEB_DIR) WEB_KEEP=$(WEB_KEEP) WEB_BUILD_MEM=$(WEB_BUILD_MEM) FORCE=$(FORCE) scripts/web.sh
+
+.PHONY: web-build
+web-build:  ## build whumpf-ios at REF (default main) and serve it; keeps the last WEB_KEEP releases; FORCE=1 rebuilds
+	$(WEB) build "$(REF)"
+
+.PHONY: web-rollback
+web-rollback:  ## serve the release before the current one (again to go further back)
+	$(WEB) rollback
+
+.PHONY: web-status
+web-status:  ## the served commit, the kept releases and an HTTP check
+	$(WEB) status
 
 # --- tests / lint -----------------------------------------------------------
 

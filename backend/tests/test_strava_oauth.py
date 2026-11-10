@@ -80,6 +80,8 @@ def _location(resp) -> tuple[str, dict[str, list[str]]]:
         "https://whumpf.co",
         "https://whumpf.co/",
         "https://whumpf.co/settings?x=1#frag",
+        "https://beta.whumpf.co/strava-callback",
+        "https://beta.whumpf.co",
     ],
 )
 def test_allowed_return_to(make_client, url):
@@ -99,6 +101,11 @@ def test_allowed_return_to(make_client, url):
         "https://whumpf.co:444/",
         "https://WHUMPF.CO/",
         "https://sub.whumpf.co/",
+        "http://beta.whumpf.co/",
+        "https://beta.whumpf.co.evil.com/",
+        "https://x.beta.whumpf.co/",
+        "https://beta.whumpf.co:8080/",
+        "https://user@beta.whumpf.co/",
         "https://whumpf.co\\@evil.com/",
         "//whumpf.co/",
         "whumpf:strava",

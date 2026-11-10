@@ -27,6 +27,7 @@ SERVICES=(
   "whumpf-api:API_MEM_LIMIT"
   "whumpf-pack-worker:PACK_WORKER_MEM_LIMIT"
   "whumpf-frontend:FRONTEND_MEM_LIMIT"
+  "whumpf-web:WEB_MEM_LIMIT"
 )
 
 check_limits=0

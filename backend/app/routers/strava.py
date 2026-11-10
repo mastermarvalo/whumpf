@@ -46,12 +46,14 @@ class AuthorizeOut(BaseModel):
 _STATE_PURPOSE = "strava_oauth"
 _STATE_TTL = timedelta(minutes=10)
 _RETURN_TO_MAX_LEN = 2048
+_RETURN_TO_HOSTS = frozenset({"whumpf.co", "beta.whumpf.co"})
 
 
 def validate_return_to(url: str) -> bool:
     """Allowlist for where the callback may send the user afterwards.
 
-    Always: whumpf://... and https://whumpf.co/... . With
+    Always: whumpf://..., https://whumpf.co/... and https://beta.whumpf.co/...
+    (the Expo web app before it moves to whumpf.co, docs/runbook.md §17). With
     STRAVA_RETURN_TO_ALLOW_DEV also exp://... and http://localhost:8081/... .
     Hosts must match exactly (no userinfo, other ports or subdomains).
     """
@@ -65,7 +67,7 @@ def validate_return_to(url: str) -> bool:
         return False
     if url[:9].lower() == "whumpf://":
         return True
-    if parts.scheme == "https" and parts.netloc == "whumpf.co":
+    if parts.scheme == "https" and parts.netloc in _RETURN_TO_HOSTS:
         return True
     if get_settings().strava_return_to_allow_dev:
         if url[:6].lower() == "exp://":

@@ -193,6 +193,8 @@ Build order is flexible. Suggested grouping: layers (recent snowfall, order and 
 [whumpf-ios] Add routes for the email links (/verify, /reset, /trip-invite) and plan deploying npx expo export -p web to beta.whumpf.co.
 ```
 
+Serving it: built Nov 9 (whumpf `make web-build`, the `web` service on :8080, `docs/runbook.md` §17), not deployed.
+
 ### Phase 6: TestFlight
 
 ```text
