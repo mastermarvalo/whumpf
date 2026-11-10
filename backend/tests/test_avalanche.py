@@ -235,3 +235,39 @@ def test_no_naive_utcnow_in_app_code():
     root = Path(avalanche.__file__).resolve().parents[1]
     offenders = [str(p) for p in root.rglob("*.py") if "utcnow(" in p.read_text()]
     assert offenders == []
+
+
+# ── AVID fetch against a real CAIC response ───────────────────────────────────
+# tests/fixtures/caic_avid_2026-11-09.json is CAIC's own /avid/products/all and
+# /avid/products/all/area output from 2026-11-09 (one forecast, polygon list cut
+# to 3). In Nov 2026 CAIC's new site dropped /api-proxy/avid (404) for /avid/*.
+
+def test_fetch_avid_uses_current_caic_paths_and_parses_real_response(monkeypatch):
+    import json
+    from pathlib import Path
+
+    fx = json.loads((Path(__file__).parent / "fixtures" / "caic_avid_2026-11-09.json").read_text())
+    seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request.url.path)
+        if request.url.path == "/avid/products/all":
+            return httpx.Response(200, json=fx["products"] + [{"type": "regionaldiscussion"}])
+        if request.url.path == "/avid/products/all/area":
+            return httpx.Response(200, json=fx["areas"])
+        return httpx.Response(404, text="<html>not found</html>")
+
+    monkeypatch.setattr(avalanche, "_HTTP", httpx.AsyncClient(transport=httpx.MockTransport(handler)))
+    monkeypatch.setattr(avalanche, "_avid_cache", None)
+    monkeypatch.delitem(http_retry._BREAKERS, "caic-avid", raising=False)
+    monkeypatch.setattr(avalanche, "_zones_cache", None)
+
+    products, areas = asyncio.run(avalanche._do_fetch_avid())
+
+    assert sorted(seen) == ["/avid/products/all", "/avid/products/all/area"]
+    assert [p["type"] for p in products] == ["avalancheforecast"]  # other types filtered out
+    detail = avalanche._build_zone_detail(products[0])
+    assert detail["danger"] == {"alp": "low", "tln": "low", "btl": "low"}
+    assert detail["valid_date"] == "2026-11-09"
+    assert products[0]["areaId"] == areas["features"][0]["properties"]["id"]
+    http_retry._BREAKERS.pop("caic-avid", None)

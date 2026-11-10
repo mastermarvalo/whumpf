@@ -32,7 +32,7 @@ _AVID_TTL     = timedelta(hours=1)
 _ZONES_TTL    = timedelta(hours=24)
 
 _MAPLAYER_URL = "https://api.avalanche.org/v2/public/products/map-layer"
-_AVID_URL     = "https://avalanche.state.co.us/api-proxy/avid"
+_AVID_URL     = "https://avalanche.state.co.us/avid"
 _OBS_URL      = "https://api.avalanche.state.co.us/api/v2/observation_reports"
 _ZONES_URL    = "https://api.avalanche.state.co.us/api/v2/zones"
 
@@ -123,9 +123,9 @@ async def _do_fetch_avid() -> tuple[list, dict]:
 
     async def _do() -> tuple[httpx.Response, httpx.Response]:
         products_resp, areas_resp = await asyncio.gather(
-            _HTTP.get(_AVID_URL, params={"_api_proxy_uri": "/products/all?includeExpired=true"}),
-            _HTTP.get(_AVID_URL, params={
-                "_api_proxy_uri": "/products/all/area?productType=avalancheforecast&includeExpired=true"
+            _HTTP.get(f"{_AVID_URL}/products/all", params={"includeExpired": "true"}),
+            _HTTP.get(f"{_AVID_URL}/products/all/area", params={
+                "productType": "avalancheforecast", "includeExpired": "true",
             }),
         )
         products_resp.raise_for_status()
