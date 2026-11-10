@@ -2078,6 +2078,34 @@ If it breaks again, GET the two URLs with curl (read-only) and compare with
 other AVID tests pre-fill `_avid_cache`, so only that one touches the URLs.
 An all-"low" forecast with empty problem lists is normal in early season.
 
+`zone_detail` has a `problems_status` field (added later, so older apps
+ignore it): `"ok"`, or `"unreadable"` when `avalancheProblems` is missing or
+not the shape we know, or a problem lacks `type` or `aspectElevations`. Then
+`problems` holds only the problems that could be read (possibly none), the
+log has a `whumpf.avalanche` WARNING ("avalancheProblems missing or
+unexpected shape" / "N of M problems unreadable"), and the app should say
+that CAIC lists problems Whumpf couldn't read and point to the full forecast.
+`"ok"` with an empty list means CAIC posted none.
+
+#### Catching a real forecast with problems
+
+AVID serves only the current issue and CAIC posts no problems on many days,
+so a real example for tests has to be caught on the day it exists.
+`make avid-capture` (`app/jobs/avid_capture.py`) reads AVID (two GETs) and
+saves the first forecast whose problem list is not empty, trimmed, to
+`/data/caic-fixtures/avid-<date>.json`. Once such a file exists it does
+nothing. Cron, hourly, user crontab (with the `XDG_RUNTIME_DIR` and
+`DOCKER_HOST` lines from the top of the crontab):
+
+```
+17 * * * * cd /home/ronkerflonk/whumpf && make -s avid-capture >> /data/caic-fixtures/capture.log 2>&1
+```
+
+When the file appears, copy it to `backend/tests/fixtures/`, add a test
+beside `test_problems_parse_synthetic_fixture` that checks `_read_problems`
+against it, and remove the cron line. The current problems fixture,
+`caic_avid_SYNTHETIC_problems.json`, is hand-built, not a CAIC response.
+
 ### `api` container restarts repeatedly
 
 Usually means `postgis` didn't finish its initdb before `api` tried to

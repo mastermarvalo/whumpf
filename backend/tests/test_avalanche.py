@@ -350,3 +350,23 @@ def test_zone_detail_endpoint_returns_problems_status(_zones_env):
 
     body = TestClient(app).get("/avalanche/zone_detail", params={"lat": 39.6, "lng": -106.0}).json()
     assert body["problems_status"] == "ok" and body["problems"] == []
+
+
+# ── avid_capture job ──────────────────────────────────────────────────────────
+
+def test_capture_picks_first_forecast_with_problems_and_trims():
+    from app.jobs import avid_capture
+
+    syn = _fixture("caic_avid_SYNTHETIC_problems.json")
+    empty = _fixture("caic_avid_2026-11-09.json")["products"][0]
+    found = avid_capture.pick([empty, syn["products"][0]], syn["areas"])
+    assert found["products"][0]["avalancheProblems"]["days"][0]
+    assert len(found["products"][0]["polygons"]) <= 3
+    assert found["areas"]["features"][0]["properties"]["id"] == found["products"][0]["areaId"]
+
+
+def test_capture_returns_none_without_problems():
+    from app.jobs import avid_capture
+
+    real = _fixture("caic_avid_2026-11-09.json")
+    assert avid_capture.pick(real["products"], real["areas"]) is None

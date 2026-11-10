@@ -280,6 +280,20 @@ roads-refresh:  ## refresh the CDOT road feeds that are due (5-min job); ARGS=--
 roads-sample:  ## record the distinct CDOT condition/incident/impact values (15-min cron for a week); ARGS=--report prints them
 	$(API_RUN) uv run python -m app.jobs.roads_sample $(ARGS)
 
+# --- CAIC test fixture capture ----------------------------------------------
+# Saves the first real AVID forecast that has avalanche problems (once; stops
+# after that). Stdout of the job goes to the file, so no volume mount is needed.
+
+AVID_DIR ?= /data/caic-fixtures
+
+.PHONY: avid-capture
+avid-capture:  ## hourly cron: save a real AVID forecast with problems to $(AVID_DIR); does nothing once one exists
+	@mkdir -p $(AVID_DIR); \
+	if ls $(AVID_DIR)/avid-*.json >/dev/null 2>&1; then exit 0; fi; \
+	if $(API_RUN) uv run python -m app.jobs.avid_capture > $(AVID_DIR)/.new; then \
+	  if [ -s $(AVID_DIR)/.new ]; then mv $(AVID_DIR)/.new $(AVID_DIR)/avid-$$(date +%F).json; else rm -f $(AVID_DIR)/.new; fi; \
+	else rm -f $(AVID_DIR)/.new; exit 1; fi
+
 # --- Strava 7-day rule --------------------------------------------------------
 # Re-fetch routes imported from Strava before they're 7 days old; delete the
 # ones Strava no longer has. Every 6 h via cron: docs/runbook.md §14.
