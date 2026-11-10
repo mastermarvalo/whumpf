@@ -144,6 +144,14 @@ def endpoint_rate_limits(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def legacy_email_links_default(monkeypatch):
+    """Tests must not depend on the live .env (compose passes it into the test
+    container): pin LEGACY_EMAIL_LINKS to its code default. Tests for the
+    off state set it themselves."""
+    monkeypatch.setattr(get_settings(), "legacy_email_links", True)
+
+
+@pytest.fixture(autouse=True)
 def status_cache(monkeypatch):
     """Each test starts with no cached /status service checks."""
     from app.routers import status
