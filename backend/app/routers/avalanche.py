@@ -295,7 +295,7 @@ def _parse_problems(raw: list) -> list:
             if len(parts) == 2:
                 aspects.add(parts[0].upper())
                 elevations.add(parts[1])
-        size = p.get("expectedSize", {})
+        size = p.get("expectedSize") or {}
         out.append({
             "type": p.get("type", ""),
             "label": _PROBLEM_LABELS.get(p.get("type", ""), p.get("type", "")),
@@ -309,9 +309,43 @@ def _parse_problems(raw: list) -> list:
     return out
 
 
+def _problem_is_readable(p: object) -> bool:
+    return (
+        isinstance(p, dict)
+        and isinstance(p.get("type"), str) and bool(p["type"])
+        and isinstance(p.get("aspectElevations"), list)
+        and all(isinstance(ae, str) for ae in p["aspectElevations"])
+        and isinstance(p.get("expectedSize") or {}, dict)
+    )
+
+
+def _read_problems(product: dict) -> tuple[list, str]:
+    """(problems, status) for day 0 of a forecast product.
+
+    status is "ok" or "unreadable". An empty list with "ok" means CAIC posted
+    no problems; if avalancheProblems is missing or not the shape we know, or
+    a problem lacks type or aspectElevations, we say "unreadable" instead of
+    passing it off as "none". Problems we can read are still returned.
+    """
+    area = product.get("areaId", "?")
+    block = product.get("avalancheProblems")
+    days = block.get("days") if isinstance(block, dict) else None
+    if not isinstance(days, list) or not days or not isinstance(days[0], list):
+        logger.warning("AVID forecast %s: avalancheProblems missing or unexpected shape", area)
+        return [], "unreadable"
+    readable = [p for p in days[0] if _problem_is_readable(p)]
+    if len(readable) != len(days[0]):
+        logger.warning(
+            "AVID forecast %s: %d of %d problems unreadable (need type and aspectElevations)",
+            area, len(days[0]) - len(readable), len(days[0]),
+        )
+        return _parse_problems(readable), "unreadable"
+    return _parse_problems(readable), "ok"
+
+
 def _build_zone_detail(product: dict) -> dict:
     day0 = product.get("dangerRatings", {}).get("days", [{}])[0]
-    problems_raw = product.get("avalancheProblems", {}).get("days", [[]])[0]
+    problems, problems_status = _read_problems(product)
     issue_dt = product.get("issueDateTime", "")
     valid_date = issue_dt[:10] if issue_dt else ""
     return {
@@ -322,7 +356,8 @@ def _build_zone_detail(product: dict) -> dict:
             "tln": day0.get("tln", "noForecast"),
             "btl": day0.get("btl", "noForecast"),
         },
-        "problems": _parse_problems(problems_raw),
+        "problems": problems,
+        "problems_status": problems_status,
         "link": "https://avalanche.state.co.us/forecasts/backcountry",
     }
 

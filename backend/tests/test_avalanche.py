@@ -271,3 +271,82 @@ def test_fetch_avid_uses_current_caic_paths_and_parses_real_response(monkeypatch
     assert detail["valid_date"] == "2026-11-09"
     assert products[0]["areaId"] == areas["features"][0]["properties"]["id"]
     http_retry._BREAKERS.pop("caic-avid", None)
+
+
+# ── avalanche problems: parsing and the "unreadable" guard ────────────────────
+
+def _fixture(name: str) -> dict:
+    import json
+    from pathlib import Path
+
+    return json.loads((Path(__file__).parent / "fixtures" / name).read_text())
+
+
+def _synthetic_product() -> dict:
+    return _fixture("caic_avid_SYNTHETIC_problems.json")["products"][0]
+
+
+def test_problems_parse_synthetic_fixture():
+    """SYNTHETIC fixture (hand-built in the documented AVID shape, not a real
+    CAIC response): checks the parsing logic, not CAIC's real format."""
+    detail = avalanche._build_zone_detail(_synthetic_product())
+    assert detail["problems_status"] == "ok"
+    wind, persistent = detail["problems"]
+    assert (wind["type"], wind["label"], wind["likelihood"]) == ("windSlab", "Wind Slab", "Likely")
+    assert (wind["size_min"], wind["size_max"]) == ("1", "2")
+    assert wind["aspects"] == ["N", "NE", "E"]
+    assert wind["elevations"] == ["alp", "tln"]
+    assert wind["aspect_elevations"] == ["n_alp", "ne_alp", "e_alp", "n_tln", "ne_tln"]
+    assert persistent["label"] == "Persistent Slab" and persistent["likelihood"] == "Possible"
+    assert persistent["aspects"] == ["N", "NE", "NW"]
+    assert persistent["elevations"] == ["tln", "btl"]
+
+
+def test_real_no_problems_forecast_is_ok_and_empty():
+    detail = avalanche._build_zone_detail(_fixture("caic_avid_2026-11-09.json")["products"][0])
+    assert detail["problems"] == [] and detail["problems_status"] == "ok"
+
+
+@pytest.mark.parametrize("mutate", [
+    lambda p: p.pop("avalancheProblems"),
+    lambda p: p.update(avalancheProblems=None),
+    lambda p: p.update(avalancheProblems={"days": []}),
+    lambda p: p.update(avalancheProblems={"days": "none"}),
+    lambda p: p.update(avalancheProblems={"days": [None, []]}),
+    lambda p: p.update(avalancheProblems={"rows": [[]]}),
+    lambda p: p["avalancheProblems"]["days"][0][0].pop("type"),
+    lambda p: p["avalancheProblems"]["days"][0][0].pop("aspectElevations"),
+    lambda p: p["avalancheProblems"]["days"][0][0].update(aspectElevations="n_alp"),
+    lambda p: p["avalancheProblems"]["days"][0].append("windSlab"),
+], ids=["missing", "null", "no-days", "days-not-list", "day0-not-list", "other-key",
+        "no-type", "no-aspectElevations", "aspectElevations-not-list", "problem-not-object"])
+def test_unreadable_problems_are_flagged_not_empty(mutate, caplog):
+    product = _synthetic_product()
+    mutate(product)
+    with caplog.at_level("WARNING", logger="whumpf.avalanche"):
+        detail = avalanche._build_zone_detail(product)
+    assert detail["problems_status"] == "unreadable"
+    assert any(r.levelname == "WARNING" for r in caplog.records)
+
+
+def test_unreadable_problem_keeps_the_readable_ones():
+    product = _synthetic_product()
+    product["avalancheProblems"]["days"][0][0].pop("type")
+    detail = avalanche._build_zone_detail(product)
+    assert detail["problems_status"] == "unreadable"
+    assert [p["type"] for p in detail["problems"]] == ["persistentSlab"]
+
+
+def test_null_expected_size_does_not_crash():
+    product = _synthetic_product()
+    product["avalancheProblems"]["days"][0][0]["expectedSize"] = None
+    detail = avalanche._build_zone_detail(product)
+    assert detail["problems_status"] == "ok" and detail["problems"][0]["size_min"] == ""
+
+
+def test_zone_detail_endpoint_returns_problems_status(_zones_env):
+    from fastapi.testclient import TestClient
+    from app.main import app
+
+    body = TestClient(app).get("/avalanche/zone_detail", params={"lat": 39.6, "lng": -106.0}).json()
+    assert body["problems_status"] == "ok" and body["problems"] == []
