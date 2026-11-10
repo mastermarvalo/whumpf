@@ -2098,7 +2098,7 @@ nothing. Cron, hourly, user crontab (with the `XDG_RUNTIME_DIR` and
 `DOCKER_HOST` lines from the top of the crontab):
 
 ```
-17 * * * * cd /home/ronkerflonk/whumpf && make -s avid-capture >> /data/caic-fixtures/capture.log 2>&1
+17 * * * * cd /home/ronkerflonk/whumpf && flock -n /data/caic-fixtures/.capture.lock make -s avid-capture >> /data/caic-fixtures/capture.log 2>&1
 ```
 
 When the file appears, copy it to `backend/tests/fixtures/`, add a test
