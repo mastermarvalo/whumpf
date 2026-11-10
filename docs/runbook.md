@@ -2058,6 +2058,26 @@ Run `make mem`. An `OOM_KILL` above 0 means the kernel killed a process in
 that container for going over its limit; the container did not restart (see
 section 13). Raise its limit in `.env` and run `make up`, or find what grew.
 
+### `/avalanche/zone_detail` returns 502 "AVID unavailable"
+
+`make logs-api` shows `404 Not Found` from `avalanche.state.co.us` and then
+`circuit OPEN: caic-avid`. `/avalanche/forecast` keeps working because it
+uses api.avalanche.org, not AVID.
+
+History: in Nov 2026 CAIC rebuilt its site and removed the AVID gateway
+`/api-proxy/avid?_api_proxy_uri=…` (now an HTML 404). The same data is at
+`https://avalanche.state.co.us/avid/products/all?includeExpired=true` and
+`/avid/products/all/area?productType=avalancheforecast&includeExpired=true`
+(`_AVID_URL` in `routers/avalanche.py`); the product and area JSON are
+unchanged. The zone names and observations on `api.avalanche.state.co.us`
+did not move.
+
+If it breaks again, GET the two URLs with curl (read-only) and compare with
+`backend/tests/fixtures/caic_avid_2026-11-09.json`, a real response used by
+`test_fetch_avid_uses_current_caic_paths_and_parses_real_response`. The
+other AVID tests pre-fill `_avid_cache`, so only that one touches the URLs.
+An all-"low" forecast with empty problem lists is normal in early season.
+
 ### `api` container restarts repeatedly
 
 Usually means `postgis` didn't finish its initdb before `api` tried to
