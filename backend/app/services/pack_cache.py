@@ -14,6 +14,9 @@ PACK_CACHE_DIR, written only by the pack worker.
   under the global `naip_upstream` limit. Unlike the other files, the api
   writes naip_<region>.sqlite too: the live /tiles/naip route fills the same
   cache, so each tile is read from Microsoft once.
+- sentinel, sentinel_false: the Sentinel-2 mosaic (services/sentinel.py)
+  rendered by TiTiler as PNG (transparent where there is no clear view),
+  versioned by the mosaic's revision, which changes every night.
 - slope, aspect, elevation, ski: made by our own code, the same as the live
   /tiles endpoints (services/terrain_tiles.py), at most 2 at a time in their
   own pool so packs don't slow the live map. Each carries a source_version
@@ -50,7 +53,7 @@ from app import tile_tokens
 from app.config import get_settings
 from app.http_retry import CircuitOpenError, call_with_resilience
 from app.regions import validate_region
-from app.services import naip, terrain_tiles
+from app.services import naip, sentinel, terrain_tiles
 
 logger = logging.getLogger("whumpf.pack_cache")
 
@@ -75,7 +78,7 @@ EVICT_TO = 0.9                     # evict down to this share of the cap
 @dataclass(frozen=True)
 class Layer:
     name: str
-    kind: Literal["usgs", "naip", "colormap", "elevation", "ski"]
+    kind: Literal["usgs", "naip", "sentinel", "colormap", "elevation", "ski"]
     minzoom: int
     maxzoom: int
     tile_type: Literal["jpg", "png", "mvt"]
@@ -86,6 +89,8 @@ LAYERS: dict[str, Layer] = {layer.name: layer for layer in (
     Layer("topo", "usgs", 8, 16, "jpg", "USGSTopo"),
     Layer("imagery", "usgs", 8, 16, "jpg", "USGSImageryOnly"),  # NAIP
     Layer("naip", "naip", naip.MINZOOM, naip.MAXZOOM, "jpg"),     # NAIP 2023, 0.3 m
+    Layer("sentinel", "sentinel", 8, sentinel.MAXZOOM, "png"),        # true colour
+    Layer("sentinel_false", "sentinel", 8, sentinel.MAXZOOM, "png"),  # SWIR/NIR/red
     Layer("slope", "colormap", 8, 14, "png"),   # 512 px, as /tiles/slope (no hires)
     Layer("aspect", "colormap", 8, 14, "png"),  # 512 px, as /tiles/aspect
     Layer("elevation", "elevation", 8, 14, "png"),  # 256 px Terrarium, PNG level 9
@@ -95,6 +100,21 @@ LAYERS: dict[str, Layer] = {layer.name: layer for layer in (
 
 class PackTileError(Exception):
     """A tile could not be made or fetched. Nothing was stored."""
+
+
+# Pack layer -> the Sentinel-2 product it shows.
+SENTINEL_PRODUCT = {"sentinel": "true", "sentinel_false": "false"}
+
+
+async def sentinel_entry(region: str) -> dict:
+    """The served Sentinel-2 revision of `region` (latest.json "current")."""
+    try:
+        entry = ((await sentinel.read_pointer(region)) or {}).get("current")
+    except Exception as exc:
+        raise PackTileError(f"can't read the Sentinel-2 mosaic of {region}: {exc!r}") from exc
+    if not entry:
+        raise PackTileError(f"no Sentinel-2 mosaic for {region}; run make sentinel-refresh")
+    return entry
 
 
 class UpstreamBusy(PackTileError):
@@ -299,6 +319,9 @@ class SourceVersions:
             if not entry:
                 raise PackTileError(f"no NAIP index for {region}; run make naip-index")
             return entry["revision"]
+        if spec.kind == "sentinel":
+            entry = await sentinel_entry(region)
+            return entry["revision"]
         if spec.kind == "ski":
             # The weekly publish (and a rollback) swaps the file in, so its
             # mtime changes whenever the served tiles do.
@@ -441,6 +464,8 @@ class PackCache:
             data = await self._fetch_usgs(spec, z, x, y)
         elif spec.kind == "naip":
             data = await self._make_naip(region, z, x, y)
+        elif spec.kind == "sentinel":
+            data = await self._make_sentinel(spec, region, z, x, y)
         elif spec.kind == "colormap":
             data = await self._make_colormap(spec, region, z, x, y)
         elif spec.kind == "elevation":
@@ -526,6 +551,29 @@ class PackCache:
                 raise PackTileError("NAIP circuit open") from exc
             except Exception as exc:
                 raise PackTileError(f"NAIP {z}/{x}/{y}: {exc!r}") from exc
+
+    # ── Sentinel-2 ──
+
+    async def _make_sentinel(self, spec: Layer, region: str, z: int, x: int, y: int) -> bytes:
+        entry = await sentinel_entry(region)
+        product = SENTINEL_PRODUCT[spec.name]
+        settings = get_settings()
+        url = f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png"
+        params = {"url": f"/vsicurl/{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{entry['keys'][product]}",
+                  "reproject": "bilinear"}
+
+        async def _do() -> httpx.Response:
+            r = await self._http.get(url, params=params)
+            if r.status_code != 404:  # 404: outside the mosaic
+                r.raise_for_status()
+            return r
+
+        async with self._own:
+            try:
+                r = await call_with_resilience("titiler", _do)
+            except (CircuitOpenError, httpx.HTTPError) as exc:
+                raise PackTileError(f"TiTiler {spec.name} {z}/{x}/{y}: {exc!r}") from exc
+        return b"" if r.status_code == 404 else r.content
 
     # ── our layers ──
 

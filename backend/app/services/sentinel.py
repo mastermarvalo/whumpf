@@ -157,6 +157,20 @@ def dates_doc(days: np.ndarray, west: float, north: float, cell: float = DATES_C
     }
 
 
+def crop_dates(doc: dict, bounds: tuple[float, float, float, float]) -> dict:
+    """The part of a dates grid that covers bounds (west, south, east, north),
+    in the same format: what an offline pack carries."""
+    cell = doc["cell_deg"]
+    cells = np.frombuffer(base64.b64decode(doc["cells"]), dtype=np.uint8).reshape(doc["height"], doc["width"])
+    col0 = max(math.floor((bounds[0] - doc["west"]) / cell), 0)
+    col1 = min(math.ceil((bounds[2] - doc["west"]) / cell), doc["width"])
+    row0 = max(math.floor((doc["north"] - bounds[3]) / cell), 0)
+    row1 = min(math.ceil((doc["north"] - bounds[1]) / cell), doc["height"])
+    days_of = np.array([0] + [day_number(date.fromisoformat(d)) for d in doc["dates"]], dtype=np.uint16)
+    part = days_of[cells[row0:max(row1, row0), col0:max(col1, col0)]]
+    return dates_doc(part, doc["west"] + col0 * cell, doc["north"] - row0 * cell, cell)
+
+
 def date_at(doc: dict, lon: float, lat: float) -> str | None:
     """The capture day at lon, lat from a dates grid (what the app does)."""
     row = math.floor((doc["north"] - lat) / doc["cell_deg"])

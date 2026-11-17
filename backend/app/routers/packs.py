@@ -199,7 +199,7 @@ async def manifest(
         }
         if name == "elevation":
             entry["encoding"] = "terrarium"
-        entry.update({"attribution": packs.ATTRIBUTION[name], "source_version": version,
+        entry.update({"attribution": packs.attribution(name), "source_version": version,
                       "available": available, "bytes_per_tile": averages.get(name, {}),
                       "max_area_km2": packs.LAYER_MAX_AREA_KM2.get(name, packs.MAX_AREA_KM2),
                       "access": entitlements.access(tile_tokens.TIER_USER, name)})

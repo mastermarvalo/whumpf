@@ -394,3 +394,89 @@ def test_status_sentinel_fresh_stale_missing(served):
     assert health.healthy is False and "colorado: valid" in health.detail
     served["value"] = {}
     assert asyncio.run(status._check_sentinel()).detail == "colorado: no data"
+
+
+# ── offline packs ────────────────────────────────────────────────────────────
+
+def _titiler_cache(tmp_path, answers: list[httpx.Response]):
+    from app.services.pack_cache import PackCache
+    calls: list[httpx.Request] = []
+
+    async def respond(request):
+        calls.append(request)
+        return answers.pop(0) if answers else httpx.Response(200, content=b"\x89PNG tile",
+                                                              headers={"content-type": "image/png"})
+
+    cache = PackCache(tmp_path / "cache", http=httpx.AsyncClient(transport=httpx.MockTransport(respond)))
+    return cache, calls
+
+
+def test_pack_tiles_come_from_the_served_mosaic(tmp_path, served):
+    cache, calls = _titiler_cache(tmp_path, [])
+
+    async def go():
+        a = await cache.get_tile("sentinel", "colorado", 12, 844, 1553)
+        b = await cache.get_tile("sentinel_false", "colorado", 12, 844, 1553)
+        again = await cache.get_tile("sentinel", "colorado", 12, 844, 1553)
+        return a, b, again
+
+    assert asyncio.run(go()) == (b"\x89PNG tile",) * 3
+    assert len(calls) == 2  # the third came from the cache
+    assert calls[0].url.path.endswith("/cog/tiles/WebMercatorQuad/12/844/1553.png")
+    assert calls[0].url.params["url"].endswith("/sentinel/colorado/true/20261117-0215.tif")
+    assert calls[1].url.params["url"].endswith("/sentinel/colorado/false/20261117-0215.tif")
+    assert (tmp_path / "cache" / "sentinel_colorado.sqlite").exists()
+
+    served["value"]["current"]["revision"] = "20261118-0215"  # the next night's mosaic
+    asyncio.run(cache.get_tile("sentinel", "colorado", 12, 844, 1553))
+    assert len(calls) == 3
+
+
+def test_pack_tile_outside_the_mosaic_is_empty(tmp_path, served):
+    cache, _ = _titiler_cache(tmp_path, [httpx.Response(404)])
+    assert asyncio.run(cache.get_tile("sentinel", "colorado", 12, 844, 1553)) == b""
+
+
+def test_pack_layers_need_a_mosaic(tmp_path, served):
+    from app.services.pack_cache import PackTileError
+    served["value"] = {}
+    cache, calls = _titiler_cache(tmp_path, [])
+    with pytest.raises(PackTileError, match="make sentinel-refresh"):
+        asyncio.run(cache.get_tile("sentinel", "colorado", 12, 844, 1553))
+    assert calls == []
+
+
+def test_crop_dates_keeps_the_box():
+    d1, d2 = sentinel.day_number(date(2026, 11, 6)), sentinel.day_number(date(2026, 11, 16))
+    days = np.zeros((10, 10), dtype=np.uint16)
+    days[:5, :] = d1
+    days[5:, 5:] = d2
+    doc = sentinel.dates_doc(days, west=-106.0, north=40.0, cell=0.1)
+    part = sentinel.crop_dates(doc, (-105.45, 39.05, -105.05, 39.45))  # the south-east quarter
+    assert (part["width"], part["height"]) == (5, 5) and part["dates"] == ["2026-11-16"]
+    assert part["west"] == pytest.approx(-105.5) and part["north"] == pytest.approx(39.5)
+    assert sentinel.date_at(part, -105.3, 39.3) == "2026-11-16"
+    assert sentinel.date_at(doc, -105.3, 39.3) == sentinel.date_at(part, -105.3, 39.3)
+
+
+def test_pack_metadata_carries_the_dates_and_the_credit(tmp_path, served, monkeypatch):
+    from app.services import packs
+    days = np.full((60, 60), sentinel.day_number(date(2026, 11, 14)), dtype=np.uint16)
+    doc = sentinel.dates_doc(days, west=-106.1, north=40.1, cell=0.01)
+
+    async def fake_dates(key):
+        assert key == ENTRY["keys"]["dates"]
+        return gzip.compress(json.dumps(doc).encode())
+
+    monkeypatch.setattr(sentinel, "read_dates", fake_dates)
+    dates = asyncio.run(packs.sentinel_dates("colorado", (-105.835, 39.753, -105.719, 39.843)))
+    # The box rounded out to whole 0.01° cells.
+    assert dates["dates"] == ["2026-11-14"] and 12 <= dates["width"] <= 13 and 9 <= dates["height"] <= 10
+
+    class P:
+        region, id = "colorado", "p1"
+
+    meta = packs.layer_metadata(None, P(), "sentinel_false", "20261117-0215", dates)
+    assert meta["attribution"] == "Contains modified Copernicus Sentinel data 2026"
+    assert meta["dates"] == dates and meta["tile_size"] == 256
+    assert "dates" not in packs.layer_metadata(None, P(), "topo", None)

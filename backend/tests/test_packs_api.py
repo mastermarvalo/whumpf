@@ -26,7 +26,8 @@ BERTHOUD = [-105.835, 39.753, -105.719, 39.843]
 REQUIRED = ["topo", "slope", "aspect", "elevation", "ski"]
 # What shipped app builds ask for (they never send naip).
 ALL = ["topo", "imagery", "slope", "aspect", "elevation", "ski"]
-MANIFEST_LAYERS = ["topo", "imagery", "naip", "slope", "aspect", "elevation", "ski"]
+MANIFEST_LAYERS = ["topo", "imagery", "naip", "sentinel", "sentinel_false", "slope", "aspect", "elevation",
+                   "ski"]
 
 
 def _box(i: int) -> list[float]:
@@ -142,7 +143,8 @@ def test_manifest(client, versions):
     assert r.status_code == 200 and r.headers["cache-control"] == "no-store"
     body = r.json()
     assert body["max_area_km2"] == 700 and body["max_side_km"] == 50 and body["grid_zoom"] == 14
-    assert body["required_layers"] == REQUIRED and body["optional_layers"] == ["imagery", "naip"]
+    assert body["required_layers"] == REQUIRED
+    assert body["optional_layers"] == ["imagery", "naip", "sentinel", "sentinel_false"]
     assert body["url_ttl_s"] == 86400
     assert body["limits"] == {"requests_per_hour": 10, "active_per_user": 2, "polls_per_minute": 60}
     layers = {layer["id"]: layer for layer in body["layers"]}
@@ -158,6 +160,11 @@ def test_manifest(client, versions):
     assert layers["naip"]["max_area_km2"] == 200 and layers["topo"]["max_area_km2"] == 700
     assert layers["naip"]["attribution"] == "USDA Farm Service Agency: NAIP imagery"
     assert layers["naip"]["bytes_per_tile"] == {"17": 17400, "18": 17400}
+    for name in ("sentinel", "sentinel_false"):
+        assert layers[name]["minzoom"] == 8 and layers[name]["maxzoom"] == 14
+        assert layers[name]["tile_type"] == "png" and layers[name]["tile_size"] == 256
+        assert layers[name]["attribution"].startswith("Contains modified Copernicus Sentinel data 20")
+        assert layers[name]["access"] == "ok" and layers[name]["max_area_km2"] == 700
 
 
 def test_manifest_marks_layers_that_cant_be_built(client, versions, monkeypatch):
@@ -254,13 +261,28 @@ def test_layers_must_be_the_required_ones(client, layers):
     r = _post(client("owner"), layers=layers)
     assert r.status_code == 422
     assert r.json()["detail"] == ("layers must include topo, slope, aspect, elevation and ski; "
-                                  "imagery and naip are optional")
+                                  "imagery, naip, sentinel and sentinel_false are optional")
+
+
+def test_sentinel_layers_are_opt_in_and_gated_together(client, monkeypatch):
+    from app import entitlements
+    c = client("owner")
+    r = _post(c, layers=ALL + ["sentinel", "sentinel_false"])
+    assert r.status_code == 202 and r.json()["layers"][-6:] == ["sentinel", "sentinel_false", "slope", "aspect",
+                                                                "elevation", "ski"]
+    monkeypatch.setitem(entitlements.ALLOWED_TIERS, "sentinel", frozenset({"pro"}))
+    for extra in (["sentinel"], ["sentinel_false"]):
+        r = _post(c, bbox=_box(1), layers=ALL + extra)
+        assert r.status_code == 403 and r.json()["code"] == "pro_required"
+    layers = {layer["id"]: layer for layer in c.get("/packs/manifest?region=colorado").json()["layers"]}
+    assert layers["sentinel"]["access"] == layers["sentinel_false"]["access"] == "pro_required"
 
 
 def test_naip_is_opt_in_and_only_for_small_boxes(client, db_session):
     c = client("owner")
     r = _post(c, layers=ALL + ["naip"])
-    assert r.status_code == 202 and r.json()["layers"] == MANIFEST_LAYERS
+    assert r.status_code == 202
+    assert r.json()["layers"] == ["topo", "imagery", "naip", "slope", "aspect", "elevation", "ski"]
     assert r.json()["id"] != _post(c).json()["id"]  # the old request is its own pack
 
     big = [-106.0, 39.5, -105.8, 39.65]  # ~285 km²

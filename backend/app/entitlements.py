@@ -29,6 +29,8 @@ MESSAGE = "This layer needs a Whumpf Pro account."
 ALLOWED_TIERS: dict[str, frozenset[str]] = {
     "sentinel": frozenset({TIER_ANON, TIER_USER}),
 }
+# Pack layers that share another layer's entry.
+SAME_AS = {"sentinel_false": "sentinel"}
 
 
 class NotEntitled(HTTPException):
@@ -40,7 +42,7 @@ class NotEntitled(HTTPException):
 
 
 def allowed(tier: str, layer: str) -> bool:
-    tiers = ALLOWED_TIERS.get(layer)
+    tiers = ALLOWED_TIERS.get(SAME_AS.get(layer, layer))
     return tiers is None or tier in tiers
 
 

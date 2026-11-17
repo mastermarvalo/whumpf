@@ -49,7 +49,7 @@ Our server fetches public data for you. It sends the other service only what tha
 
 - **US National Weather Service (api.weather.gov):** the point you checked, rounded to about 100 m, to get its forecast.
 - **Colorado Avalanche Information Center (CAIC):** nothing about you. We fetch the whole forecast and work out your zone on our server.
-- **NRCS SNOTEL, NOAA (snowfall, snow depth, temperature, wind, radar), USGS (elevation, and topo and imagery for offline maps), USDA NAIP aerial imagery from Microsoft's Planetary Computer (the most detailed imagery), Colorado Department of Transportation (road conditions), National Park Service and Windy.com (webcam lists):** nothing about you. Our server fetches their data on a schedule, or for the webcam you open.
+- **NRCS SNOTEL, NOAA (snowfall, snow depth, temperature, wind, radar), USGS (elevation, and topo and imagery for offline maps), USDA NAIP aerial imagery from Microsoft's Planetary Computer (the most detailed imagery), Copernicus Sentinel-2 satellite imagery from Amazon Web Services and Element 84 (recent imagery), Colorado Department of Transportation (road conditions), National Park Service and Windy.com (webcam lists):** nothing about you. Our server fetches their data on a schedule, or for the webcam you open.
 - **Strava:** only the requests needed to show you your own activities, refresh imported routes and disconnect. We don't send Strava any other personal data.
 
 ## Services that handle data for us

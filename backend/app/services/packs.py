@@ -9,6 +9,9 @@ request; make pack-queue adds one through queue_pack.
   tiles on every side, for the runout check on the phone.
 - naip (zooms 17-18, ~91 tiles a km²) is opt-in and only for boxes up to
   LAYER_MAX_AREA_KM2["naip"]; a bigger box with naip is refused (422).
+- sentinel and sentinel_false (zooms 8-14) are opt-in. Their source version
+  is the nightly mosaic revision, so a pack asked for the next day is a new
+  one, and their metadata carries the capture dates grid of the box.
 - Each layer is one PMTiles v3 file: tiles as made (JPEG, PNG, gzipped MVT),
   gzipped directories, identical tiles stored once, empty answers left out.
   A layer with no tiles at all in the box gets no file.
@@ -26,6 +29,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import gzip
 import hashlib
 import hmac
 import json
@@ -57,12 +61,13 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import Pack, PackRequest
 from app.regions import REGIONS, validate_region
-from app.services import naip
+from app.services import naip, sentinel
 from app.services.pack_cache import (
     LAYERS,
     PackCache,
     PackTileError,
     read_mbtiles_metadata,
+    sentinel_entry,
 )
 
 logger = logging.getLogger("whumpf.packs")
@@ -75,8 +80,8 @@ MAX_ATTEMPTS = 3        # builds started (crashes included) before a pack fails
 WINDOW = 32             # tiles asked for ahead of the one being written
 PROGRESS_EVERY_S = 1.0
 
-TILE_SIZE = {"topo": 256, "imagery": 256, "naip": 256, "slope": 512, "aspect": 512, "elevation": 256,
-             "ski": 512}
+TILE_SIZE = {"topo": 256, "imagery": 256, "naip": 256, "sentinel": 256, "sentinel_false": 256,
+             "slope": 512, "aspect": 512, "elevation": 256, "ski": 512}
 ATTRIBUTION = {
     "topo": "USGS The National Map",
     "imagery": "USGS The National Map: Orthoimagery (NAIP)",
@@ -86,10 +91,11 @@ ATTRIBUTION = {
     "elevation": "USGS 3DEP",
     "ski": "© OpenStreetMap contributors",
 }
+SENTINEL_LAYERS = ("sentinel", "sentinel_false")
 _TILE_TYPE = {"jpg": TileType.JPEG, "png": TileType.PNG, "mvt": TileType.MVT}
 
 REQUIRED_LAYERS = ("topo", "slope", "aspect", "elevation", "ski")
-OPTIONAL_LAYERS = ("imagery", "naip")
+OPTIONAL_LAYERS = ("imagery", "naip", "sentinel", "sentinel_false")
 # make pack-queue without --layers.
 DEFAULT_LAYERS = REQUIRED_LAYERS + ("imagery",)
 # Layers with a smaller box than MAX_AREA_KM2. naip: ~18,000 tiles at most
@@ -118,7 +124,8 @@ REQUEST_LOCK_KEY = 0x7061636C  # "pacl"
 # (Oct 2026; empty tiles count 0), and the tiles it had per zoom: the
 # starting point for GET /packs/manifest, pooled with later builds. naip is
 # from four probe tiles (Nov 2026, make naip-index --probe), counted as a
-# Berthoud-sized build so a few real builds soon outweigh it.
+# Berthoud-sized build so a few real builds soon outweigh it. The Sentinel
+# layers are an estimate (RGBA PNGs of imagery, ~120 KB) until real builds.
 SEED_TILE_BYTES: dict[str, dict[int, tuple[int, int]]] = {
     layer: {LAYERS[layer].minzoom + i: (n, avg) for i, (n, avg) in enumerate(zip(counts, avgs, strict=True))}
     for layer, counts, avgs in (
@@ -134,6 +141,8 @@ SEED_TILE_BYTES: dict[str, dict[int, tuple[int, int]]] = {
          (158352, 155676, 149604, 143496, 135133, 124780, 112535)),
         ("ski", (1, 1, 2, 4, 9, 16, 42), (1166, 788, 1065, 3324, 1105, 688, 174)),
         ("naip", (2688, 10752), (17400, 17400)),
+        ("sentinel", (1, 1, 2, 4, 9, 16, 42), (120000,) * 7),
+        ("sentinel_false", (1, 1, 2, 4, 9, 16, 42), (110000,) * 7),
     )
 }
 
@@ -294,11 +303,11 @@ def pack_bbox(pack: Pack) -> tuple[float, float, float, float]:
 
 
 def check_api_layers(layers: Sequence[str]) -> list[str]:
-    """POST /packs: the required layers, maybe imagery and naip; in LAYERS order."""
+    """POST /packs: the required layers, maybe the optional ones; in LAYERS order."""
     wanted = set(layers)
     if not set(REQUIRED_LAYERS) <= wanted or not wanted <= set(REQUIRED_LAYERS + OPTIONAL_LAYERS):
         raise ValueError("layers must include topo, slope, aspect, elevation and ski; "
-                         "imagery and naip are optional")
+                         "imagery, naip, sentinel and sentinel_false are optional")
     return [name for name in LAYERS if name in wanted]
 
 
@@ -579,16 +588,27 @@ async def write_layer(
     return written
 
 
-def layer_metadata(cache: PackCache, pack: Pack, layer: str, version: str | None) -> dict[str, Any]:
+def attribution(layer: str, sentinel_dates: list[str] | None = None) -> str:
+    """The credit a layer needs; Sentinel's names the year of its data."""
+    if layer in SENTINEL_LAYERS:
+        return sentinel.attribution(sentinel_dates)
+    return ATTRIBUTION[layer]
+
+
+def layer_metadata(cache: PackCache, pack: Pack, layer: str, version: str | None,
+                   dates: dict | None = None) -> dict[str, Any]:
+    """`dates`: the Sentinel layers' capture dates grid for the box."""
     meta: dict[str, Any] = {
         "name": f"whumpf {layer}",
         "layer": layer,
         "region": pack.region,
         "pack": str(pack.id),
         "version": version,
-        "attribution": ATTRIBUTION[layer],
+        "attribution": attribution(layer, dates["dates"] if dates else None),
         "tile_size": TILE_SIZE[layer],
     }
+    if dates is not None:
+        meta["dates"] = dates
     if layer == "elevation":
         meta["encoding"] = "terrarium"
     if layer == "ski":
@@ -710,6 +730,18 @@ def reason(exc: BaseException) -> str:
 
 # ── a build ────────────────────────────────────────────────────────────────────
 
+async def sentinel_dates(region: str, bounds: tuple[float, float, float, float]) -> dict:
+    """The served mosaic's capture dates grid, cropped to a pack's box."""
+    entry = await sentinel_entry(region)
+    try:
+        body = await sentinel.read_dates(entry["keys"]["dates"])
+    except Exception as exc:
+        raise PackTileError(f"can't read the Sentinel-2 dates of {region}: {exc!r}") from exc
+    if body is None:
+        raise PackTileError(f"the Sentinel-2 dates of {region} are gone")
+    return sentinel.crop_dates(json.loads(gzip.decompress(body)), bounds)
+
+
 async def build_pack(
     session: Session, pack: Pack, cache: PackCache, store_factory: Callable[[], PackStore],
     build_root: Path, clock: Callable[[], float] = time.monotonic,
@@ -760,10 +792,12 @@ async def build_pack(
             for _ in range(2):
                 layer_sizes = {}
                 version = await cache.source_version(name, region)
+                dates = (await sentinel_dates(region, coverage(name, base).bounds())
+                         if name in SENTINEL_LAYERS else None)
                 with path.open("wb") as out:
                     written = await write_layer(
                         cache, name, region, tiles, out, header,
-                        layer_metadata(cache, pack, name, version), on_tile)
+                        layer_metadata(cache, pack, name, version, dates), on_tile)
                 if await cache.source_version(name, region) == version:
                     break
                 logger.info("pack %s %s: its source changed during the build; building it again",

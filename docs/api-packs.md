@@ -29,7 +29,7 @@ show `detail`. 429 and 503 always carry `Retry-After` (seconds).
   "max_side_km": 50,
   "grid_zoom": 14,
   "required_layers": ["topo", "slope", "aspect", "elevation", "ski"],
-  "optional_layers": ["imagery", "naip"],
+  "optional_layers": ["imagery", "naip", "sentinel", "sentinel_false"],
   "url_ttl_s": 86400,
   "limits": {"requests_per_hour": 10, "active_per_user": 2, "polls_per_minute": 60},
   "layers": [
@@ -43,6 +43,14 @@ show `detail`. 429 and 503 always carry `Retry-After` (seconds).
     {"id": "naip", "minzoom": 17, "maxzoom": 18, "tile_type": "jpg", "tile_size": 256, "pad_tiles": 0,
      "attribution": "USDA Farm Service Agency: NAIP imagery", "source_version": "20261117-37fed9ed",
      "available": true, "max_area_km2": 200, "bytes_per_tile": {"17": 17400, "18": 17400}},
+    {"id": "sentinel", "minzoom": 8, "maxzoom": 14, "tile_type": "png", "tile_size": 256, "pad_tiles": 0,
+     "attribution": "Contains modified Copernicus Sentinel data 2026", "source_version": "20261117-0215",
+     "available": true, "max_area_km2": 700, "access": "ok",
+     "bytes_per_tile": {"8": 120000, "9": 120000, "10": 120000, "11": 120000, "12": 120000, "13": 120000, "14": 120000}},
+    {"id": "sentinel_false", "minzoom": 8, "maxzoom": 14, "tile_type": "png", "tile_size": 256, "pad_tiles": 0,
+     "attribution": "Contains modified Copernicus Sentinel data 2026", "source_version": "20261117-0215",
+     "available": true, "max_area_km2": 700, "access": "ok",
+     "bytes_per_tile": {"8": 110000, "9": 110000, "10": 110000, "11": 110000, "12": 110000, "13": 110000, "14": 110000}},
     {"id": "slope", "minzoom": 8, "maxzoom": 14, "tile_type": "png", "tile_size": 512, "pad_tiles": 0,
      "attribution": "USGS 3DEP", "source_version": "5d41402abc4b2a76b9719d911017c592", "available": true,
      "bytes_per_tile": {"8": 226833, "9": 229073, "10": 179967, "11": 180969, "12": 173784, "13": 166183, "14": 66930}},
@@ -72,6 +80,15 @@ show `detail`. 429 and 503 always carry `Retry-After` (seconds).
   it has its own `max_area_km2` (200); every other layer's is the pack's
   700. Its source version is the NAIP index revision. The same tiles are
   online at `/tiles/naip` (runbook §18).
+- `sentinel` (true colour) and `sentinel_false` (SWIR/NIR/red: snow cyan,
+  cloud white) are the recent Sentinel-2 "latest clear view" (runbook §19),
+  opt-in, PNG with transparency where there was no clear view in 30 days.
+  Their source version is the nightly mosaic revision, so the same box asked
+  for the next day is a new pack with newer imagery. Each file's metadata
+  has `dates`, the capture day grid of the box (format in
+  `app/services/sentinel.py::dates_doc`), so the app can say "imagery from
+  Nov 14" offline, and an `attribution` naming the data's year. Both layers
+  share one `access`. Berthoud Pass: ~9 MB each (estimate until real builds).
 - `available` is false for topo and imagery when the server has no USGS
   contact set, for every layer when R2 isn't configured, and for a layer
   whose version can't be read right now (naip: no NAIP index yet). `POST /packs` then answers 503.
@@ -132,7 +149,7 @@ same layers, same source versions) gives the same pack id, for any user.
 | 422 | `"bbox is 31.2 x 25.0 km (780 km²); the most is 700 km²"` |
 | 422 | `"bbox is 60.0 x 5.0 km; the most is 50 km on a side"` |
 | 422 | `"bbox is 285 km²; naip is only for a box of at most 200 km²"` |
-| 422 | `"layers must include topo, slope, aspect, elevation and ski; imagery and naip are optional"` |
+| 422 | `"layers must include topo, slope, aspect, elevation and ski; imagery, naip, sentinel and sentinel_false are optional"` |
 | 429 | `"Too many requests"` (10 an hour) |
 | 429 | `"You already have 2 packs being prepared. Try again when one is ready."` |
 | 503 | `"Too many packs are being prepared right now. Try again in a few minutes."` |

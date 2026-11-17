@@ -1183,6 +1183,7 @@ app builds against is `docs/api-packs.md`.
 | topo | 8-16 | USGS `USGSTopo` | JPEG as received | forever; a 404 for 30 days |
 | imagery | 8-16 | USGS `USGSImageryOnly` (NAIP) | JPEG as received | forever; a 404 for 30 days |
 | naip | 17-18 | NAIP COGs on Planetary Computer (§18) | 256 px JPEG, quality 80 | the NAIP index revision changes |
+| sentinel, sentinel_false | 8-14 | TiTiler, the Sentinel-2 mosaic COGs (§19) | 256 px RGBA PNG | the nightly mosaic revision changes |
 | slope | 8-14 | TiTiler, `slope.tif` (no hires, as the app) | 512 px palette PNG | `slope.tif` changes |
 | aspect | 8-14 | TiTiler, `aspect.tif` | 512 px palette PNG | `aspect.tif` changes |
 | elevation | 8-14 | DEM render (z13+ hires, 10 m fallback) | 256 px Terrarium PNG, level 9 | `dem.tif` (or `dem_hires.tif`) changes |
@@ -2307,6 +2308,15 @@ deploy, and purge `https://api.whumpf.co/tiles/sentinel/*` in Cloudflare
 are shared and could be served from the cache for a day). Tokens last an
 hour, so every app follows within an hour; phones keep tiles they already
 have for up to a day.
+
+### Offline packs
+
+`sentinel` and `sentinel_false` are opt-in pack layers at zooms 8-14 (§12),
+made through TiTiler like slope. Their source version is the mosaic
+revision, so cached tiles are remade after each night's run and a request
+the next day is a new pack. Each file's metadata carries `dates`, the dates
+grid cropped to the box, and the credit with the data's year. Both follow
+the one `sentinel` entry in `app/entitlements.py`.
 
 ### Daily refresh
 

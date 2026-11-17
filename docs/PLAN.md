@@ -240,7 +240,7 @@ Most of the old website's layers are not in the app yet. Observations need no ba
 | Contours | Backend `/tiles/contours` | No | Port after fixing the lag the website has |
 | Trails and peaks, streets | OpenFreeMap vector | No | Port; trails matter most for ski touring |
 | Ski resort runs | OpenSnowMap | No | Done on the backend: our own OSM vector tiles at `/tiles/ski` (runbook §7); the app needs the layer |
-| Satellite | Esri | No | Use USGS imagery (NAIP, public domain, same USGS server as the topo map), online and in offline packs. Esri's terms forbid offline saving. Backend built Nov 17: zooms 17-18 from USDA NAIP 2023 (0.3 m) at `/tiles/naip` and the opt-in `naip` pack layer (runbook §18). NAIP is summer imagery, so a Sentinel-2 "recent satellite" layer follows (planned) |
+| Satellite | Esri | No | Use USGS imagery (NAIP, public domain, same USGS server as the topo map), online and in offline packs. Esri's terms forbid offline saving. Backend built Nov 17: zooms 17-18 from USDA NAIP 2023 (0.3 m) at `/tiles/naip` and the opt-in `naip` pack layer (runbook §18). NAIP is summer imagery, so a Sentinel-2 "recent satellite" layer follows: backend built Nov 17 (`/tiles/sentinel`, opt-in pack layers, runbook §19) |
 | Slope, hillshade, CAIC zones, SNOTEL, my routes, Strava | Various | Yes | Keep |
 
 ### Layer order and opacity
