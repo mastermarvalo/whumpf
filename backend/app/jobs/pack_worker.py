@@ -259,7 +259,7 @@ def main() -> None:
     q = sub.add_parser("queue", help="queue a pack")
     q.add_argument("--bbox", required=True, help="--bbox=W,S,E,N in degrees (the = is needed: west is negative)")
     q.add_argument("--region", default="colorado")
-    q.add_argument("--layers", help="comma-separated; default all")
+    q.add_argument("--layers", help="comma-separated; default the required layers and imagery")
     sub.add_parser("cleanup", help="forget packs nobody has asked for in 60 days (failed: a day)")
     ls = sub.add_parser("list", help="the newest packs")
     ls.add_argument("--limit", type=int, default=10)

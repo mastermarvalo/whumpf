@@ -23,6 +23,7 @@ from app.routers import (
     friends,
     health,
     legal,
+    naip,
     packs,
     regions,
     roads,
@@ -116,6 +117,7 @@ def create_app() -> FastAPI:
     app.include_router(tile_tokens.router)
     app.include_router(tiles.router)
     app.include_router(weather_tiles.router)
+    app.include_router(naip.router)
     app.include_router(weather.router)
     app.include_router(cameras.router)
     app.include_router(roads.router)

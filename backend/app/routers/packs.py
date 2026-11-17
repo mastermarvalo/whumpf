@@ -200,7 +200,8 @@ async def manifest(
         if name == "elevation":
             entry["encoding"] = "terrarium"
         entry.update({"attribution": packs.ATTRIBUTION[name], "source_version": version,
-                      "available": available, "bytes_per_tile": averages.get(name, {})})
+                      "available": available, "bytes_per_tile": averages.get(name, {}),
+                      "max_area_km2": packs.LAYER_MAX_AREA_KM2.get(name, packs.MAX_AREA_KM2)})
         layers.append(entry)
 
     poll = tile_tokens.BUCKETS["packs_poll"][0]

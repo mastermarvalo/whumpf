@@ -156,6 +156,34 @@ GeoTIFFs. The pipeline in `data/pipelines/` should:
 
 ---
 
+### USDA NAIP — National Agriculture Imagery Program (via Planetary Computer)
+
+**Use:** aerial imagery at zooms 17-18 (`/tiles/naip`, the `naip` pack
+layer); USGS's `USGSImageryOnly` tiles cover zooms up to 16. Runbook §18.
+
+- Program: <https://www.fsa.usda.gov/programs-and-services/aerial-photography/imagery-programs/naip-imagery/>
+- STAC: `https://planetarycomputer.microsoft.com/api/stac/v1/search`, collection `naip`
+- Files: `https://naipeuwest.blob.core.windows.net/naip/v002/<state>/<year>/<state>_<res>_<year>/<quad>/m_<quad>_<qq>_<utm>_<res>_<date>[_<processed>].tif`
+
+**Access pattern:** `make naip-index` (monthly) lists the region's files
+from STAC and keeps the newest per quarter quad; tiles are read from the
+COGs (range reads at the matching overview) and cached once per tile.
+
+**Gotchas:** USGS's `USGSNAIPImagery` ImageServer only has Colorado 2019 and
+USDA's gis.apfo.usda.gov resets connections from the VM (Nov 2026). Files
+are ~2 GB, 4 bands, UTM; the blob store is in Azure West Europe (~135 ms a
+read from the VM). Anonymous reads work today; Planetary Computer's preview
+terms let Microsoft change that without notice.
+
+**Licensing:** public domain (USDA Farm Service Agency). Credit "USDA Farm
+Service Agency: NAIP imagery". Planetary Computer hosting: Microsoft's
+Supplemental Terms of Use for Planetary Computer Previews (Jan 2023).
+
+**Update frequency:** each state every 2-3 years (Colorado: 2019, 2021,
+2023 at 0.3 m).
+
+---
+
 ## Phase 2 feeds
 
 ### UAC (Utah Avalanche Center) and other regional centers

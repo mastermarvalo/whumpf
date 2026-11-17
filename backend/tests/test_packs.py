@@ -118,10 +118,18 @@ def test_tiles_are_in_tile_id_order_without_repeats():
 
 # ── requests ───────────────────────────────────────────────────────────────────
 
-def test_request_defaults_to_every_layer_in_order():
+def test_request_defaults_to_the_required_layers_and_imagery_in_order():
     box_, layers = check_request("colorado", BERTHOUD, None)
-    assert box_ == BERTHOUD and layers == list(LAYERS)
+    assert box_ == BERTHOUD and layers == ["topo", "imagery", "slope", "aspect", "elevation", "ski"]
     assert check_request("colorado", BERTHOUD, ["ski", "topo"])[1] == ["topo", "ski"]
+    assert check_request("colorado", BERTHOUD, ["naip", "topo"])[1] == ["topo", "naip"]
+
+
+def test_naip_is_only_for_small_boxes():
+    big = (-106.0, 39.5, -105.8, 39.65)  # ~17 x 17 km, ~285 km²
+    assert check_request("colorado", big, ["topo"])[1] == ["topo"]
+    with pytest.raises(ValueError, match="naip is only for a box of at most 200 km²"):
+        check_request("colorado", big, ["topo", "naip"])
 
 
 @pytest.mark.parametrize("bbox, layers, message", [

@@ -259,9 +259,10 @@ services:
       - ./backend/tests:/app/tests
       # Mounted so `make makemigration` writes new revisions into the repo.
       - ./backend/migrations:/app/migrations
-      # Offline pack cache, written only by the pack worker; read here for
-      # the size line on /status (docs/runbook.md §12).
-      - /data/pack-cache:/data/pack-cache:ro
+      # Offline pack cache (docs/runbook.md §12): the size line on /status,
+      # and /tiles/naip reads and fills naip_<region>.sqlite, shared with the
+      # pack worker (§18).
+      - /data/pack-cache:/data/pack-cache
       # The ski MBTiles' mtime is the ski layer's version in pack ids and
       # GET /packs/manifest (docs/runbook.md §12).
       - /data/martin-tiles:/data/martin-tiles:ro
@@ -280,8 +281,8 @@ services:
   # ---------------------------------------------------------------------------
   # pack-worker — builds queued offline packs into R2 (docs/runbook.md §12).
   # ONE process only: never scale it. Its tile limits hold per process and
-  # it is the only writer of /data/pack-cache (an advisory lock makes a
-  # second worker exit). Same image as the api; it never runs migrations,
+  # it is the only pack builder (an advisory lock makes a second worker
+  # exit); the api also writes naip_<region>.sqlite there (§18). Same image as the api; it never runs migrations,
   # so it starts after the api (whose entrypoint does).
   # ---------------------------------------------------------------------------
   pack-worker:

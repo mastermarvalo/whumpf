@@ -9,6 +9,11 @@ PACK_CACHE_DIR, written only by the pack worker.
   while stored; a 404 (USGS has no tile there) is stored as empty and asked
   again after 30 days. At most 4 USGS requests at a time, User-Agent with
   USGS_CONTACT, retried on errors, 429 and 5xx. Failures are never stored.
+- naip: aerial imagery at zooms 17-18, made from USDA NAIP files on
+  Planetary Computer (services/naip.py), at most 2 at a time per process and
+  under the global `naip_upstream` limit. Unlike the other files, the api
+  writes naip_<region>.sqlite too: the live /tiles/naip route fills the same
+  cache, so each tile is read from Microsoft once.
 - slope, aspect, elevation, ski: made by our own code, the same as the live
   /tiles endpoints (services/terrain_tiles.py), at most 2 at a time in their
   own pool so packs don't slow the live map. Each carries a source_version
@@ -18,12 +23,14 @@ PACK_CACHE_DIR, written only by the pack worker.
   are evicted down to 90% of the cap.
 
 The concurrency limits hold within one process: the pack worker must run as
-a single process.
+a single process. Eviction takes a file lock, so the pack worker and the api
+workers never evict at the same time.
 """
 
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import json
 import logging
 import math
@@ -37,11 +44,13 @@ from pathlib import Path
 from typing import Literal
 
 import httpx
+from fastapi import HTTPException
 
+from app import tile_tokens
 from app.config import get_settings
 from app.http_retry import CircuitOpenError, call_with_resilience
 from app.regions import validate_region
-from app.services import terrain_tiles
+from app.services import naip, terrain_tiles
 
 logger = logging.getLogger("whumpf.pack_cache")
 
@@ -50,6 +59,7 @@ GB = 10**9
 USGS_URL = "https://basemap.nationalmap.gov/arcgis/rest/services/{service}/MapServer/tile/{z}/{y}/{x}"
 USGS_CONCURRENCY = 4
 OWN_CONCURRENCY = 2
+NAIP_CONCURRENCY = 2  # per process; all processes together: naip_upstream
 # A 404 from USGS is kept this long, so a brief USGS problem can't leave a
 # permanent hole in later packs.
 USGS_EMPTY_TTL_S = 30 * 86400
@@ -65,7 +75,7 @@ EVICT_TO = 0.9                     # evict down to this share of the cap
 @dataclass(frozen=True)
 class Layer:
     name: str
-    kind: Literal["usgs", "colormap", "elevation", "ski"]
+    kind: Literal["usgs", "naip", "colormap", "elevation", "ski"]
     minzoom: int
     maxzoom: int
     tile_type: Literal["jpg", "png", "mvt"]
@@ -75,6 +85,7 @@ class Layer:
 LAYERS: dict[str, Layer] = {layer.name: layer for layer in (
     Layer("topo", "usgs", 8, 16, "jpg", "USGSTopo"),
     Layer("imagery", "usgs", 8, 16, "jpg", "USGSImageryOnly"),  # NAIP
+    Layer("naip", "naip", naip.MINZOOM, naip.MAXZOOM, "jpg"),     # NAIP 2023, 0.3 m
     Layer("slope", "colormap", 8, 14, "png"),   # 512 px, as /tiles/slope (no hires)
     Layer("aspect", "colormap", 8, 14, "png"),  # 512 px, as /tiles/aspect
     Layer("elevation", "elevation", 8, 14, "png"),  # 256 px Terrarium, PNG level 9
@@ -84,6 +95,14 @@ LAYERS: dict[str, Layer] = {layer.name: layer for layer in (
 
 class PackTileError(Exception):
     """A tile could not be made or fetched. Nothing was stored."""
+
+
+class UpstreamBusy(PackTileError):
+    """The global naip_upstream limit is used up; try again after retry_after s."""
+
+    def __init__(self, retry_after: int) -> None:
+        super().__init__(f"NAIP upstream limit reached; retry in {retry_after} s")
+        self.retry_after = retry_after
 
 
 # ── tile listing ───────────────────────────────────────────────────────────────
@@ -149,6 +168,8 @@ class TileStore:
     def __init__(self, path: Path) -> None:
         self.path = path
         self.db = sqlite3.connect(path, isolation_level=None)  # autocommit
+        # naip_<region>.sqlite has writers in several processes.
+        self.db.execute("PRAGMA busy_timeout = 10000")
         if self.db.execute("PRAGMA page_count").fetchone()[0] == 0:
             # Only takes effect before the first table: lets evicted pages
             # be returned to the filesystem.
@@ -267,6 +288,15 @@ class SourceVersions:
     async def version(self, spec: Layer, region: str, z: int) -> str | None:
         if spec.kind == "usgs":
             return None
+        if spec.kind == "naip":
+            # The index revision: a new NAIP year remakes the tiles.
+            try:
+                entry = ((await naip.read_pointer(region)) or {}).get("current")
+            except Exception as exc:
+                raise PackTileError(f"can't read the NAIP index of {region}: {exc!r}") from exc
+            if not entry:
+                raise PackTileError(f"no NAIP index for {region}; run make naip-index")
+            return entry["revision"]
         if spec.kind == "ski":
             # The weekly publish (and a rollback) swaps the file in, so its
             # mtime changes whenever the served tiles do.
@@ -327,6 +357,7 @@ class PackCache:
         ski_dir: Path | str = SKI_DIR,
         http: httpx.AsyncClient | None = None,
         clock: Callable[[], float] = time.time,
+        wait_when_busy: bool = True,
     ) -> None:
         settings = get_settings()
         self.dir = Path(cache_dir or settings.pack_cache_dir)
@@ -341,6 +372,11 @@ class PackCache:
         self._stores = {p.name: TileStore(p) for p in sorted(self.dir.glob("*.sqlite"))}
         self._usgs = asyncio.Semaphore(USGS_CONCURRENCY)
         self._own = asyncio.Semaphore(OWN_CONCURRENCY)
+        self._naip = asyncio.Semaphore(NAIP_CONCURRENCY)
+        self._naip_pool = ThreadPoolExecutor(max_workers=NAIP_CONCURRENCY, thread_name_prefix="naip-tiles")
+        # The pack worker waits out the naip_upstream limit; the api answers
+        # 503 at once (UpstreamBusy) rather than hold a request.
+        self.wait_when_busy = wait_when_busy
         self._pool = ThreadPoolExecutor(max_workers=OWN_CONCURRENCY, thread_name_prefix="pack-tiles")
         self._in_flight: dict[tuple, asyncio.Future[bytes]] = {}
         self.versions = SourceVersions(self.ski_dir, self._http)
@@ -352,6 +388,7 @@ class PackCache:
         for store in self._stores.values():
             store.close()
         self._pool.shutdown(wait=True)
+        self._naip_pool.shutdown(wait=True)
         await self._http.aclose()
 
     def _store(self, layer: Layer, region: str) -> TileStore:
@@ -400,6 +437,8 @@ class PackCache:
     ) -> bytes:
         if spec.kind == "usgs":
             data = await self._fetch_usgs(spec, z, x, y)
+        elif spec.kind == "naip":
+            data = await self._make_naip(region, z, x, y)
         elif spec.kind == "colormap":
             data = await self._make_colormap(spec, region, z, x, y)
         elif spec.kind == "elevation":
@@ -445,6 +484,46 @@ class PackCache:
             raise PackTileError(
                 f"USGS {spec.name} {z}/{x}/{y}: not an image ({r.headers.get('content-type')!r})")
         return r.content
+
+    # ── NAIP ──
+
+    async def _naip_slot(self) -> None:
+        """Count one tile against the global naip_upstream limit, waiting
+        for room (pack worker) or raising UpstreamBusy (api)."""
+        while True:
+            try:
+                tile_tokens.enforce("naip_upstream", "global")
+                return
+            except HTTPException as exc:
+                wait = int((exc.headers or {}).get("Retry-After", "60"))
+                if not self.wait_when_busy:
+                    raise UpstreamBusy(wait) from exc
+                logger.info("naip_upstream limit reached; waiting %d s", wait)
+                await asyncio.sleep(min(wait, RETRY_AFTER_MAX_S))
+
+    async def _make_naip(self, region: str, z: int, x: int, y: int) -> bytes:
+        try:
+            index = await naip.load_index(region)
+        except Exception as exc:
+            raise PackTileError(f"can't read the NAIP index of {region}: {exc!r}") from exc
+        if index is None:
+            raise PackTileError(f"no NAIP index for {region}; run make naip-index")
+        items = index.covering(naip.tile_lonlat_bounds(z, x, y))
+        if not items:
+            return b""
+        async with self._naip:
+            await self._naip_slot()
+            loop = asyncio.get_running_loop()
+            try:
+                # GDAL retries its own reads; the breaker stops us dialling
+                # Microsoft while it keeps failing.
+                return await call_with_resilience(
+                    "naip", lambda: loop.run_in_executor(self._naip_pool, naip.render_tile, items, z, x, y),
+                    attempts=1)
+            except CircuitOpenError as exc:
+                raise PackTileError("NAIP circuit open") from exc
+            except Exception as exc:
+                raise PackTileError(f"NAIP {z}/{x}/{y}: {exc!r}") from exc
 
     # ── our layers ──
 
@@ -496,7 +575,19 @@ class PackCache:
 
     def evict(self) -> int:
         """Above the cap, delete the least recently used tiles across all
-        layers until under EVICT_TO of it. Returns the number deleted."""
+        layers until under EVICT_TO of it. Returns the number deleted. Skipped
+        (0) while another process is evicting."""
+        with (self.dir / ".evict.lock").open("a") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return 0
+            # Files another process made since this one started count too.
+            for path in sorted(self.dir.glob("*.sqlite")):
+                self._stores.setdefault(path.name, TileStore(path))
+            return self._evict()
+
+    def _evict(self) -> int:
         total = self.used_bytes()
         if total <= self.max_bytes:
             return 0

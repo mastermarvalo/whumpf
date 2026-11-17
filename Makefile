@@ -242,6 +242,15 @@ ski-tiles-refresh:  ## the weekly job: fetch, build, validate, publish; a failur
 snowfall-refresh:  ## fetch the newest NOHRSC 24 h/72 h snowfall into MinIO (the hourly job); ARGS=--dry-run writes nothing
 	$(API_RUN) uv run python -m app.jobs.snowfall_refresh $(ARGS)
 
+# --- NAIP imagery (z17-18) ------------------------------------------------------
+# The list of NAIP files (Planetary Computer) -> dem-cogs/naip/<region>/ in
+# MinIO; tiles are made from it once into the pack cache. Monthly via cron:
+# docs/runbook.md "NAIP imagery".
+
+.PHONY: naip-index
+naip-index:  ## list the newest NAIP files per region into MinIO (monthly job); ARGS=--dry-run writes nothing, ARGS="--dry-run --probe 18/X/Y" renders a tile
+	$(API_RUN) uv run python -m app.jobs.naip_index $(ARGS)
+
 # --- weather layers ----------------------------------------------------------
 # NOAA snow depth, temperature and radar -> dem-cogs/<layer>/<region>/ in
 # MinIO, served under /tiles. Cron lines: docs/runbook.md "Weather layers".

@@ -1182,6 +1182,7 @@ app builds against is `docs/api-packs.md`.
 |---|---|---|---|---|
 | topo | 8-16 | USGS `USGSTopo` | JPEG as received | forever; a 404 for 30 days |
 | imagery | 8-16 | USGS `USGSImageryOnly` (NAIP) | JPEG as received | forever; a 404 for 30 days |
+| naip | 17-18 | NAIP COGs on Planetary Computer (§18) | 256 px JPEG, quality 80 | the NAIP index revision changes |
 | slope | 8-14 | TiTiler, `slope.tif` (no hires, as the app) | 512 px palette PNG | `slope.tif` changes |
 | aspect | 8-14 | TiTiler, `aspect.tif` | 512 px palette PNG | `aspect.tif` changes |
 | elevation | 8-14 | DEM render (z13+ hires, 10 m fallback) | 256 px Terrarium PNG, level 9 | `dem.tif` (or `dem_hires.tif`) changes |
@@ -1200,9 +1201,14 @@ version is made again when next asked for.
   `topo.sqlite`, `imagery.sqlite`, and per region for ours,
   `slope_colorado.sqlite` and so on. Table `tiles(z, x, y, data, made_at,
   source_version, last_used_at)`; an empty `data` is a real empty answer
-  (USGS or TiTiler 404, no ski runs). Written only by the pack worker. The
-  api mounts the directory read-only for `/status`; create it before the
-  first `make up` (`mkdir -p /data/pack-cache`, done on the VM Oct 19, 2026).
+  (USGS or TiTiler 404, no ski runs, no NAIP there). Written by the pack
+  worker, and `naip_<region>.sqlite` also by the api (the live
+  `/tiles/naip` route fills the same file, §18), so the api mounts the
+  directory read-write; it also reads it for `/status`. Every connection
+  waits up to 10 s for another writer (`busy_timeout`), and eviction takes
+  `.evict.lock` so only one process evicts at a time. Create the directory
+  before the first `make up` (`mkdir -p /data/pack-cache`, done on the VM
+  Oct 19, 2026).
 - `PACK_CACHE_MAX_GB` (default 100): above it the least recently used tiles,
   across all layers, are deleted down to 90% and the files shrink. Checked
   after every 256 MB written. The Berthoud Pass box (~150 km²) comes to
@@ -1219,6 +1225,10 @@ version is made again when next asked for.
   error pages and empty bodies are never stored.
 - Our tiles: at most 2 at a time in their own 2-thread pool, so packs don't
   slow the live map (slope and aspect go through the same TiTiler).
+- NAIP: at most 2 at a time per process (the pack worker and each api
+  worker), and all processes together under the global `naip_upstream`
+  limit (300 a minute, 15,000 an hour; only tiles not in the cache count).
+  At the limit the pack worker waits; the api answers 503 + Retry-After.
 - These limits hold within one process. **The pack worker must run as a
   single process** (see below; a second one exits).
 
@@ -1226,7 +1236,9 @@ version is made again when next asked for.
 
 To drop a layer, stop the pack worker (`make stop-pack-worker`) and delete
 its `.sqlite` file (with `-wal` and `-shm`). Nothing needs backing up;
-everything can be made again.
+everything can be made again. The api has `naip_<region>.sqlite` open too:
+stop the api as well before deleting that one (a deleted file it still has
+open keeps taking writes nobody can read).
 
 ### The pack worker
 
@@ -1584,6 +1596,7 @@ API_MEM_LIMIT=8g API_GDAL_CACHEMAX=512 make <target>
 | `roads-refresh` (every 5 min), `roads-sample` (every 15 min) | api one-off | 5 GB / 256 MB | JSON only |
 | `strava-refresh` (every 6 h at :45) | api one-off | 5 GB / 256 MB | Strava calls; re-samples terrain only for a changed track |
 | `pack-queue`, `pack-list`, `pack-cleanup`, `banner` | api one-off | 5 GB / 256 MB | database work |
+| `naip-index` (monthly, 1st at 04:40) | api one-off | 5 GB / 256 MB | ~15,000 STAC items in memory, a 1.3 MB list; under a minute |
 | `migrate`, `makemigration`, `db-check`, `test-api`, `lint-api` | api one-off | 5 GB / 256 MB | |
 | `pack-build-once` | pack-worker one-off | 2 GB / 256 MB | same work as the service; only while it is stopped |
 | `db-dump` and the 03:00 `backup.sh` (pg_dump) | `exec` in postgis | postgis's 4 GB | |
@@ -2049,6 +2062,121 @@ Then, in a browser that used the old site: open whumpf.co once (it may
 show the old site and reload itself), and DevTools → Application → Service
 workers shows none. Keep both locations for several months after the
 swap: a browser only drops the worker when it comes back.
+
+## 18. NAIP imagery at zooms 17-18: `/tiles/naip`, `make naip-index`
+
+Sharper aerial imagery than USGS's own tiles, which stop at zoom 16 (about
+1.8 m a pixel here). The app keeps `USGSImageryOnly` up to zoom 16 and
+switches to `/tiles/naip` at 17-18. Also an opt-in offline pack layer,
+`naip`, for boxes up to 200 km².
+
+### Source facts (checked Nov 17, 2026)
+
+- **Why not USGS.** USGS's full-resolution service (`USGSNAIPImagery`
+  ImageServer on imagery.nationalmap.gov: ArcGIS 11.3, `exportImage` only,
+  4000 px at most, no cached tiles) has only **Colorado 2019** (7,423 files,
+  all 0.6 m), before the 2020 Cameron Peak and East Troublesome fires.
+  USDA's own image services (gis.apfo.usda.gov) reset every connection from
+  the VM, so they can't be used either.
+- **What we use.** USDA NAIP as cloud-optimized GeoTIFFs on Microsoft's
+  Planetary Computer: STAC collection `naip`, files at
+  `https://naipeuwest.blob.core.windows.net/naip/v002/<state>/<year>/...`
+  (Azure West Europe). For our Colorado box the newest per quarter quad is
+  **2023 at 0.3 m** (4,766 of 4,950), plus a few 2021, 2022 and 2024 files
+  along the edges from neighbouring states. Both burn areas are covered by
+  the 2023 flights (Aug 21 and Aug 30, 2023).
+- **Files.** One file per quarter quad, ~6 x 7.5 km, ~2 GB, 4 bands (RGB +
+  near infrared), deflate, 512 px blocks, 6 overviews, UTM. A z18 tile reads
+  1-2 blocks (~0.5 MB each); from the VM a read is ~135 ms to the first byte
+  and ~0.3-0.4 s in all, so a tile takes 0.5-1 s, 3-4 s when its file is
+  opened for the first time in a process.
+- **Terms.** NAIP is public domain (USDA Farm Service Agency); credit it as
+  "USDA Farm Service Agency: NAIP imagery". Planetary Computer's
+  "Supplemental Terms of Use for Microsoft Planetary Computer Previews"
+  (last updated January 2023): as-is, no uptime promise, may change or
+  stop without notice; production use is "not prohibited" but at our own
+  risk; access tokens may not be shared with third parties. The files are
+  readable without a token today (we use none). If Microsoft starts
+  requiring one, the reads fail (503 on `/tiles/naip`, packs with naip
+  fail); the fix is a SAS token from
+  `https://planetarycomputer.microsoft.com/api/sas/v1/token/naip`, used
+  only by our server (never handed to the app).
+
+### How it fits together
+
+```
+make naip-index  (monthly)
+  -> STAC search of the region's box in half-degree cells, NAIP since 2019
+  -> newest file of each quarter quad
+  -> dem-cogs/naip/<region>/<YYYYMMDD>-<sha8>.json   the list (~1.3 MB)
+     dem-cogs/naip/<region>/latest.json             {"current": {revision, key, sha,
+                                                      valid, fetched, items, years, dates}}
+/tiles/naip/{z}/{x}/{y} (api) and naip packs (pack worker)
+  -> PackCache.get_tile("naip", ...): naip_<region>.sqlite, else
+  -> files under the tile, newest first; read at the matching overview,
+     warped to Web Mercator, 256 px JPEG; stored; b"" if no file reaches
+```
+
+The index revision is the tiles' source version: a new NAIP year (a new
+list) remakes tiles as they are asked for, and new packs get new ids. An
+unchanged list keeps its revision and only updates `valid`. A list with
+under 90% of the served one's files is not published (a partial STAC answer
+would leave holes): the run fails, and `make naip-index ARGS=--force`
+publishes it after a look. Old lists are deleted after 60 days.
+
+### API
+
+All under `/tiles`, so the tile token, its limits and the Cloudflare cache
+rule apply. Tiles that aren't cached also count against `naip_upstream`.
+
+- `GET /tiles/naip/meta?region=colorado` -> `region, attribution,
+  attribution_url, bounds, minzoom (17), maxzoom (18), tile_size (256),
+  available`, and when there is an index `revision, years ({"2023": 4766,
+  ...}), dates ([oldest, newest] flight date), valid, stale, tiles`
+  (`/tiles/naip/{z}/{x}/{y}?region=colorado&v=<revision>`). Cached 5 min.
+- `GET /tiles/naip/{z}/{x}/{y}?region=&v=` -> JPEG; 204 where there is no
+  imagery or the tile is outside the region (nothing is made or stored);
+  404 outside zooms 17-18; 503 no-store with Retry-After when the read fails,
+  `naip_upstream` is used up, or there is no index. Cached a week when `v`
+  is the current revision, a day otherwise.
+
+### Monthly refresh
+
+NAIP flies each state every 2-3 years and Planetary Computer adds a year
+some months later, so once a month is plenty:
+
+```bash
+mkdir -p /data/naip
+crontab -e
+40 4 1 * * cd /home/ronkerflonk/whumpf && flock -n /data/naip/.index.lock make naip-index >> /data/naip/index.log 2>&1
+```
+
+`/status` shows `naip` unhealthy when the list is older than 45 days (two
+missed runs) or missing.
+
+### Checking
+
+```bash
+make naip-index ARGS="--dry-run --probe 18/54047/99433 --probe 18/53994/98650"
+```
+
+searches, logs the years found and renders the two tiles (Berthoud Pass,
+Cameron Peak burn) from the new list, logging size, files and time, and
+writes nothing. `--probe-out DIR` also writes the JPEGs (a directory inside
+the container, e.g. `/app/tests/_probe`, which is `backend/tests/_probe` on
+the host; delete it afterwards). Nov 17, 2026: 15,176 items, 4,950 quarter
+quads; tiles 15-20 KB in 0.6-3.8 s.
+
+### Deploy (not done)
+
+1. `make up` (the api's `/data/pack-cache` mount is now read-write; no new
+   settings, no migration).
+2. `make naip-index` once, then the cron line above.
+3. Check: `make naip-index ARGS="--dry-run --probe 18/54047/99433"`,
+   `curl -s 'https://api.whumpf.co/tiles/naip/meta?region=colorado&t=<token>'`,
+   one tile URL from it, and the `naip` line on `/status`.
+4. The privacy policy now lists NAIP among the sources our server fetches
+   (`app/legal/privacy.md`); the same `make up` serves it.
 
 ## Troubleshooting
 

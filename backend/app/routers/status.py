@@ -33,6 +33,7 @@ from app.rate_limit import client_ip
 from app.regions import REGIONS
 from app.services import (
     cameras,
+    naip,
     pack_cache,
     radar,
     rasterlayer,
@@ -124,6 +125,11 @@ async def _check_layer(
 
 async def _check_snowdepth() -> ServiceHealth:
     return await _check_layer("snowdepth", snowdepth.read_pointer, snowdepth.STALE_AFTER)
+
+
+async def _check_naip() -> ServiceHealth:
+    """The NAIP file list (make naip-index, monthly) is recent."""
+    return await _check_layer("naip", naip.read_pointer, naip.STALE_AFTER)
 
 
 async def _check_temperature() -> ServiceHealth:
@@ -219,7 +225,7 @@ async def _check_services(session: Session) -> list[ServiceHealth]:
     # report it explicitly so the frontend doesn't have to know that.
     api = ServiceHealth(name="api", healthy=True)
     postgres = await _check_postgres(session)
-    minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds, packs = await asyncio.gather(
+    minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds, packs, nai = await asyncio.gather(
         _probe("minio",   "http://localhost:9000/minio/health/live"),
         _probe("titiler", "http://localhost:8001/"),
         _probe("martin",  "http://localhost:3000/health"),
@@ -231,8 +237,9 @@ async def _check_services(session: Session) -> list[ServiceHealth]:
         _check_cameras(),
         _check_roads(),
         _check_pack_cache(),
+        _check_naip(),
     )
-    return [api, postgres, minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds, packs]
+    return [api, postgres, minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds, packs, nai]
 
 
 # The app polls /status every 5 min per install, so the checks (MinIO reads

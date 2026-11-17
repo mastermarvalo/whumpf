@@ -75,6 +75,12 @@ BUCKETS: dict[str, tuple[RateLimitItem, ...]] = {
     # Windy API (cache misses). Keeps us from "intensive usage", which
     # Windy's terms forbid, whoever is tapping.
     "windy_upstream": (parse("60/minute"), parse("1000/hour")),
+    # One global counter ("global"): NAIP tiles made from Microsoft's
+    # Planetary Computer (cache misses, live and packs together; each is 1-4
+    # range reads, ~0.5 MB). Planetary Computer may rate-limit anonymous
+    # reads; this keeps us well below anything that would. A pack of a
+    # 200 km² box is ~18,000 tiles, so a full one takes over an hour.
+    "naip_upstream": (parse("300/minute"), parse("15000/hour")),
     # Per client IP, GET /roads (needs a tile token). Once per map load and
     # every few minutes while the layer is on; the data is the job's files.
     "roads": (parse("60/minute"), parse("600/hour")),

@@ -29,16 +29,20 @@ show `detail`. 429 and 503 always carry `Retry-After` (seconds).
   "max_side_km": 50,
   "grid_zoom": 14,
   "required_layers": ["topo", "slope", "aspect", "elevation", "ski"],
-  "optional_layers": ["imagery"],
+  "optional_layers": ["imagery", "naip"],
   "url_ttl_s": 86400,
   "limits": {"requests_per_hour": 10, "active_per_user": 2, "polls_per_minute": 60},
   "layers": [
     {"id": "topo", "minzoom": 8, "maxzoom": 16, "tile_type": "jpg", "tile_size": 256, "pad_tiles": 0,
-     "attribution": "USGS The National Map", "source_version": null, "available": true,
+     "attribution": "USGS The National Map", "source_version": null, "available": true, "max_area_km2": 700,
      "bytes_per_tile": {"8": 36112, "9": 36562, "10": 33281, "11": 32625, "12": 28427, "13": 25476, "14": 20855, "15": 19662, "16": 13086}},
     {"id": "imagery", "minzoom": 8, "maxzoom": 16, "tile_type": "jpg", "tile_size": 256, "pad_tiles": 0,
      "attribution": "USGS The National Map: Orthoimagery (NAIP)", "source_version": null, "available": true,
+     "max_area_km2": 700,
      "bytes_per_tile": {"8": 23313, "9": 34912, "10": 31706, "11": 22701, "12": 20759, "13": 19534, "14": 22507, "15": 23627, "16": 24420}},
+    {"id": "naip", "minzoom": 17, "maxzoom": 18, "tile_type": "jpg", "tile_size": 256, "pad_tiles": 0,
+     "attribution": "USDA Farm Service Agency: NAIP imagery", "source_version": "20261117-37fed9ed",
+     "available": true, "max_area_km2": 200, "bytes_per_tile": {"17": 17400, "18": 17400}},
     {"id": "slope", "minzoom": 8, "maxzoom": 14, "tile_type": "png", "tile_size": 512, "pad_tiles": 0,
      "attribution": "USGS 3DEP", "source_version": "5d41402abc4b2a76b9719d911017c592", "available": true,
      "bytes_per_tile": {"8": 226833, "9": 229073, "10": 179967, "11": 180969, "12": 173784, "13": 166183, "14": 66930}},
@@ -57,13 +61,19 @@ show `detail`. 429 and 503 always carry `Retry-After` (seconds).
 ```
 
 - `layers` is in this order. `source_version` is null for the USGS layers
-  (topo, imagery); treat the others as opaque strings.
+  (topo, imagery); treat the others as opaque strings. Ignore layers you
+  don't know (shipped builds do).
+- `naip` is sharper aerial imagery for zooms 17-18 (USDA NAIP 2023, 0.3 m),
+  opt-in. It is ~91 tiles a km² (Berthoud Pass: ~13,400 tiles, ~230 MB), so
+  it has its own `max_area_km2` (200); every other layer's is the pack's
+  700. Its source version is the NAIP index revision. The same tiles are
+  online at `/tiles/naip` (runbook §18).
 - `available` is false for topo and imagery when the server has no USGS
   contact set, for every layer when R2 isn't configured, and for a layer
-  whose version can't be read right now. `POST /packs` then answers 503.
+  whose version can't be read right now (naip: no NAIP index yet). `POST /packs` then answers 503.
 - `bytes_per_tile` is the average size of a tile asked for at that zoom,
   empty tiles counting 0, from recent builds (seeded with a Berthoud Pass
-  build). Keys are zooms as strings.
+  build; naip with probe tiles). Keys are zooms as strings.
 
 **Size estimate** (matches the server's tile count):
 
@@ -79,7 +89,8 @@ show `detail`. 429 and 503 always carry `Retry-After` (seconds).
 
 Berthoud Pass (`[-105.835, 39.753, -105.719, 39.843]`) comes to about 73 MB
 with imagery: topo 13.9, imagery 22.0, slope 8.6, aspect 8.8, elevation
-19.3, ski 0.0.
+19.3, ski 0.0. naip adds about 230 MB (2,688 tiles at z17, 10,752 at z18)
+and up to an hour of build time, so show its size separately.
 
 **Errors:** 400 `"Unknown region: <region>"`, 403 `"Region not available
 for this account"`, 429.
@@ -92,8 +103,9 @@ for this account"`, 429.
 ```
 
 `bbox` is `[west, south, east, north]` in degrees. `layers` must hold topo,
-slope, aspect, elevation and ski, and may add imagery; order doesn't
-matter.
+slope, aspect, elevation and ski, and may add imagery and naip; order
+doesn't matter. With naip the box must also be within naip's
+`max_area_km2`.
 
 The same request (same region, same box after rounding to the zoom 14 grid,
 same layers, same source versions) gives the same pack id, for any user.
@@ -114,7 +126,8 @@ same layers, same source versions) gives the same pack id, for any user.
 | 422 | `"bbox must be inside the colorado region"` |
 | 422 | `"bbox is 31.2 x 25.0 km (780 km²); the most is 700 km²"` |
 | 422 | `"bbox is 60.0 x 5.0 km; the most is 50 km on a side"` |
-| 422 | `"layers must include topo, slope, aspect, elevation and ski; imagery is optional"` |
+| 422 | `"bbox is 285 km²; naip is only for a box of at most 200 km²"` |
+| 422 | `"layers must include topo, slope, aspect, elevation and ski; imagery and naip are optional"` |
 | 429 | `"Too many requests"` (10 an hour) |
 | 429 | `"You already have 2 packs being prepared. Try again when one is ready."` |
 | 503 | `"Too many packs are being prepared right now. Try again in a few minutes."` |

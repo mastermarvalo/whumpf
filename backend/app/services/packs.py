@@ -7,6 +7,8 @@ request; make pack-queue adds one through queue_pack.
 - The box is rounded out to the zoom 14 grid. Every layer covers that, at
   its own zooms (pack_cache.LAYERS); elevation is padded by two zoom 14
   tiles on every side, for the runout check on the phone.
+- naip (zooms 17-18, ~91 tiles a km²) is opt-in and only for boxes up to
+  LAYER_MAX_AREA_KM2["naip"]; a bigger box with naip is refused (422).
 - Each layer is one PMTiles v3 file: tiles as made (JPEG, PNG, gzipped MVT),
   gzipped directories, identical tiles stored once, empty answers left out.
   A layer with no tiles at all in the box gets no file.
@@ -55,6 +57,7 @@ from sqlalchemy.orm import Session
 from app.config import get_settings
 from app.models import Pack, PackRequest
 from app.regions import REGIONS, validate_region
+from app.services import naip
 from app.services.pack_cache import (
     LAYERS,
     PackCache,
@@ -72,10 +75,12 @@ MAX_ATTEMPTS = 3        # builds started (crashes included) before a pack fails
 WINDOW = 32             # tiles asked for ahead of the one being written
 PROGRESS_EVERY_S = 1.0
 
-TILE_SIZE = {"topo": 256, "imagery": 256, "slope": 512, "aspect": 512, "elevation": 256, "ski": 512}
+TILE_SIZE = {"topo": 256, "imagery": 256, "naip": 256, "slope": 512, "aspect": 512, "elevation": 256,
+             "ski": 512}
 ATTRIBUTION = {
     "topo": "USGS The National Map",
     "imagery": "USGS The National Map: Orthoimagery (NAIP)",
+    "naip": naip.ATTRIBUTION,
     "slope": "USGS 3DEP",
     "aspect": "USGS 3DEP",
     "elevation": "USGS 3DEP",
@@ -84,7 +89,12 @@ ATTRIBUTION = {
 _TILE_TYPE = {"jpg": TileType.JPEG, "png": TileType.PNG, "mvt": TileType.MVT}
 
 REQUIRED_LAYERS = ("topo", "slope", "aspect", "elevation", "ski")
-OPTIONAL_LAYERS = ("imagery",)
+OPTIONAL_LAYERS = ("imagery", "naip")
+# make pack-queue without --layers.
+DEFAULT_LAYERS = REQUIRED_LAYERS + ("imagery",)
+# Layers with a smaller box than MAX_AREA_KM2. naip: ~18,000 tiles at most
+# (~300 MB, about an hour on the worker); the Berthoud box is ~150 km².
+LAYER_MAX_AREA_KM2 = {"naip": 200}
 
 # Requests (docs/api-packs.md). The hourly and polling limits are the packs
 # and packs_poll buckets in tile_tokens.BUCKETS.
@@ -106,9 +116,11 @@ REQUEST_LOCK_KEY = 0x7061636C  # "pacl"
 
 # Average bytes per tile asked for, per zoom, from the Berthoud Pass build
 # (Oct 2026; empty tiles count 0), and the tiles it had per zoom: the
-# starting point for GET /packs/manifest, pooled with later builds.
+# starting point for GET /packs/manifest, pooled with later builds. naip is
+# from four probe tiles (Nov 2026, make naip-index --probe), counted as a
+# Berthoud-sized build so a few real builds soon outweigh it.
 SEED_TILE_BYTES: dict[str, dict[int, tuple[int, int]]] = {
-    layer: {8 + i: (n, avg) for i, (n, avg) in enumerate(zip(counts, avgs, strict=True))}
+    layer: {LAYERS[layer].minzoom + i: (n, avg) for i, (n, avg) in enumerate(zip(counts, avgs, strict=True))}
     for layer, counts, avgs in (
         ("topo", (1, 1, 2, 4, 9, 16, 42, 168, 672),
          (36112, 36562, 33281, 32625, 28427, 25476, 20855, 19662, 13086)),
@@ -121,6 +133,7 @@ SEED_TILE_BYTES: dict[str, dict[int, tuple[int, int]]] = {
         ("elevation", (1, 1, 2, 4, 9, 36, 110),
          (158352, 155676, 149604, 143496, 135133, 124780, 112535)),
         ("ski", (1, 1, 2, 4, 9, 16, 42), (1166, 788, 1065, 3324, 1105, 688, 174)),
+        ("naip", (2688, 10752), (17400, 17400)),
     )
 }
 
@@ -251,11 +264,15 @@ def check_request(region: str, bbox: Sequence[float], layers: Sequence[str] | No
     if width * height / 1e6 > MAX_AREA_KM2:
         raise ValueError(f"bbox is {width / 1000:.1f} x {height / 1000:.1f} km "
                          f"({width * height / 1e6:.0f} km²); the most is {MAX_AREA_KM2} km²")
-    wanted = list(LAYERS) if layers is None else list(layers)
+    wanted = list(DEFAULT_LAYERS) if layers is None else list(layers)
     unknown = sorted(set(wanted) - set(LAYERS))
     if unknown or not wanted:
         raise ValueError(f"layers must be some of {', '.join(LAYERS)}" +
                          (f" (unknown: {', '.join(unknown)})" if unknown else ""))
+    for name, most in LAYER_MAX_AREA_KM2.items():
+        if name in wanted and width * height / 1e6 > most:
+            raise ValueError(f"bbox is {width * height / 1e6:.0f} km²; {name} is only for a box "
+                             f"of at most {most} km²")
     return (west, south, east, north), [name for name in LAYERS if name in wanted]
 
 
@@ -277,10 +294,11 @@ def pack_bbox(pack: Pack) -> tuple[float, float, float, float]:
 
 
 def check_api_layers(layers: Sequence[str]) -> list[str]:
-    """POST /packs: the required layers, maybe imagery; in LAYERS order."""
+    """POST /packs: the required layers, maybe imagery and naip; in LAYERS order."""
     wanted = set(layers)
     if not set(REQUIRED_LAYERS) <= wanted or not wanted <= set(REQUIRED_LAYERS + OPTIONAL_LAYERS):
-        raise ValueError("layers must include topo, slope, aspect, elevation and ski; imagery is optional")
+        raise ValueError("layers must include topo, slope, aspect, elevation and ski; "
+                         "imagery and naip are optional")
     return [name for name in LAYERS if name in wanted]
 
 
