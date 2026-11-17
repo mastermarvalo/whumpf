@@ -346,6 +346,7 @@ def test_null_expected_size_does_not_crash():
 
 def test_zone_detail_endpoint_returns_problems_status(_zones_env):
     from fastapi.testclient import TestClient
+
     from app.main import app
 
     body = TestClient(app).get("/avalanche/zone_detail", params={"lat": 39.6, "lng": -106.0}).json()

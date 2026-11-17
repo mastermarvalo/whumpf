@@ -20,6 +20,7 @@ import json
 import logging
 import sys
 
+from app.http_retry import CircuitOpenError
 from app.routers import avalanche
 
 logger = logging.getLogger("whumpf.avid_capture")
@@ -49,7 +50,7 @@ def pick(products: list, areas: dict) -> dict | None:
 async def _run() -> int:
     try:
         products, areas = await avalanche._do_fetch_avid()
-    except Exception as exc:
+    except (RuntimeError, CircuitOpenError, ValueError) as exc:  # HTTP error, breaker open, bad JSON
         logger.error("AVID fetch failed: %s", exc)
         return 1
     found = pick(products, areas)
