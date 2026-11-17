@@ -30,9 +30,11 @@ from typing import Any, Protocol
 import boto3
 import httpx
 import numpy as np
+import rasterio
 from botocore.config import Config
 from botocore.exceptions import ClientError
 from rasterio.io import MemoryFile
+from rasterio.shutil import copy as rio_copy
 from rasterio.windows import Window
 
 from app.config import get_settings
@@ -267,6 +269,22 @@ def region_window(
     if col0 < 0 or row0 < 0 or col1 > width or row1 > height:
         raise BadFile("region is not inside the grid")
     return Window(col0, row0, col1 - col0, row1 - row0)
+
+
+def to_cog(src_path: str, dst_path: str, *, compress: str, quality: int | None = None,
+           resampling: str = "average", predictor: int | None = None, threads: int = 2) -> None:
+    """Blocking: copy a GeoTIFF on disk (tiled, written window by window) to
+    a COG with overviews, for rasters too big for write_cog's memory file.
+    RGB with JPEG or WEBP keeps the source's internal mask, which TiTiler
+    turns into transparency."""
+    opts: dict[str, object] = {"compress": compress, "blocksize": 512, "overview_resampling": resampling,
+                               "bigtiff": "IF_SAFER", "num_threads": str(threads)}
+    if quality is not None:
+        opts["quality"] = quality
+    if predictor is not None:
+        opts["predictor"] = predictor
+    with rasterio.Env(GDAL_TIFF_INTERNAL_MASK="YES"):
+        rio_copy(src_path, dst_path, driver="COG", **opts)
 
 
 def write_cog(data: np.ndarray, transform, nodata: float, crs: str = "EPSG:4326") -> bytes:

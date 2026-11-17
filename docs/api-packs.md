@@ -63,6 +63,10 @@ show `detail`. 429 and 503 always carry `Retry-After` (seconds).
 - `layers` is in this order. `source_version` is null for the USGS layers
   (topo, imagery); treat the others as opaque strings. Ignore layers you
   don't know (shipped builds do).
+- `access` is `"ok"` or `"pro_required"`. Every layer is `"ok"` today; a
+  later paid tier may make some `"pro_required"` with no app update. Show
+  such a layer as locked, and don't ask for it: `POST /packs` with it
+  answers 403 `{"detail": ..., "code": "pro_required", "layer": "<id>"}`.
 - `naip` is sharper aerial imagery for zooms 17-18 (USDA NAIP 2023, 0.3 m),
   opt-in. It is ~91 tiles a km² (Berthoud Pass: ~13,400 tiles, ~230 MB), so
   it has its own `max_area_km2` (200); every other layer's is the pack's
@@ -121,6 +125,7 @@ same layers, same source versions) gives the same pack id, for any user.
 |---|---|
 | 400 | `"Unknown region: <region>"` |
 | 403 | `"Region not available for this account"` |
+| 403 | `"This layer needs a Whumpf Pro account."`, with `"code": "pro_required"` and `"layer"` (never today) |
 | 422 | `"bbox must be four numbers: west, south, east, north"` |
 | 422 | `"bbox must have west < east and south < north"` |
 | 422 | `"bbox must be inside the colorado region"` |

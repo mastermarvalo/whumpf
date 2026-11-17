@@ -31,7 +31,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import tile_tokens
+from app import entitlements, tile_tokens
 from app.auth.dependencies import get_current_user
 from app.config import get_settings
 from app.db import get_session
@@ -201,7 +201,8 @@ async def manifest(
             entry["encoding"] = "terrarium"
         entry.update({"attribution": packs.ATTRIBUTION[name], "source_version": version,
                       "available": available, "bytes_per_tile": averages.get(name, {}),
-                      "max_area_km2": packs.LAYER_MAX_AREA_KM2.get(name, packs.MAX_AREA_KM2)})
+                      "max_area_km2": packs.LAYER_MAX_AREA_KM2.get(name, packs.MAX_AREA_KM2),
+                      "access": entitlements.access(tile_tokens.TIER_USER, name)})
         layers.append(entry)
 
     poll = tile_tokens.BUCKETS["packs_poll"][0]
@@ -237,6 +238,7 @@ async def request_pack(
         box_, layers = packs.check_request(body.region, body.bbox, layers)
     except ValueError as exc:
         raise _refuse(422, str(exc)) from exc
+    entitlements.require(tile_tokens.TIER_USER, layers)  # pack requests are signed in
 
     versions = await _current_versions(body.region, layers)
     base = packs.grid_range(box_)

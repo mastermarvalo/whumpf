@@ -797,23 +797,29 @@ async def snowfall_tile(
     )
 
 
+_MEDIA_TYPES = {"png": "image/png", "jpg": "image/jpeg", "webp": "image/webp"}
+
+
 async def cog_tile(
     cache: OrderedDict[tuple, bytes], cache_max: int, cache_key: tuple,
     key: str, params: dict[str, str], headers: dict[str, str],
-    what: str, z: int, x: int, y: int,
+    what: str, z: int, x: int, y: int, fmt: Literal["png", "jpg", "webp"] = "png",
 ) -> Response:
-    """A PNG tile of the dem-cogs COG at `key`, rendered by TiTiler with
-    `params` (nodata, colormap, ...), kept in this worker's `cache`. Used by
-    the snowfall layer and the weather layers (routers/weather_tiles.py)."""
+    """A tile of the dem-cogs COG at `key`, rendered by TiTiler with
+    `params` (nodata, colormap, ...) as `fmt`, kept in this worker's `cache`.
+    Used by the snowfall layer and the weather layers
+    (routers/weather_tiles.py). PNG and WEBP keep the COG's mask as
+    transparency; JPEG has none."""
+    media_type = _MEDIA_TYPES[fmt]
     if cached := _cache_get(cache, cache_key):
-        return Response(content=cached, media_type="image/png", headers=headers)
+        return Response(content=cached, media_type=media_type, headers=headers)
 
     settings = get_settings()
     cog_url = f"/vsicurl/{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{key}"
 
     async def _do() -> httpx.Response:
         r = await _HTTP.get(
-            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.png",
+            f"{settings.titiler_url}/cog/tiles/WebMercatorQuad/{z}/{x}/{y}.{fmt}",
             params={"url": cog_url, **params, "reproject": "bilinear"},
         )
         if r.status_code != 404:
@@ -838,4 +844,4 @@ async def cog_tile(
         return Response(status_code=204, headers=headers)
 
     _cache_put(cache, cache_key, resp.content, cache_max)
-    return Response(content=resp.content, media_type="image/png", headers=headers)
+    return Response(content=resp.content, media_type=media_type, headers=headers)

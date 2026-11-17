@@ -215,7 +215,9 @@ def require_tile_access(
     request: Request,
     t: str | None = Query(None, description="Tile token from POST /tiles/token"),
 ) -> None:
-    """Router-level dependency for /tiles/*: runs before any rendering."""
+    """Router-level dependency for /tiles/*: runs before any rendering.
+    Leaves the token's tier in request.state.tile_tier (app/entitlements.py)."""
+    request.state.tile_tier = TIER_ANON
     if t is None:
         if not get_settings().tiles_allow_tokenless:
             raise HTTPException(
@@ -232,6 +234,7 @@ def require_tile_access(
             detail="Invalid or expired tile token",
             headers=_NO_STORE,
         )
+    request.state.tile_tier = claims.tier
     if claims.tier == TIER_USER:
         enforce("user", claims.subject)
     else:

@@ -7,13 +7,14 @@ import logging
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 from slowapi.middleware import SlowAPIMiddleware
 
-from app import __version__, log_redact
+from app import __version__, entitlements, log_redact
 from app.config import get_settings
 from app.rate_limit import limiter
 from app.routers import (
@@ -64,6 +65,12 @@ async def _prewarm() -> None:
             logger.info("Pre-warm %s OK", name)
 
 
+async def _not_entitled_handler(_: Request, exc: entitlements.NotEntitled) -> JSONResponse:
+    """403 with a code the app can act on (app/entitlements.py)."""
+    return JSONResponse({"detail": exc.detail, "code": entitlements.PRO_REQUIRED, "layer": exc.layer},
+                        status_code=exc.status_code, headers=exc.headers)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
     # Schema is managed by Alembic; entrypoint.sh runs `alembic upgrade head`
@@ -109,6 +116,7 @@ def create_app() -> FastAPI:
 
     app.state.limiter = limiter
     app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
+    app.add_exception_handler(entitlements.NotEntitled, _not_entitled_handler)
     app.add_middleware(SlowAPIMiddleware)
 
     app.include_router(health.router)
