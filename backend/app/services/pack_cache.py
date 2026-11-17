@@ -167,7 +167,9 @@ class TileStore:
 
     def __init__(self, path: Path) -> None:
         self.path = path
-        self.db = sqlite3.connect(path, isolation_level=None)  # autocommit
+        # Used by one thread at a time (the event loop), but not always the
+        # thread that opened it: the api's cache lives as long as the worker.
+        self.db = sqlite3.connect(path, isolation_level=None, check_same_thread=False)  # autocommit
         # naip_<region>.sqlite has writers in several processes.
         self.db.execute("PRAGMA busy_timeout = 10000")
         if self.db.execute("PRAGMA page_count").fetchone()[0] == 0:

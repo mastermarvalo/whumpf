@@ -27,12 +27,15 @@ from __future__ import annotations
 
 import base64
 import math
+from collections import OrderedDict
 from datetime import UTC, date, datetime, timedelta
 
 import numpy as np
 from rasterio.transform import Affine, from_origin
 from rasterio.warp import transform_bounds
 
+from app.config import get_settings
+from app.http_retry import call_with_resilience
 from app.services import rasterlayer
 
 EARTH_SEARCH_URL = "https://earth-search.aws.element84.com/v1/search"
@@ -189,3 +192,31 @@ async def read_pointer(region: str) -> dict | None:
     """latest.json for `region`, or None if the job has not published yet.
     Raises if MinIO can't be read."""
     return await rasterlayer.read_pointer(pointer_key(region), _pointers)
+
+
+_dates: OrderedDict[str, bytes] = OrderedDict()
+_DATES_MAX = 8
+
+
+async def read_dates(key: str) -> bytes | None:
+    """The gzipped dates grid at `key`, or None if it's gone (cleaned up).
+    Raises if MinIO can't be read."""
+    if key in _dates:
+        _dates.move_to_end(key)
+        return _dates[key]
+    settings = get_settings()
+    url = f"{settings.s3_endpoint}/{settings.s3_bucket_dem_cogs}/{key}"
+
+    async def _do():
+        r = await rasterlayer._HTTP.get(url)
+        if r.status_code not in (403, 404):
+            r.raise_for_status()
+        return r
+
+    r = await call_with_resilience("minio", _do)
+    if r.status_code in (403, 404):
+        return None
+    _dates[key] = r.content
+    while len(_dates) > _DATES_MAX:
+        _dates.popitem(last=False)
+    return r.content

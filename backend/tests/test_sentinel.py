@@ -17,13 +17,19 @@ import httpx
 import numpy as np
 import pytest
 import rasterio
+from fastapi.testclient import TestClient
 from rasterio.transform import from_origin
 from rasterio.warp import transform_bounds
 
+from app import entitlements, tile_tokens
+from app.config import get_settings
 from app.jobs import sentinel_refresh as job
+from app.main import app
+from app.routers import sentinel as sentinel_router
+from app.routers import status
 from app.services import sentinel
 from app.services.sentinel import Grid
-from tests.weather_fakes import FakeStore, reset_breakers
+from tests.weather_fakes import FakeStore, fake_pointer, fake_titiler, reset_breakers
 
 BOX = (-105.80, 39.78, -105.76, 39.81)  # ~3.4 x 3.3 km near Berthoud Pass
 NOW = datetime(2026, 11, 17, 9, tzinfo=UTC)
@@ -268,3 +274,123 @@ def test_run_skips_scenes_outside_sentinel_cogs(tmp_path, small_region, monkeypa
     monkeypatch.setattr(sentinel, "HREF_PREFIX", "https://sentinel-cogs.s3.us-west-2.amazonaws.com/")
     feature = _feature(make_scene(tmp_path, "x", date(2026, 11, 16)))
     assert job.parse_scene(feature) is None
+
+
+# ── /tiles/sentinel ──────────────────────────────────────────────────────────
+
+ENTRY = {"revision": "20261117-0215", "valid": "2026-11-17T02:15:00Z", "window_days": 30,
+         "dates": ["2026-10-20", "2026-11-16"], "newest_scene": "2026-11-16T18:03:10Z", "coverage": 0.97,
+         "keys": {p: f"sentinel/colorado/{p}/20261117-0215.{'json.gz' if p == 'dates' else 'tif'}"
+                  for p in ("true", "false", "date", "dates")}}
+ENTRY["key"] = ENTRY["keys"]["true"]
+META = "/tiles/sentinel/meta?region=colorado"
+TILE = "/tiles/sentinel/true/12/844/1553?region=colorado"
+DATES = "/tiles/sentinel/dates?region=colorado"
+
+
+@pytest.fixture
+def served(monkeypatch):
+    monkeypatch.setattr(sentinel_router, "_CACHE", type(sentinel_router._CACHE)())
+    pointer = fake_pointer(monkeypatch, sentinel, {"current": json.loads(json.dumps(ENTRY))})
+    pointer["valid_now"] = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    pointer["value"]["current"]["valid"] = pointer["valid_now"]
+    return pointer
+
+
+@pytest.fixture
+def api(served, monkeypatch):
+    state = {"titiler": fake_titiler(monkeypatch), "dates": gzip.compress(b'{"dates": []}'), "dates_reads": []}
+
+    async def fake_dates(key):
+        state["dates_reads"].append(key)
+        return state["dates"]
+
+    monkeypatch.setattr(sentinel, "read_dates", fake_dates)
+    state["client"] = TestClient(app)
+    return state
+
+
+def test_meta(api, served):
+    body = api["client"].get(META).json()
+    assert body["available"] is True and body["access"] == "ok" and body["products"] == ["true", "false"]
+    assert body["attribution"] == "Contains modified Copernicus Sentinel data 2026"
+    assert body["minzoom"] == 6 and body["maxzoom"] == 14 and body["window_days"] == 30
+    assert body["dates"] == ["2026-10-20", "2026-11-16"] and body["stale"] is False
+    assert body["tiles"]["false"] == "/tiles/sentinel/false/{z}/{x}/{y}?region=colorado&v=20261117-0215"
+    assert body["dates_url"] == "/tiles/sentinel/dates?region=colorado&v=20261117-0215"
+
+    served["value"]["current"]["valid"] = "2026-11-10T02:15:00Z"
+    assert api["client"].get(META).json()["stale"] is True
+
+    served["value"] = {}
+    body = api["client"].get(META).json()
+    assert body["available"] is False and "tiles" not in body
+
+
+def test_tile_is_a_png_of_the_served_revision(api):
+    r = api["client"].get(f"{TILE}&v=20261117-0215")
+    assert r.status_code == 200 and r.headers["content-type"] == "image/png"
+    assert r.headers["cache-control"] == "public, max-age=86400"
+    url, params = api["titiler"]["calls"][0]
+    assert url.endswith("/cog/tiles/WebMercatorQuad/12/844/1553.png")
+    assert params["url"].endswith("/dem-cogs/sentinel/colorado/true/20261117-0215.tif")
+    assert "colormap" not in params
+    assert api["client"].get(TILE).headers["cache-control"] == "public, max-age=900"
+    assert len(api["titiler"]["calls"]) == 1  # the second came from the worker's cache
+
+
+@pytest.mark.parametrize("url", [
+    "/tiles/sentinel/infrared/12/844/1553?region=colorado",
+    "/tiles/sentinel/true/5/6/12?region=colorado",
+    "/tiles/sentinel/true/15/0/0?region=colorado",
+    "/tiles/sentinel/true/12/9999/0?region=colorado",
+])
+def test_bad_tiles_are_404(api, url):
+    assert api["client"].get(url).status_code == 404 and api["titiler"]["calls"] == []
+
+
+def test_dates_grid_is_served_gzipped(api):
+    r = api["client"].get(f"{DATES}&v=20261117-0215")
+    assert r.status_code == 200 and r.json() == {"dates": []}  # TestClient undoes the gzip
+    assert r.headers["content-encoding"] == "gzip" and r.headers["cache-control"] == "public, max-age=86400"
+    assert api["dates_reads"] == [ENTRY["keys"]["dates"]]
+
+
+def test_no_data_and_minio_down_are_503(api, served):
+    api["dates"] = None
+    assert api["client"].get(DATES).status_code == 503
+    served["value"] = {}
+    for url in (TILE, DATES):
+        r = api["client"].get(url)
+        assert r.status_code == 503 and r.headers["cache-control"] == "no-store"
+    served["value"] = httpx.ConnectError("minio down")
+    assert api["client"].get(META).status_code == 503
+
+
+def test_gating_sentinel_is_one_server_side_change(api, monkeypatch):
+    monkeypatch.setitem(entitlements.ALLOWED_TIERS, "sentinel", frozenset({tile_tokens.TIER_USER}))
+    anon = tile_tokens.issue("i:install-0123456789abcdef", tile_tokens.TIER_ANON)[0]
+    user = tile_tokens.issue("u:7", tile_tokens.TIER_USER)[0]
+    for url in (TILE, DATES):
+        r = api["client"].get(f"{url}&t={anon}")
+        assert r.status_code == 403 and r.json()["code"] == "pro_required" and r.json()["layer"] == "sentinel"
+        assert api["client"].get(f"{url}&t={user}").status_code == 200
+    assert api["client"].get(f"{META}&t={anon}").json()["access"] == "pro_required"
+    assert api["client"].get(f"{META}&t={user}").json()["access"] == "ok"
+
+
+def test_sentinel_needs_a_tile_token_when_tokenless_is_off(api, monkeypatch):
+    monkeypatch.setattr(get_settings(), "tiles_allow_tokenless", False)
+    for url in (TILE, META, DATES):
+        assert api["client"].get(url).status_code == 401
+    token = tile_tokens.issue("i:install-0123456789abcdef", tile_tokens.TIER_ANON)[0]
+    assert api["client"].get(f"{TILE}&t={token}").status_code == 200
+
+
+def test_status_sentinel_fresh_stale_missing(served):
+    assert asyncio.run(status._check_sentinel()).healthy is True
+    served["value"]["current"]["valid"] = "2026-11-10T02:15:00Z"
+    health = asyncio.run(status._check_sentinel())
+    assert health.healthy is False and "colorado: valid" in health.detail
+    served["value"] = {}
+    assert asyncio.run(status._check_sentinel()).detail == "colorado: no data"

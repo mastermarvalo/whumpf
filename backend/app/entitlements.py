@@ -5,9 +5,10 @@ The tier is the tile token's (`anon` or `user`; signed-in pack requests are
 `user`). Today every tier may use everything; making a layer pro-only later
 means a "pro" tier in tile_tokens and editing ALLOWED_TIERS here, with no app
 update: refused requests get 403 with code "pro_required", which the app
-handles from the start, and /packs/manifest says the same per layer
+handles from the start, and /packs/manifest and layer meta say the same
 (`access`). Tile tokens last an hour, so a change reaches every app within
-an hour.
+an hour; purge the layer's /tiles URLs in Cloudflare when gating it
+(docs/runbook.md §19).
 
 Never gate the cameras layer: Windy's free-tier terms forbid offering its
 webcams only in a paid part of an app.

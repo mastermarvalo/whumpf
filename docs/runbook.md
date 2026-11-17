@@ -2274,6 +2274,40 @@ pixels): 3 min 56 s in all, 182 s on the scenes that changed pixels
 near 1 GB (not measured inside the container; the make process itself was
 31 MB).
 
+### API
+
+All under `/tiles`, so the tile token, its limits and the Cloudflare cache
+rule apply. Tiles and the dates grid go through `app/entitlements.py`
+(layer `sentinel`, open to every tier today); meta always answers.
+
+- `GET /tiles/sentinel/meta?region=colorado` -> `region, attribution`
+  (Copernicus's line with the data's year), `attribution_url, bounds,
+  minzoom (6), maxzoom (14), tile_size (256), products (["true",
+  "false"]), window_days (30), access ("ok" or "pro_required"),
+  available`, and when published `revision, dates ([oldest, newest] capture
+  day shown), newest_scene, coverage (share of the grid with a view),
+  valid, stale (over 48 h), tiles ({"true": url, "false": url}),
+  dates_url`. Cached 5 min.
+- `GET /tiles/sentinel/{true|false}/{z}/{x}/{y}?region=&v=` -> PNG,
+  transparent where no clear view in 30 days; 404 outside zooms 6-14 or for
+  another product; 403 `{"code": "pro_required"}` if the tier may not;
+  503 no-store before the first run or when MinIO can't be read. A day of
+  caching when `v` is the current revision, 15 min otherwise.
+- `GET /tiles/sentinel/dates?region=&v=` -> the dates grid, JSON sent
+  gzipped (`Content-Encoding: gzip`), a few KB for Colorado; read the date
+  at a point as `sentinel.date_at` does. Same caching and access as tiles.
+
+`/status` shows `sentinel` unhealthy when the served mosaic was built over
+48 h ago (two missed nights) or there is none.
+
+**Making it a paid layer later** (no app update): add the tier in
+`tile_tokens`, set `ALLOWED_TIERS["sentinel"]` in `app/entitlements.py`,
+deploy, and purge `https://api.whumpf.co/tiles/sentinel/*` in Cloudflare
+(each tile token has its own cache entry, but the old site's tokenless URLs
+are shared and could be served from the cache for a day). Tokens last an
+hour, so every app follows within an hour; phones keep tiles they already
+have for up to a day.
+
 ### Daily refresh
 
 Passes are around 11:00 local and Earth Search has them within hours, so
@@ -2303,9 +2337,13 @@ afterwards.
 
 ### Deploy (not done)
 
-1. `mkdir -p /data/sentinel`, then `make sentinel-refresh` once (~75 min;
+1. `make up` (the new routes).
+2. `mkdir -p /data/sentinel`, then `make sentinel-refresh` once (~75 min;
    in `tmux`, or let the cron line do it at night).
-2. Add the cron line above.
+3. Add the cron line above.
+4. Check: `curl -s 'https://api.whumpf.co/tiles/sentinel/meta?region=colorado&t=<token>'`,
+   a tile from `tiles.true`, `dates_url`, and the `sentinel` line on
+   `/status`.
 
 ## Troubleshooting
 

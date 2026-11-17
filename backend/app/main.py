@@ -29,6 +29,7 @@ from app.routers import (
     regions,
     roads,
     routes,
+    sentinel,
     snowpack,
     strava,
     terrain,
@@ -126,6 +127,7 @@ def create_app() -> FastAPI:
     app.include_router(tiles.router)
     app.include_router(weather_tiles.router)
     app.include_router(naip.router)
+    app.include_router(sentinel.router)
     app.include_router(weather.router)
     app.include_router(cameras.router)
     app.include_router(roads.router)

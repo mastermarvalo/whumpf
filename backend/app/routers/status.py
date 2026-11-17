@@ -38,6 +38,7 @@ from app.services import (
     radar,
     rasterlayer,
     roads,
+    sentinel,
     snowdepth,
     snowfall,
     status_banners,
@@ -130,6 +131,11 @@ async def _check_snowdepth() -> ServiceHealth:
 async def _check_naip() -> ServiceHealth:
     """The NAIP file list (make naip-index, monthly) is recent."""
     return await _check_layer("naip", naip.read_pointer, naip.STALE_AFTER)
+
+
+async def _check_sentinel() -> ServiceHealth:
+    """The Sentinel-2 mosaic (make sentinel-refresh, daily) is recent."""
+    return await _check_layer("sentinel", sentinel.read_pointer, sentinel.STALE_AFTER)
 
 
 async def _check_temperature() -> ServiceHealth:
@@ -225,7 +231,7 @@ async def _check_services(session: Session) -> list[ServiceHealth]:
     # report it explicitly so the frontend doesn't have to know that.
     api = ServiceHealth(name="api", healthy=True)
     postgres = await _check_postgres(session)
-    minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds, packs, nai = await asyncio.gather(
+    minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds, packs, nai, sen = await asyncio.gather(
         _probe("minio",   "http://localhost:9000/minio/health/live"),
         _probe("titiler", "http://localhost:8001/"),
         _probe("martin",  "http://localhost:3000/health"),
@@ -238,8 +244,9 @@ async def _check_services(session: Session) -> list[ServiceHealth]:
         _check_roads(),
         _check_pack_cache(),
         _check_naip(),
+        _check_sentinel(),
     )
-    return [api, postgres, minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds, packs, nai]
+    return [api, postgres, minio, titiler, martin, snow, depth, temp, wnd, rad, cams, rds, packs, nai, sen]
 
 
 # The app polls /status every 5 min per install, so the checks (MinIO reads
