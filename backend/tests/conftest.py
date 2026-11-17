@@ -152,6 +152,13 @@ def legacy_email_links_default(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
+def tiles_allow_tokenless_default(monkeypatch):
+    """Tests must not depend on the live .env: pin TILES_ALLOW_TOKENLESS to
+    its code default. Tests for the off state set it themselves."""
+    monkeypatch.setattr(get_settings(), "tiles_allow_tokenless", True)
+
+
+@pytest.fixture(autouse=True)
 def status_cache(monkeypatch):
     """Each test starts with no cached /status service checks."""
     from app.routers import status
