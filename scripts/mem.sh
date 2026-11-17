@@ -15,6 +15,7 @@ set -u
 
 CONTAINER="${CONTAINER:-podman}"
 SKI_WORKDIR="${SKI_WORKDIR:-/data/ski-work}"
+SENTINEL_DIR="${SENTINEL_DIR:-/data/sentinel}"
 CGROUP_ROOT=/sys/fs/cgroup/user.slice
 
 # container name -> the .env variable that sets its limit
@@ -96,6 +97,12 @@ done
 if [ -f "$SKI_WORKDIR/FAILED" ]; then
   echo "WARN: the last ski tile rebuild FAILED (the served tiles are unchanged):"
   sed 's/^/      /' "$SKI_WORKDIR/FAILED"
+fi
+
+# The daily Sentinel-2 mosaic leaves this file when it fails (make sentinel-refresh).
+if [ -f "$SENTINEL_DIR/FAILED" ]; then
+  echo "WARN: the last Sentinel-2 refresh FAILED (the served imagery is unchanged):"
+  sed 's/^/      /' "$SENTINEL_DIR/FAILED"
 fi
 
 [ "$check_limits" -eq 1 ] && exit "$status"

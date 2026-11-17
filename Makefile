@@ -149,11 +149,11 @@ db-restore:  ## restore a db-dump: make db-restore FILE=/data/backups/x.dump CON
 health:  ## readiness check, then fail if a service has no memory limit (past OOM kills only warn)
 	@curl -fsS http://localhost:8000/readyz | python3 -m json.tool || echo "api not reachable"
 	@CONTAINER=$(CONTAINER) WEB_DIR=$(WEB_DIR) scripts/web.sh health
-	@CONTAINER=$(CONTAINER) SKI_WORKDIR=$(SKI_WORKDIR) scripts/mem.sh --check-limits
+	@CONTAINER=$(CONTAINER) SKI_WORKDIR=$(SKI_WORKDIR) SENTINEL_DIR=$(SENTINEL_DIR) scripts/mem.sh --check-limits
 
 .PHONY: mem
 mem:  ## memory used vs limit, peak, RestartCount and oom_kill per container; warns on OOM kills (docs/runbook.md §13)
-	@CONTAINER=$(CONTAINER) SKI_WORKDIR=$(SKI_WORKDIR) scripts/mem.sh
+	@CONTAINER=$(CONTAINER) SKI_WORKDIR=$(SKI_WORKDIR) SENTINEL_DIR=$(SENTINEL_DIR) scripts/mem.sh
 
 # --- DEM pipeline -----------------------------------------------------------
 
@@ -250,6 +250,26 @@ snowfall-refresh:  ## fetch the newest NOHRSC 24 h/72 h snowfall into MinIO (the
 .PHONY: naip-index
 naip-index:  ## list the newest NAIP files per region into MinIO (monthly job); ARGS=--dry-run writes nothing, ARGS="--dry-run --probe 18/X/Y" renders a tile
 	$(API_RUN) uv run python -m app.jobs.naip_index $(ARGS)
+
+# --- recent Sentinel-2 imagery -------------------------------------------------
+# The "latest clear view" mosaic -> dem-cogs/sentinel/<region>/ in MinIO,
+# served at /tiles/sentinel. Daily via cron: docs/runbook.md "Recent
+# Sentinel-2". The working mosaic lives in $(SENTINEL_DIR)/work (~15 GB a
+# region). A failed real run (no ARGS) leaves $(SENTINEL_DIR)/FAILED, which
+# make mem and make health show; ARGS=--dry-run or ARGS="--trial W,S,E,N"
+# never touch it.
+
+SENTINEL_DIR ?= /data/sentinel
+
+.PHONY: sentinel-refresh
+sentinel-refresh:  ## add new Sentinel-2 scenes to the mosaic and publish it (daily job); ARGS=--dry-run uploads nothing, ARGS="--trial=W,S,E,N" tries one box
+	@mkdir -p $(SENTINEL_DIR)
+	@if $(COMPOSE) run --rm --no-deps -T -v $(SENTINEL_DIR):/data/sentinel -e GDAL_CACHEMAX=512 api \
+		uv run python -m app.jobs.sentinel_refresh $(ARGS); then \
+		[ -n "$(ARGS)" ] || rm -f $(SENTINEL_DIR)/FAILED; \
+	else rc=$$?; \
+		[ -n "$(ARGS)" ] || date -u +"%Y-%m-%dT%H:%M:%SZ sentinel-refresh failed (exit $$rc); the log is $(SENTINEL_DIR)/refresh.log" > $(SENTINEL_DIR)/FAILED; \
+		echo "sentinel-refresh FAILED (exit $$rc); the served imagery is unchanged"; exit $$rc; fi
 
 # --- weather layers ----------------------------------------------------------
 # NOAA snow depth, temperature and radar -> dem-cogs/<layer>/<region>/ in

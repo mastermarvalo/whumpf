@@ -23,6 +23,7 @@ from __future__ import annotations
 import json
 import logging
 import math
+import os
 import time
 from datetime import UTC, datetime, timedelta
 from typing import Any, Protocol
@@ -167,6 +168,10 @@ class S3Store:
     def put(self, key: str, body: bytes, content_type: str) -> None:
         self._s3.put_object(Bucket=self._bucket, Key=key, Body=body, ContentType=content_type)
 
+    def put_file(self, key: str, path: str, content_type: str) -> None:
+        """Streams a file (multipart), for COGs too big to hold in memory."""
+        self._s3.upload_file(path, self._bucket, key, ExtraArgs={"ContentType": content_type})
+
     def list(self, prefix: str) -> list[tuple[str, datetime]]:
         out = []
         for page in self._s3.get_paginator("list_objects_v2").paginate(Bucket=self._bucket, Prefix=prefix):
@@ -192,6 +197,9 @@ class DryRunStore:
 
     def put(self, key: str, body: bytes, content_type: str) -> None:
         logger.info("dry run: would write %s (%d bytes)", key, len(body))
+
+    def put_file(self, key: str, path: str, content_type: str) -> None:
+        logger.info("dry run: would write %s (%d bytes, from %s)", key, os.path.getsize(path), path)
 
     def list(self, prefix: str) -> list[tuple[str, datetime]]:
         return self._inner.list(prefix)

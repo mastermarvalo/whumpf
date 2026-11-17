@@ -1597,6 +1597,7 @@ API_MEM_LIMIT=8g API_GDAL_CACHEMAX=512 make <target>
 | `strava-refresh` (every 6 h at :45) | api one-off | 5 GB / 256 MB | Strava calls; re-samples terrain only for a changed track |
 | `pack-queue`, `pack-list`, `pack-cleanup`, `banner` | api one-off | 5 GB / 256 MB | database work |
 | `naip-index` (monthly, 1st at 04:40) | api one-off | 5 GB / 256 MB | ~15,000 STAC items in memory, a 1.3 MB list; under a minute |
+| `sentinel-refresh` (daily 02:15) | api one-off | 5 GB / **512 MB** | 2048 px chunks (~80 MB of arrays); ~20-30 min, the first run ~75 min (§19) |
 | `migrate`, `makemigration`, `db-check`, `test-api`, `lint-api` | api one-off | 5 GB / 256 MB | |
 | `pack-build-once` | pack-worker one-off | 2 GB / 256 MB | same work as the service; only while it is stopped |
 | `db-dump` and the 03:00 `backup.sh` (pg_dump) | `exec` in postgis | postgis's 4 GB | |
@@ -2177,6 +2178,134 @@ quads; tiles 15-20 KB in 0.6-3.8 s.
    one tile URL from it, and the `naip` line on `/status`.
 4. The privacy policy now lists NAIP among the sources our server fetches
    (`app/legal/privacy.md`); the same `make up` serves it.
+
+## 19. Recent Sentinel-2 imagery: `make sentinel-refresh`
+
+A "latest clear view" of Colorado, the same data as CalTopo's "Sentinel
+Weekly": for every pixel, the newest Sentinel-2 view in the last 30 days
+that ESA's scene classification calls clear. True colour, and a false colour
+(SWIR 1.6 µm, near infrared, red) where snow is cyan and cloud white. The
+app shows the capture day for the area ("imagery from Nov 14").
+
+### Source facts (checked Nov 17, 2026)
+
+- Sentinel-2 L2A (surface reflectance) as COGs on AWS Open Data,
+  `s3://sentinel-cogs` (`https://sentinel-cogs.s3.us-west-2.amazonaws.com/`),
+  no account, found with Element 84's Earth Search STAC API
+  (`https://earth-search.aws.element84.com/v1/search`, collection
+  `sentinel-2-l2a`). Earth Search has already applied the BOA offset
+  (`earthsearch:boa_offset_applied: true`): values are reflectance x 10000.
+- Three satellites (2A, 2B, 2C). Colorado is 54 tiles of Sentinel's grid
+  (MGRS 12S/12T/13S/13T); 222 scenes in the 10 days to Nov 17. Berthoud Pass
+  had a pass every 2-5 days, at about 18:02 UTC (11:02 MST).
+- Bands read: blue, green, red (10 m), nir08 (B8A) and swir16 (B11) (20 m),
+  scl (20 m). A 10 m band is ~240 MB, a 20 m band ~60 MB, SCL ~4 MB per
+  scene, but only the 512 px blocks needed are read.
+- Terms: free and open (Copernicus Sentinel data legal notice,
+  `https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice`).
+  Wherever it is shown, say **"Contains modified Copernicus Sentinel data
+  2026"** (the year of the data; `sentinel.attribution` gives "2025-2026"
+  across New Year). Credit Earth Search / AWS Open Data as a courtesy.
+
+### What the job does
+
+- Grid: Web Mercator, 12.5 m (about 9.7 m on the ground at 39°N), the
+  region's box (`regions.py`): 40,600 x 45,800 px for Colorado.
+- Each run asks Earth Search for every scene of the last 30 days and
+  processes the ones it hasn't seen, newest first. For each, it reads SCL
+  first; a pixel takes the scene's view only if SCL calls it clear and the
+  scene is newer than what the pixel has. Clear is classes 2 (dark/terrain
+  shadow, or north faces would never fill in winter), 4, 5, 6, 7 and 11
+  (snow); never 0, 1, 3 (cloud shadow), 8, 9 (cloud) or 10 (cirrus). A
+  scene with nothing newer to give is read no further than SCL, so late or
+  repeated scenes cost ~1 s. Scenes at 99.5% cloud or more aren't opened.
+- **Known risk:** SCL sometimes calls bright snow "cloud" (and thin haze
+  "clear"). Then the snow keeps an older view. Watch for it on the first
+  big storms; a SWIR test on cloud pixels (snow is dark at 1.6 µm, cloud
+  bright) would fix it, but nothing beyond SCL is applied yet.
+- Stretch: reflectance 0-1 with gamma 2.2 (`sentinel.stretch`), so snow
+  keeps its texture; ESA's ready-made TCI clips at 0.2 and makes every
+  snowfield flat white. Changing it means bumping `sentinel.RENDER`, which
+  rebuilds the working mosaic from empty.
+- The working mosaic is on local disk, `/data/sentinel/work/<region>/`:
+  `true.tif`, `false.tif` (3 x uint8), `date.tif` (uint16 days since
+  2015-01-01, 0 = none), uncompressed and sparse, and `state.json` (the
+  grid, the stretch and the scenes done). `--rebuild` starts it from empty.
+- Then it writes the COGs, pixels older than 30 days left empty (masked):
+  true and false as RGB JPEG (quality 85) with an internal mask, the date
+  as uint16 deflate, and the **dates grid**: the most common capture day of
+  each 0.01° cell, as gzipped JSON (`sentinel.dates_doc` documents the
+  format). The app reads the date at the map centre from it on the phone,
+  so no location is sent to us, and packs can carry it for offline use.
+- It uploads them as a new revision and switches `latest.json`. Under 20%
+  of the grid with a view is not published (a broken run); the run fails
+  and the served revision stays. Revisions older than 3 days are deleted.
+
+```
+dem-cogs/sentinel/<region>/true/<YYYYMMDD-HHMM>.tif
+dem-cogs/sentinel/<region>/false/<YYYYMMDD-HHMM>.tif
+dem-cogs/sentinel/<region>/date/<YYYYMMDD-HHMM>.tif
+dem-cogs/sentinel/<region>/dates/<YYYYMMDD-HHMM>.json.gz
+dem-cogs/sentinel/<region>/latest.json   {"current": {revision, keys: {true, false, date, dates},
+                                           key, valid (when built), window_days, dates: [oldest, newest],
+                                           newest_scene, coverage, render, bytes}}
+```
+
+### Sizes and times
+
+Measured Nov 17, 2026 on the VM with `--trial=-106.5,39.0,-105.5,40.0` (1°
+x 1°, 103 Mpx, 5.5% of the Colorado grid; 37 scenes, 12 of them giving
+pixels): 3 min 56 s in all, 182 s on the scenes that changed pixels
+(~1.8 µs a pixel), ~1 s for each of the others, 18 s for the COGs. A
+41 MB/s download from AWS (340 MB in 8 s). From that, for Colorado:
+
+| | Size | Time |
+|---|---|---|
+| Working mosaic (8 bytes a pixel, sparse) | ~15 GB in `/data/sentinel/work` | |
+| True colour COG | ~480 MB | |
+| False colour COG | ~390 MB | |
+| Date COG + dates grid | ~20 MB | |
+| A revision in MinIO, ~4 kept (3 days) | ~0.9 GB each, ~3.5 GB | |
+| First run (empty mosaic, ~600 scenes) | | ~75 min |
+| A daily run (~20-25 new scenes) | | ~20-30 min, ~6 of them writing the COGs |
+
+`/data` had 838 GB free. Memory: an api one-off (5 GB limit) with
+`GDAL_CACHEMAX=512`; the arrays are ~80 MB a 2048 px chunk, so it should stay
+near 1 GB (not measured inside the container; the make process itself was
+31 MB).
+
+### Daily refresh
+
+Passes are around 11:00 local and Earth Search has them within hours, so
+run at night:
+
+```bash
+mkdir -p /data/sentinel
+crontab -e
+15 2 * * * cd /home/ronkerflonk/whumpf && flock -n /data/sentinel/.refresh.lock make sentinel-refresh >> /data/sentinel/refresh.log 2>&1
+```
+
+A failed run leaves `/data/sentinel/FAILED`, which `make mem` and
+`make health` print (they don't fail on it), and removes it on the next
+success. `--dry-run` builds in `/data/sentinel/work/<region>-dry-run` and
+uploads nothing; delete that folder afterwards (it is another ~15 GB).
+
+### Checking
+
+```bash
+make sentinel-refresh ARGS="--trial=-105.95,39.65,-105.6,39.95"
+```
+
+builds just that box (Berthoud Pass, ~40 s) in `/data/sentinel/work/trial`
+and keeps the COGs, the dates grid and `true-preview.jpg` /
+`false-preview.jpg` in `/data/sentinel/work/trial-out`. Delete both folders
+afterwards.
+
+### Deploy (not done)
+
+1. `mkdir -p /data/sentinel`, then `make sentinel-refresh` once (~75 min;
+   in `tmux`, or let the cron line do it at night).
+2. Add the cron line above.
 
 ## Troubleshooting
 

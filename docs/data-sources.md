@@ -184,6 +184,30 @@ Supplemental Terms of Use for Planetary Computer Previews (Jan 2023).
 
 ---
 
+### Copernicus Sentinel-2 L2A (via AWS Open Data and Earth Search)
+
+**Use:** the "latest clear view" layer (`/tiles/sentinel`), rebuilt daily.
+Runbook §19.
+
+- Data legal notice: <https://sentinels.copernicus.eu/documents/247904/690755/Sentinel_Data_Legal_Notice>
+- STAC: `https://earth-search.aws.element84.com/v1/search`, collection `sentinel-2-l2a`
+- Files: `https://sentinel-cogs.s3.us-west-2.amazonaws.com/sentinel-s2-l2a-cogs/<zone>/<band>/<sq>/<yyyy>/<m>/<id>/<B04|SCL|...>.tif`
+
+**Access pattern:** `make sentinel-refresh` searches the last 30 days, reads
+each new scene's SCL and only the blocks of the bands it needs, and keeps a
+working mosaic on local disk.
+
+**Gotchas:** values are reflectance x 10000 with the BOA offset already
+applied (Earth Search v1). SCL sometimes calls bright snow cloud. A scene can
+be republished with a `_1_` id.
+
+**Licensing:** free and open; "Contains modified Copernicus Sentinel data
+<year>" wherever shown.
+
+**Update frequency:** a pass every 2-5 days per place (three satellites).
+
+---
+
 ## Phase 2 feeds
 
 ### UAC (Utah Avalanche Center) and other regional centers

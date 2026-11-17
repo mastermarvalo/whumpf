@@ -31,6 +31,10 @@ class FakeStore:
         self.objects[key] = (body, self.now)
         self.puts.append(key)
 
+    def put_file(self, key, path, content_type):
+        with open(path, "rb") as f:
+            self.put(key, f.read(), content_type)
+
     def list(self, prefix):
         return [(k, m) for k, (_, m) in self.objects.items() if k.startswith(prefix)]
 
