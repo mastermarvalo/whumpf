@@ -35,14 +35,14 @@ show `detail`. 429 and 503 always carry `Retry-After` (seconds).
   "layers": [
     {"id": "topo", "minzoom": 8, "maxzoom": 16, "tile_type": "jpg", "tile_size": 256, "pad_tiles": 0,
      "attribution": "USGS The National Map", "source_version": null, "available": true, "max_area_km2": 700,
-     "bytes_per_tile": {"8": 36112, "9": 36562, "10": 33281, "11": 32625, "12": 28427, "13": 25476, "14": 20855, "15": 19662, "16": 13086}},
+     "access": "ok", "bytes_per_tile": {"8": 36112, "9": 36562, "10": 33281, "11": 32625, "12": 28427, "13": 25476, "14": 20855, "15": 19662, "16": 13086}},
     {"id": "imagery", "minzoom": 8, "maxzoom": 16, "tile_type": "jpg", "tile_size": 256, "pad_tiles": 0,
      "attribution": "USGS The National Map: Orthoimagery (NAIP)", "source_version": null, "available": true,
-     "max_area_km2": 700,
+     "max_area_km2": 700, "access": "ok",
      "bytes_per_tile": {"8": 23313, "9": 34912, "10": 31706, "11": 22701, "12": 20759, "13": 19534, "14": 22507, "15": 23627, "16": 24420}},
     {"id": "naip", "minzoom": 17, "maxzoom": 18, "tile_type": "jpg", "tile_size": 256, "pad_tiles": 0,
      "attribution": "USDA Farm Service Agency: NAIP imagery", "source_version": "20261117-37fed9ed",
-     "available": true, "max_area_km2": 200, "bytes_per_tile": {"17": 17400, "18": 17400}},
+     "available": true, "max_area_km2": 200, "access": "ok", "bytes_per_tile": {"17": 17400, "18": 17400}},
     {"id": "sentinel", "minzoom": 8, "maxzoom": 14, "tile_type": "png", "tile_size": 256, "pad_tiles": 0,
      "attribution": "Contains modified Copernicus Sentinel data 2026", "source_version": "20261117-0215",
      "available": true, "max_area_km2": 700, "access": "ok",
@@ -53,16 +53,20 @@ show `detail`. 429 and 503 always carry `Retry-After` (seconds).
      "bytes_per_tile": {"8": 110000, "9": 110000, "10": 110000, "11": 110000, "12": 110000, "13": 110000, "14": 110000}},
     {"id": "slope", "minzoom": 8, "maxzoom": 14, "tile_type": "png", "tile_size": 512, "pad_tiles": 0,
      "attribution": "USGS 3DEP", "source_version": "5d41402abc4b2a76b9719d911017c592", "available": true,
+     "max_area_km2": 700, "access": "ok",
      "bytes_per_tile": {"8": 226833, "9": 229073, "10": 179967, "11": 180969, "12": 173784, "13": 166183, "14": 66930}},
     {"id": "aspect", "minzoom": 8, "maxzoom": 14, "tile_type": "png", "tile_size": 512, "pad_tiles": 0,
      "attribution": "USGS 3DEP", "source_version": "7d793037a0760186574b0282f2f435e7", "available": true,
+     "max_area_km2": 700, "access": "ok",
      "bytes_per_tile": {"8": 263335, "9": 262466, "10": 208633, "11": 200384, "12": 187843, "13": 165162, "14": 65163}},
     {"id": "elevation", "minzoom": 8, "maxzoom": 14, "tile_type": "png", "tile_size": 256, "pad_tiles": 2,
      "encoding": "terrarium", "attribution": "USGS 3DEP",
      "source_version": "9e107d9d372bb6826bd81d3542a419d6|e4d909c290d0fb1ca068ffaddf22cbd0|ovr1", "available": true,
+     "max_area_km2": 700, "access": "ok",
      "bytes_per_tile": {"8": 158352, "9": 155676, "10": 149604, "11": 143496, "12": 135133, "13": 124780, "14": 112535}},
     {"id": "ski", "minzoom": 8, "maxzoom": 14, "tile_type": "mvt", "tile_size": 512, "pad_tiles": 0,
      "attribution": "© OpenStreetMap contributors", "source_version": "1760852400123456789", "available": true,
+     "max_area_km2": 700, "access": "ok",
      "bytes_per_tile": {"8": 1166, "9": 788, "10": 1065, "11": 3324, "12": 1105, "13": 688, "14": 174}}
   ]
 }
@@ -124,8 +128,8 @@ for this account"`, 429.
 ```
 
 `bbox` is `[west, south, east, north]` in degrees. `layers` must hold topo,
-slope, aspect, elevation and ski, and may add imagery and naip; order
-doesn't matter. With naip the box must also be within naip's
+slope, aspect, elevation and ski, and may add imagery, naip, sentinel and
+sentinel_false; order doesn't matter. With naip the box must also be within naip's
 `max_area_km2`.
 
 The same request (same region, same box after rounding to the zoom 14 grid,
@@ -234,3 +238,27 @@ it), 429, 503 (as for POST, when the pack has to be queued again; or
   is the shared pack, not an error.
 - The server forgets a pack 60 days after it was last requested (a failed
   one after 1 day); then `GET` is 404 and a new `POST` starts again.
+
+## Keeping shipped builds working
+
+TestFlight builds can't be updated from the server, and they act on this
+contract as written. So:
+
+- **Layers.** Shipped builds ask for every id in `required_layers`, as sent.
+  A new layer goes only in `optional_layers` (builds that don't know it
+  never ask for it); never add one to `required_layers`. Never rename or
+  remove a layer id, and never stop serving a required one.
+- **Pack `status`** is `queued | building | ready | failed`, and stays that.
+  A build that sees another value keeps polling at the queued rate and never
+  finishes. Put any new state in a new field.
+- **Fields.** Every field in this doc's answers (manifest, layer entries,
+  limits, pack object, `files[]`) stays, with the same name, type and
+  meaning; add new ones beside them. Null stays null where the doc says so
+  (`source_version`, `md5`, `url`, `queue_position`, `error`, `built_at`,
+  `urls_expire_at`). These answers are hand-built dicts in
+  `app/routers/packs.py`, not Pydantic models, so `make test-api` won't
+  notice a rename: check this doc when changing them.
+- **Errors.** Branch-worthy answers keep their status codes (404 for an
+  unknown or not-yours pack, 429/503 with `Retry-After`, 403 with
+  `"code": "pro_required"`). Shipped builds show `detail` as written, so it
+  can be reworded.
