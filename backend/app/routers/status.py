@@ -124,18 +124,50 @@ async def _check_layer(
     return ServiceHealth(name=name, healthy=not problems, detail="; ".join(problems) or None)
 
 
+# Layers added after the TestFlight build shipped, which shows any unhealthy
+# service by its raw name. Until a region's first publish they report "not
+# set up yet" and stay healthy; only a layer that was published and then
+# went stale (or became unreadable) counts against the overall status.
+NOT_SET_UP = "not set up yet"
+_published: set[str] = set()  # layers this worker has seen published
+
+
+async def _check_new_layer(name: str, read_pointer, stale_after: timedelta) -> ServiceHealth:
+    problems: list[str] = []
+    unset: list[str] = []
+    now = datetime.now(UTC)
+    try:
+        for region in REGIONS:
+            entry = (await read_pointer(region) or {}).get("current")
+            if not entry:
+                unset.append(region)
+                continue
+            _published.add(name)
+            if problem := rasterlayer.age_problem(region, entry.get("valid"), stale_after, now):
+                problems.append(problem)
+    except Exception as exc:
+        logger.warning("status check failed (%s)", name, exc_info=True)
+        # The minio line already reports MinIO itself; this one only counts
+        # if the layer was working before.
+        return ServiceHealth(name=name, healthy=name not in _published, detail=str(exc)[:200])
+    if len(unset) == len(REGIONS):
+        return ServiceHealth(name=name, healthy=True, detail=NOT_SET_UP)
+    notes = problems + [f"{region}: {NOT_SET_UP}" for region in unset]
+    return ServiceHealth(name=name, healthy=not problems, detail="; ".join(notes) or None)
+
+
 async def _check_snowdepth() -> ServiceHealth:
     return await _check_layer("snowdepth", snowdepth.read_pointer, snowdepth.STALE_AFTER)
 
 
 async def _check_naip() -> ServiceHealth:
     """The NAIP file list (make naip-index, monthly) is recent."""
-    return await _check_layer("naip", naip.read_pointer, naip.STALE_AFTER)
+    return await _check_new_layer("naip", naip.read_pointer, naip.STALE_AFTER)
 
 
 async def _check_sentinel() -> ServiceHealth:
     """The Sentinel-2 mosaic (make sentinel-refresh, daily) is recent."""
-    return await _check_layer("sentinel", sentinel.read_pointer, sentinel.STALE_AFTER)
+    return await _check_new_layer("sentinel", sentinel.read_pointer, sentinel.STALE_AFTER)
 
 
 async def _check_temperature() -> ServiceHealth:

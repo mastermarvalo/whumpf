@@ -164,6 +164,7 @@ def status_cache(monkeypatch):
     from app.routers import status
 
     monkeypatch.setattr(status, "_services", None)
+    monkeypatch.setattr(status, "_published", set())
 
 
 @pytest.fixture(scope="session")

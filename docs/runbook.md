@@ -2154,7 +2154,9 @@ crontab -e
 ```
 
 `/status` shows `naip` unhealthy when the list is older than 45 days (two
-missed runs) or missing.
+missed runs). Before the first `make naip-index` it is healthy with detail
+"not set up yet", so it doesn't turn the overall status degraded (shipped
+app builds banner any unhealthy service by its raw name).
 
 ### Checking
 
@@ -2299,7 +2301,8 @@ rule apply. Tiles and the dates grid go through `app/entitlements.py`
   at a point as `sentinel.date_at` does. Same caching and access as tiles.
 
 `/status` shows `sentinel` unhealthy when the served mosaic was built over
-48 h ago (two missed nights) or there is none.
+48 h ago (two missed nights). Before the first publish it is healthy with
+detail "not set up yet" and doesn't affect the overall status.
 
 **Making it a paid layer later** (no app update): add the tier in
 `tile_tokens`, set `ALLOWED_TIERS["sentinel"]` in `app/entitlements.py`,

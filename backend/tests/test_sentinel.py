@@ -387,13 +387,17 @@ def test_sentinel_needs_a_tile_token_when_tokenless_is_off(api, monkeypatch):
     assert api["client"].get(f"{TILE}&t={token}").status_code == 200
 
 
-def test_status_sentinel_fresh_stale_missing(served):
+def test_status_sentinel_not_set_up_fresh_stale(served):
+    real = served["value"]
+    served["value"] = {}  # before the first make sentinel-refresh
+    health = asyncio.run(status._check_sentinel())
+    assert (health.healthy, health.detail) == (True, "not set up yet")
+
+    served["value"] = real
     assert asyncio.run(status._check_sentinel()).healthy is True
-    served["value"]["current"]["valid"] = "2026-11-10T02:15:00Z"
+    real["current"]["valid"] = "2026-11-10T02:15:00Z"
     health = asyncio.run(status._check_sentinel())
     assert health.healthy is False and "colorado: valid" in health.detail
-    served["value"] = {}
-    assert asyncio.run(status._check_sentinel()).detail == "colorado: no data"
 
 
 # ── offline packs ────────────────────────────────────────────────────────────

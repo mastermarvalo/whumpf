@@ -403,13 +403,21 @@ def test_naip_needs_a_tile_token_when_tokenless_is_off(live, monkeypatch):
 
 # ── /status ──────────────────────────────────────────────────────────────────
 
-def test_status_naip_fresh_stale_missing(pointer):
-    pointer["value"]["current"]["valid"] = (datetime.now(UTC) - timedelta(days=3)).isoformat()
+def test_status_naip_not_set_up_fresh_stale(pointer):
+    real = pointer["value"]
+    pointer["value"] = {}  # make naip-index has never run: not a problem
+    health = asyncio.run(status._check_naip())
+    assert (health.name, health.healthy, health.detail) == ("naip", True, "not set up yet")
+    pointer["value"] = httpx.ConnectError("minio down")  # and unreadable before it ever worked
+    assert asyncio.run(status._check_naip()).healthy is True
+
+    pointer["value"] = real
+    real["current"]["valid"] = (datetime.now(UTC) - timedelta(days=3)).isoformat()
     health = asyncio.run(status._check_naip())
     assert (health.name, health.healthy, health.detail) == ("naip", True, None)
 
-    pointer["value"]["current"]["valid"] = (datetime.now(UTC) - timedelta(days=50)).isoformat()
+    real["current"]["valid"] = (datetime.now(UTC) - timedelta(days=50)).isoformat()
     assert asyncio.run(status._check_naip()).healthy is False
 
-    pointer["value"] = {}
-    assert asyncio.run(status._check_naip()).detail == "colorado: no data"
+    pointer["value"] = httpx.ConnectError("minio down")  # it worked, now it can't be read
+    assert asyncio.run(status._check_naip()).healthy is False

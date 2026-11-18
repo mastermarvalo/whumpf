@@ -95,3 +95,27 @@ def test_pack_cache_item(monkeypatch, tmp_path):
     monkeypatch.setattr(get_settings(), "pack_cache_max_gb", 1)
     item = asyncio.run(status._check_pack_cache())
     assert (item.healthy, item.detail) == (False, "1.5 GB of 1 GB")
+
+
+def test_layers_never_published_leave_status_operational(make_client, monkeypatch):
+    """Older app builds banner any unhealthy service by name, so a layer
+    nobody has set up yet must not count; one that went stale does."""
+    from app.services import naip, sentinel
+    from tests.weather_fakes import fake_pointer
+
+    healthy = status.ServiceHealth(name="api", healthy=True)
+
+    async def only_new_layers(session):
+        return [healthy, await status._check_naip(), await status._check_sentinel()]
+
+    monkeypatch.setattr(status, "_check_services", only_new_layers)
+    naip_pointer = fake_pointer(monkeypatch, naip, {})
+    fake_pointer(monkeypatch, sentinel, {})
+    body = make_client().get("/status").json()
+    assert body["overall"] == "operational"
+    assert {s["name"]: (s["healthy"], s["detail"]) for s in body["services"]} == {
+        "api": (True, None), "naip": (True, "not set up yet"), "sentinel": (True, "not set up yet")}
+
+    naip_pointer["value"] = {"current": {"valid": "2020-01-01T00:00:00Z"}}  # published, then stale
+    monkeypatch.setattr(status, "_services", None)
+    assert make_client().get("/status").json()["overall"] == "degraded"
