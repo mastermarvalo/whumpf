@@ -59,7 +59,7 @@ async def _prewarm() -> None:
         return_exceptions=True,
     )
     names = ["SNOTEL", "CAIC forecast", "CAIC obs", "CAIC zones"]
-    for name, result in zip(names, results):
+    for name, result in zip(names, results, strict=True):
         if isinstance(result, Exception):
             logger.warning("Pre-warm %s failed: %s", name, result)
         else:

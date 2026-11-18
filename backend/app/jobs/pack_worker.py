@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import logging
 import shutil
 import signal
@@ -113,10 +114,8 @@ async def run(stop: asyncio.Event) -> None:
                 logger.warning("database unavailable (%s); trying again", type(exc).__name__)
                 pack = None
             if pack is None:
-                try:
+                with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(stop.wait(), POLL_S)
-                except TimeoutError:
-                    pass
                 continue
             logger.info("pack %s: building %s for %s (start %d)", pack.id,
                         ",".join(pack.layers), pack.region, pack.attempts)
@@ -174,10 +173,8 @@ def _serve() -> int:
 
         for sig in (signal.SIGTERM, signal.SIGINT):
             loop.add_signal_handler(sig, on_signal)
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await run(stop)
-        except asyncio.CancelledError:
-            pass
 
     try:
         asyncio.run(main())

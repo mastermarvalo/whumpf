@@ -536,5 +536,5 @@ def test_tiles_in_bbox():
     # A point gives one tile per zoom, each inside its parent.
     point = list(tiles_in_bbox((-105.78, 39.80, -105.78, 39.80), 8, 14))
     assert [z for z, _, _ in point] == list(range(8, 15))
-    for (z, x, y), (_, cx, cy) in itertools.pairwise(point):
+    for (_, x, y), (_, cx, cy) in itertools.pairwise(point):
         assert (cx >> 1, cy >> 1) == (x, y)

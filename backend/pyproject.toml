@@ -63,6 +63,15 @@ dev = [
     "ruff>=0.6",
 ]
 
+[tool.ruff.lint]
+select = ["E", "F", "B", "SIM"]
+# Line length is not enforced (E501); UP is off for now.
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# conftest sets env vars before importing the app, so imports can't be at the top.
+"tests/conftest.py" = ["E402"]
+
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI's dependency/param declarations are meant to be call defaults.
 extend-immutable-calls = [

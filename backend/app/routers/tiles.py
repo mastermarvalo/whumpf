@@ -134,7 +134,7 @@ async def slope_tile(
         resp = await terrain_tiles.fetch_colormap(
             _HTTP, get_settings(), "slope", region, z, x, y, hires)
     except CircuitOpenError:
-        raise HTTPException(503, "tile server temporarily unavailable")
+        raise HTTPException(503, "tile server temporarily unavailable") from None
     except httpx.RequestError as exc:
         logger.error("TiTiler unreachable: %s", exc)
         raise HTTPException(502, "tile server unreachable") from exc
@@ -180,7 +180,7 @@ async def aspect_tile(
         resp = await terrain_tiles.fetch_colormap(
             _HTTP, get_settings(), "aspect", region, z, x, y)
     except CircuitOpenError:
-        raise HTTPException(503, "tile server temporarily unavailable")
+        raise HTTPException(503, "tile server temporarily unavailable") from None
     except httpx.RequestError as exc:
         logger.error("TiTiler unreachable: %s", exc)
         raise HTTPException(502, "tile server unreachable") from exc
@@ -290,8 +290,8 @@ def _render_contours(
     all_levels = np.arange(minor_start, elev_max, minor_m).tolist()
     major_start = math.ceil(elev_min / major_m) * major_m
     major_set = {round(major_start + k * major_m, 6) for k in range(int((elev_max - elev_min) / major_m) + 2)}
-    minor_levels = [l for l in all_levels if round(l, 6) not in major_set]
-    major_levels = [l for l in all_levels if round(l, 6) in major_set]
+    minor_levels = [lv for lv in all_levels if round(lv, 6) not in major_set]
+    major_levels = [lv for lv in all_levels if round(lv, 6) in major_set]
 
     # contourpy: grid[row, col] with row=0 at top (north), col=0 at left (west).
     # Output line coordinates are (col, row) — directly usable as PIL (x, y).
@@ -689,7 +689,7 @@ async def ski_tile(
     try:
         status, body, encoding = await call_with_resilience("martin", _do)
     except CircuitOpenError:
-        raise HTTPException(503, "tile server temporarily unavailable")
+        raise HTTPException(503, "tile server temporarily unavailable") from None
     except httpx.RequestError as exc:
         logger.error("Martin unreachable: %s", exc)
         raise HTTPException(502, "tile server unreachable") from exc
@@ -829,7 +829,7 @@ async def cog_tile(
     try:
         resp = await call_with_resilience("titiler", _do)
     except CircuitOpenError:
-        raise HTTPException(503, "tile server temporarily unavailable", headers=_NO_STORE)
+        raise HTTPException(503, "tile server temporarily unavailable", headers=_NO_STORE) from None
     except httpx.RequestError as exc:
         logger.error("TiTiler unreachable: %s", exc)
         raise HTTPException(502, "tile server unreachable") from exc

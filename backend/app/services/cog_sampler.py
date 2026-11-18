@@ -175,5 +175,5 @@ def sample_polyline(
         dists = targets.tolist()
 
     xs, ys = _to_3857.transform(lngs, lats)
-    coords = list(zip(list(xs), list(ys)))
+    coords = list(zip(list(xs), list(ys), strict=True))
     return _sample_coords(coords, dists, region, settings)

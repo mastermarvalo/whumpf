@@ -262,7 +262,7 @@ def compute_profile(
     sd = [s.distance_m for s in samples if s.elevation_m is not None]
     se = [s.elevation_m for s in samples if s.elevation_m is not None]
     vz = np.interp(vdists, sd, se).tolist() if sd else [0.0] * len(vertices)
-    line = LineString([(lng, lat, z) for (lng, lat), z in zip(vertices, vz)])
+    line = LineString([(lng, lat, z) for (lng, lat), z in zip(vertices, vz, strict=True)])
 
     summary = {"distance_m": round(samples[-1].distance_m, 1), **summarise(samples)}
     samples_json = [

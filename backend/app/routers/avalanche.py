@@ -173,7 +173,7 @@ async def _do_fetch_zones() -> list[tuple[str, dict]]:
         ]
         geo_resps = await asyncio.gather(*(_HTTP.get(z["geojson_url"]) for z in leaves))
         zones: list[tuple[str, dict]] = []
-        for z, gr in zip(leaves, geo_resps):
+        for z, gr in zip(leaves, geo_resps, strict=True):
             gr.raise_for_status()
             for feat in gr.json().get("features", []):
                 geom = feat.get("geometry") or {}
