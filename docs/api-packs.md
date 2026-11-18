@@ -256,8 +256,10 @@ contract as written. So:
   meaning; add new ones beside them. Null stays null where the doc says so
   (`source_version`, `md5`, `url`, `queue_position`, `error`, `built_at`,
   `urls_expire_at`). These answers are hand-built dicts in
-  `app/routers/packs.py`, not Pydantic models, so `make test-api` won't
-  notice a rename: check this doc when changing them.
+  `app/routers/packs.py`, not Pydantic models, so the examples above are the
+  spec: `tests/test_packs_contract.py` checks live answers against them
+  (fields, JSON types, where null is allowed, layer ids and lists). Add a
+  new field to the examples; never edit an example to make a rename pass.
 - **Errors.** Branch-worthy answers keep their status codes (404 for an
   unknown or not-yours pack, 429/503 with `Retry-After`, 403 with
   `"code": "pro_required"`). Shipped builds show `detail` as written, so it

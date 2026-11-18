@@ -383,8 +383,11 @@ web-status:  ## the served commit, the kept releases and an HTTP check
 # --- tests / lint -----------------------------------------------------------
 
 .PHONY: test-api
+# docs/ is mounted read-only for tests/test_packs_contract.py, which checks the
+# /packs answers against docs/api-packs.md. Only this run sees it, not the api service.
 test-api:  ## run backend pytest in a one-off api container (uses the whumpf_test DB)
-	$(API_RUN) uv run pytest -q
+	$(COMPOSE) run --rm --no-deps -T -e ALLOW_DESTRUCTIVE_DOWNGRADE=$(ALLOW_DESTRUCTIVE_DOWNGRADE) \
+		-v $(CURDIR)/docs:/app/docs:ro api uv run pytest -q
 
 .PHONY: lock-api
 lock-api:  ## update backend/uv.lock after editing pyproject.toml (then make build-api)
