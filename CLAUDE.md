@@ -2,7 +2,7 @@ The roadmap and prompt list is in docs/PLAN.md. Read it when asked what's next o
 
 # Whumpf
 
-Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlchemy 2.x + PostGIS (`backend/`). Tiles: TiTiler (raster) + Martin (vector). Object storage: MinIO. Frontend: Vite + React + MapLibre (`frontend/`). Runs in containers via `compose.yml`, reverse-proxied by Nginx Proxy Manager.
+Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlchemy 2.x + PostGIS (`backend/`). Tiles: TiTiler (raster) + Martin (vector). Object storage: MinIO. Frontend: the Expo app in the separate `whumpf-ios` repo (iPhone and the whumpf.co web app). `frontend/` is the retired Vite site: ignore it. Runs in containers via `compose.yml`, reverse-proxied by Nginx Proxy Manager.
 
 ## Hard rules
 - **Schema changes go through Alembic** (`backend/migrations/`). Change the model, run `make makemigration m="..."`, read and fix the generated file (renames come out as drop+add; backfills are hand-written), then `make test-api`. Never edit `0001_baseline` or any applied migration; add a new one. No `create_all()` and no startup `ALTER` patches. `entrypoint.sh` runs `alembic upgrade head` on deploy. Details: `docs/runbook.md` §6.
@@ -39,7 +39,7 @@ Self-hosted backcountry terrain & trip-planning app. Backend: FastAPI + SQLAlche
 - New routers go in `app/routers/` and are included in `app/main.py::create_app`.
 - External HTTP calls go through `app/http_retry.py::call_with_resilience` (see `app/services/strava.py`, `routers/avalanche.py`).
 - Email goes through `app/services/email.py` (pluggable); don't hardcode a provider.
-- Frontend map: shared types in `frontend/src/components/Map/types.ts`; geojson layer helpers in `Map/layers/` (copy `layers/strava.ts`); tool buttons in `Map/ToolboxPanel.tsx`. Server-backed state lives on the server; only device preferences go in localStorage / URL state.
+- App-side changes go in `whumpf-ios` (see its `CLAUDE.md`): API types mirrored in `src/data/api/types.ts`, tile URLs only in `src/data/tiles.ts`, map logic in `src/features/map/`. Server-backed state lives on the server; only device preferences stay on the device.
 - Use `make <target>` for container ops, never raw podman/docker. The compose binary is `~/.docker/cli-plugins/docker-compose` (the `docker` on this host is the podman shim, which has no `compose`).
 - Claude Code never restarts or deploys prod: no `make up`, `make restart-*` or `make nuke` against it. Change code, tests and docs; the owner deploys.
 
