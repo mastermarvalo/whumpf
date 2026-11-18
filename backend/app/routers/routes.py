@@ -85,6 +85,9 @@ class RouteRead(BaseModel):
     geometry: dict
     summary: dict
     samples: list
+    # The Strava activity this route was imported from (copies keep it); null
+    # for drawn routes. The app shows the "Powered by Strava" credit on it.
+    source_strava_id: int | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -100,6 +103,7 @@ class RouteListItem(BaseModel):
     visibility: Visibility
     geometry: dict
     summary: dict
+    source_strava_id: int | None = None  # as RouteRead
     created_at: datetime
     updated_at: datetime
 
@@ -142,6 +146,7 @@ def _to_read(route: Route) -> RouteRead:
         geometry=_geometry_dict(route),
         summary=route.summary,
         samples=route.samples,
+        source_strava_id=route.source_strava_id,
         created_at=route.created_at,
         updated_at=route.updated_at,
     )
@@ -157,6 +162,7 @@ def _to_list_item(route: Route) -> RouteListItem:
         visibility=route.visibility,
         geometry=_geometry_dict(route),
         summary=route.summary,
+        source_strava_id=route.source_strava_id,
         created_at=route.created_at,
         updated_at=route.updated_at,
     )

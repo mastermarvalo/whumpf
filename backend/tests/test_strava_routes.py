@@ -280,3 +280,32 @@ def test_clone_keeps_the_fetch_time_of_the_original(make_client, db_session):
 def test_drawn_route_has_no_fetch_time(make_client, db_session):
     rid = _make_route(make_client("owner"))
     assert db_session.get(Route, rid).strava_fetched_at is None
+
+
+# --------------------------------------------------------------------------- #
+# source_strava_id in the API (the app shows "Powered by Strava" on it)
+# --------------------------------------------------------------------------- #
+def test_route_answers_carry_source_strava_id(make_client, db_session):
+    client = make_client("owner")
+    strava_id = _make_strava_route(client, db_session, activity_id=4321)
+    drawn_id = _make_route(client, "Drawn")
+
+    assert client.get(f"/routes/{strava_id}").json()["source_strava_id"] == 4321
+    assert client.get(f"/routes/{drawn_id}").json()["source_strava_id"] is None
+
+    listed = {r["id"]: r for r in client.get("/routes").json()}
+    assert listed[strava_id]["source_strava_id"] == 4321
+    assert listed[drawn_id]["source_strava_id"] is None
+
+    renamed = client.patch(f"/routes/{strava_id}", json={"name": "Renamed"})
+    assert renamed.json()["source_strava_id"] == 4321
+    assert client.post(f"/routes/{strava_id}/clone").json()["source_strava_id"] == 4321
+
+
+def test_trip_routes_carry_source_strava_id(make_client, db_session):
+    client = make_client("owner")
+    rid = _make_strava_route(client, db_session, activity_id=4322)
+    resp = client.post("/trips", json={"name": "T", "date": "2027-01-10", "region": "colorado",
+                                       "days": [{"route_ids": [rid]}]})
+    assert resp.status_code == 201, resp.text
+    assert resp.json()["days"][0]["routes"][0]["source_strava_id"] == 4322
